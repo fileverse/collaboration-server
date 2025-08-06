@@ -1,0 +1,57 @@
+{
+  "name": "collaboration-server",
+  "version": "0.1.0",
+  "description": "WebSocket-based collaboration server for real-time document synchronization",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "scripts": {
+    "dev": "tsx watch src/index.ts",
+    "build": "tsup",
+    "start": "node dist/index.js",
+    "clean": "rm -rf dist",
+    "format": "prettier --write .",
+    "lint": "eslint src/**/*.ts",
+    "postinstall": "npm run build",
+    "heroku-postbuild": "npm run build"
+  },
+  "keywords": [
+    "websocket",
+    "collaboration",
+    "yjs",
+    "real-time",
+    "sync"
+  ],
+  "author": "Fileverse",
+  "license": "MIT",
+  "dependencies": {
+    "@ucans/ucans": "^0.12.0",
+    "ws": "^8.18.0",
+    "uuid": "^10.0.0",
+    "base64-js": "^1.5.1",
+    "js-base64": "^3.7.7",
+    "yjs": "^13.6.18",
+    "lib0": "^0.2.95",
+    "y-protocols": "^1.0.6",
+    "cors": "^2.8.5",
+    "express": "^4.18.2",
+    "helmet": "^7.1.0",
+    "compression": "^1.7.4",
+    "node-fetch": "^3.3.2"
+  },
+  "devDependencies": {
+    "@types/node": "^22.5.5",
+    "@types/ws": "^8.5.10",
+    "@types/uuid": "^10.0.0",
+    "@types/cors": "^2.8.17",
+    "@types/express": "^4.17.21",
+    "@types/compression": "^1.7.5",
+    "@typescript-eslint/eslint-plugin": "^8.6.0",
+    "@typescript-eslint/parser": "^8.6.0",
+    "eslint": "^9.11.0",
+    "eslint-config-prettier": "^9.1.0",
+    "prettier": "^3.3.3",
+    "tsx": "^4.7.1",
+    "tsup": "^8.2.4",
+    "typescript": "^5.5.4"
+  }
+}
