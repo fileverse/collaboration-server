@@ -1,29 +1,20 @@
 import { WebSocket } from "ws";
 
-export interface RoomMember {
-  user_id: string;
-  username: string;
-  role: "owner" | "editor";
-  client_id?: string;
-  joined_at: number;
-}
-
 export interface DocumentUpdate {
   id: string;
   document_id: string;
-  agent_id: string;
+  user_id: string;
   data: string; // encrypted Y.js update
   update_type: string;
   committed: boolean;
   commit_cid: string | null;
-  update_snapshot_ref: string | null;
   created_at: number;
 }
 
 export interface DocumentCommit {
   id: string;
   document_id: string;
-  agent_id: string;
+  user_id: string;
   cid: string; // IPFS hash
   data: string | null; // encrypted document state
   updates: string[]; // list of update IDs included in this commit
@@ -89,13 +80,7 @@ export interface UCANPayload {
 }
 
 export interface DatabaseConfig {
-  type: "sqlite" | "postgres" | "mysql";
-  filename?: string; // for SQLite
-  host?: string;
-  port?: number;
-  database?: string;
-  username?: string;
-  password?: string;
+  uri: string; // MongoDB connection string
 }
 
 export interface ServerConfig {

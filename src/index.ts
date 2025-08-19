@@ -7,6 +7,7 @@ import { createServer } from "http";
 import config from "./config/index";
 import { authService } from "./services/auth";
 import { wsManager } from "./services/websocket-manager";
+import { databaseService } from "./database";
 
 class CollaborationServer {
   private app: express.Application;
@@ -51,12 +52,13 @@ class CollaborationServer {
 
   private setupRoutes() {
     // Health check
-    this.app.get("/health", (req, res) => {
+    this.app.get("/health", async (req, res) => {
+      const stats = await wsManager.getStats();
       res.json({
         status: "ok",
         timestamp: new Date().toISOString(),
         uptime: process.uptime(),
-        stats: wsManager.getStats(),
+        stats,
       });
     });
 
@@ -71,8 +73,9 @@ class CollaborationServer {
     });
 
     // WebSocket stats (for debugging)
-    this.app.get("/stats", (req, res) => {
-      res.json(wsManager.getStats());
+    this.app.get("/stats", async (req, res) => {
+      const stats = await wsManager.getStats();
+      res.json(stats);
     });
 
     // 404 handler
@@ -97,6 +100,9 @@ class CollaborationServer {
 
   async start() {
     try {
+      // Initialize database connection
+      await databaseService.connect();
+
       // Initialize auth service
       await authService.initialize();
 
@@ -144,15 +150,29 @@ class CollaborationServer {
     }
 
     if (this.server) {
-      this.server.close(() => {
+      this.server.close(async () => {
         console.log("HTTP server closed");
+
+        // Disconnect from database
+        try {
+          await databaseService.disconnect();
+          console.log("Database connection closed");
+        } catch (error) {
+          console.error("Error closing database connection:", error);
+        }
+
         process.exit(0);
       });
     }
 
     // Force exit after 10 seconds
-    setTimeout(() => {
+    setTimeout(async () => {
       console.log("Force closing server");
+      try {
+        await databaseService.disconnect();
+      } catch (error) {
+        console.error("Error during force shutdown:", error);
+      }
       process.exit(1);
     }, 10000);
   }

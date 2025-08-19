@@ -6,8 +6,10 @@ export const config: ServerConfig = {
   corsOrigins: process.env.CORS_ORIGINS ? process.env.CORS_ORIGINS.split(",") : ["*"],
 
   database: {
-    type: "sqlite",
-    filename: process.env.DB_FILENAME || "./collaboration.db",
+    uri:
+      process.env.MONGODB_URI ||
+      process.env.DATABASE_URL ||
+      "mongodb://localhost:27017/collaboration",
   },
 
   auth: {

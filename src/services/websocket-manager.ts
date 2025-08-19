@@ -7,7 +7,7 @@ import {
   WebSocketEvent,
 } from "../types/index";
 import { authService } from "./auth";
-import { memoryStore } from "./memory-store";
+import { mongodbStore } from "./mongodb-store";
 
 export class WebSocketManager {
   private connections = new Map<string, AuthenticatedWebSocket>();
@@ -51,12 +51,16 @@ export class WebSocketManager {
     });
 
     authWs.on("close", () => {
-      this.handleDisconnection(clientId);
+      this.handleDisconnection(clientId).catch((error) => {
+        console.error(`Error during disconnection cleanup for ${clientId}:`, error);
+      });
     });
 
     authWs.on("error", (error) => {
       console.error(`WebSocket error for ${clientId}:`, error);
-      this.handleDisconnection(clientId);
+      this.handleDisconnection(clientId).catch((error) => {
+        console.error(`Error during disconnection cleanup for ${clientId}:`, error);
+      });
     });
   }
 
@@ -68,6 +72,7 @@ export class WebSocketManager {
         case "/auth":
           await this.handleAuth(ws, args, seq_id);
           break;
+
         case "/documents/update": {
           console.log("args", args);
           await this.handleDocumentUpdate(ws, args, seq_id);
@@ -122,24 +127,26 @@ export class WebSocketManager {
     // authService.extractUserIdFromDid(authResult.userDid!);
     ws.username = username;
     ws.document_id = documentId;
-    ws.role = "owner";
     // await authService.getUserRole(documentId, authResult.userDid!);
     ws.authenticated = true;
 
     // Add to document connections
     if (!this.documentConnections.has(documentId)) {
+      ws.role = "owner";
       this.documentConnections.set(documentId, new Set());
+    } else {
+      ws.role = "editor";
     }
     this.documentConnections.get(documentId)!.add(ws.client_id!);
     console.log("this.documentConnections", this.documentConnections);
-    // Add to room members
-    memoryStore.addRoomMember(documentId, {
-      user_id: ws.user_id!,
-      username: ws.username!,
-      role: ws.role,
-      client_id: ws.client_id,
-      joined_at: Date.now(),
-    });
+    // // Add to room members
+    // await mongodbStore.addRoomMember(documentId, {
+    //   user_id: ws.user_id!,
+    //   username: ws.username!,
+    //   role: ws.role,
+    //   client_id: ws.client_id,
+    //   joined_at: Date.now(),
+    // });
 
     // Notify other users about membership change
     this.broadcastToDocument(
@@ -184,21 +191,21 @@ export class WebSocketManager {
     const { data, update_snapshot_ref } = args;
     const document_id = args.document_id || ws.document_id;
     console.log("data", data);
+    console.log("update_snapshot_ref", update_snapshot_ref);
     if (!data) {
       this.sendError(ws, seq_id, "Update data is required", 400);
       return;
     }
 
     // Create update record
-    const update = memoryStore.createUpdate({
+    const update = await mongodbStore.createUpdate({
       id: uuidv4(),
       document_id,
-      agent_id: ws.user_id!,
+      user_id: ws.user_id!,
       data,
       update_type: "yjs_update",
       committed: false,
       commit_cid: null,
-      update_snapshot_ref,
       created_at: Date.now(),
     });
 
@@ -212,7 +219,7 @@ export class WebSocketManager {
           data: {
             id: update.id,
             data: update.data,
-            agent_id: update.agent_id,
+            user_id: update.user_id,
             created_at: update.created_at,
           },
           roomId: document_id,
@@ -227,13 +234,12 @@ export class WebSocketManager {
       seq_id,
       is_handshake_response: false,
       data: {
-        agent_id: update.agent_id,
+        user_id: update.user_id,
         commit_cid: update.commit_cid,
         created_at: update.created_at,
         data: update.data,
         document_id: update.document_id,
         id: update.id,
-        update_snapshot_ref: update.update_snapshot_ref,
         update_type: update.update_type,
       },
     });
@@ -259,10 +265,10 @@ export class WebSocketManager {
     }
 
     // Create commit record
-    const commit = memoryStore.createCommit({
+    const commit = await mongodbStore.createCommit({
       id: uuidv4(),
       document_id,
-      agent_id: ws.user_id!,
+      user_id: ws.user_id!,
       cid,
       data,
       updates,
@@ -275,7 +281,7 @@ export class WebSocketManager {
       seq_id,
       is_handshake_response: false,
       data: {
-        agent_id: commit.agent_id,
+        user_id: commit.user_id,
         cid: commit.cid,
         created_at: commit.created_at,
         data: commit.data,
@@ -294,7 +300,7 @@ export class WebSocketManager {
     const document_id = args.document_id || ws.document_id;
     const { offset = 0, limit = 10, sort = "desc" } = args;
 
-    const commits = memoryStore.getCommitsByDocument(document_id, {
+    const commits = await mongodbStore.getCommitsByDocument(document_id, {
       offset,
       limit,
       sort,
@@ -321,7 +327,7 @@ export class WebSocketManager {
     const document_id = args.document_id || ws.document_id;
     const { offset = 0, limit = 100, sort = "desc", filters = {} } = args;
 
-    const updates = memoryStore.getUpdatesByDocument(document_id, {
+    const updates = await mongodbStore.getUpdatesByDocument(document_id, {
       offset,
       limit,
       sort,
@@ -347,7 +353,7 @@ export class WebSocketManager {
     }
 
     const document_id = args.document_id || ws.document_id;
-    const peers = memoryStore.getRoomMembers(document_id);
+    const peers = this.documentConnections.get(document_id);
 
     this.sendMessage(ws, {
       status: true,
@@ -355,7 +361,7 @@ export class WebSocketManager {
       seq_id,
       is_handshake_response: false,
       data: {
-        peers,
+        peers: Array.from(peers!),
       },
     });
   }
@@ -394,7 +400,7 @@ export class WebSocketManager {
     });
   }
 
-  private handleDisconnection(clientId: string) {
+  private async handleDisconnection(clientId: string) {
     const ws = this.connections.get(clientId);
     if (ws && ws.authenticated && ws.document_id) {
       // Notify other users about membership change BEFORE removing from connections
@@ -428,7 +434,7 @@ export class WebSocketManager {
       }
 
       // Remove from room members
-      memoryStore.removeRoomMember(ws.document_id, ws.user_id!);
+      // await mongodbStore.removeRoomMember(ws.document_id, ws.user_id!);
     }
 
     this.connections.delete(clientId);
@@ -473,14 +479,14 @@ export class WebSocketManager {
     });
   }
 
-  getStats() {
+  async getStats() {
     return {
       totalConnections: this.connections.size,
       authenticatedConnections: Array.from(this.connections.values()).filter(
         (ws) => ws.authenticated
       ).length,
       activeDocuments: this.documentConnections.size,
-      ...memoryStore.getStats(),
+      ...(await mongodbStore.getStats()),
     };
   }
 }
