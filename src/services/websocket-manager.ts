@@ -9,9 +9,17 @@ import {
 import { authService } from "./auth";
 import { mongodbStore } from "./mongodb-store";
 
+interface CollaborationSession {
+  documentId: string;
+  collaborationDid: string;
+  ownerDid: string;
+  clients: Set<string>;
+  ownerClientId: string;
+}
+
 export class WebSocketManager {
   private connections = new Map<string, AuthenticatedWebSocket>();
-  private documentConnections = new Map<string, Set<string>>();
+  private activeSessions = new Map<string, CollaborationSession>();
 
   constructor() {
     this.handleConnection = this.handleConnection.bind(this);
@@ -20,7 +28,7 @@ export class WebSocketManager {
   handleConnection(ws: WebSocket) {
     const clientId = uuidv4();
     const authWs = ws as AuthenticatedWebSocket;
-    authWs.client_id = clientId;
+    authWs.clientId = clientId;
     authWs.authenticated = false;
 
     this.connections.set(clientId, authWs);
@@ -30,12 +38,11 @@ export class WebSocketManager {
     // Send handshake with server DID
     this.sendMessage(authWs, {
       status: true,
-      status_code: 200,
-      seq_id: null,
+      statusCode: 200,
+      seqId: null,
       is_handshake_response: true,
       data: {
-        server_did: "did:key:z6MkvLz3MR8Za2MMq7ezmN7QBH1otrV4p3ecnLCjHto6g4VS",
-        // authService.getServerDid(),
+        server_did: authService.getServerDid(),
         message: "Connected to collaboration server",
       },
     });
@@ -65,85 +72,136 @@ export class WebSocketManager {
   }
 
   private async handleMessage(ws: AuthenticatedWebSocket, message: WebSocketMessage) {
-    const { cmd, args, seq_id } = message;
+    const { cmd, args, seqId } = message;
 
     try {
       switch (cmd) {
         case "/auth":
-          await this.handleAuth(ws, args, seq_id);
+          await this.handleAuth(ws, args, seqId);
           break;
 
         case "/documents/update": {
-          await this.handleDocumentUpdate(ws, args, seq_id);
+          await this.handleDocumentUpdate(ws, args, seqId);
           break;
         }
         case "/documents/commit":
-          await this.handleDocumentCommit(ws, args, seq_id);
+          await this.handleDocumentCommit(ws, args, seqId);
           break;
         case "/documents/commit/history":
-          await this.handleCommitHistory(ws, args, seq_id);
+          await this.handleCommitHistory(ws, args, seqId);
           break;
         case "/documents/update/history":
-          await this.handleUpdateHistory(ws, args, seq_id);
+          await this.handleUpdateHistory(ws, args, seqId);
           break;
         case "/documents/peers/list":
-          await this.handlePeersList(ws, args, seq_id);
+          await this.handlePeersList(ws, args, seqId);
           break;
         case "/documents/awareness":
-          await this.handleAwareness(ws, args, seq_id);
+          await this.handleAwareness(ws, args, seqId);
           break;
         default:
-          this.sendError(ws, seq_id, `Unknown command: ${cmd}`, 404);
+          this.sendError(ws, seqId, `Unknown command: ${cmd}`, 404);
       }
     } catch (error) {
       console.error(`Error handling command ${cmd}:`, error);
-      this.sendError(ws, seq_id, "Internal server error", 500);
+      this.sendError(ws, seqId, "Internal server error", 500);
     }
   }
 
-  private async handleAuth(ws: AuthenticatedWebSocket, args: any, seq_id: string) {
-    const { username, token } = args;
+  private async setupSession(ws: AuthenticatedWebSocket, args: any) {
+    const { documentId, ownerToken, ownerAddress, contractAddress, collaborationDid } = args;
 
-    if (!username || !token) {
-      this.sendError(ws, seq_id, "Username and token are required", 400);
+    if (!documentId || !ownerToken || !collaborationDid) {
+      this.sendError(ws, null, "Document ID and token are required", 400);
+      return false;
+    }
+
+    const ownerDid = await authService.verifyOwnerToken(ownerToken, contractAddress, ownerAddress);
+
+    if (!ownerDid) {
+      this.sendError(ws, null, "Authentication failed", 401);
+      return false;
+    }
+
+    ws.authenticated = true;
+
+    ws.role = "owner";
+    this.activeSessions.set(documentId, {
+      documentId,
+      collaborationDid: collaborationDid,
+      ownerDid: ownerDid,
+      ownerClientId: ws.clientId!,
+      clients: new Set([ws.clientId!]),
+    });
+    console.log("SETUP DONE", documentId);
+    return true;
+  }
+
+  private async handleJoinSession(ws: AuthenticatedWebSocket, args: any) {
+    const { documentId, collaborationToken } = args;
+
+    if (!documentId || !collaborationToken) {
+      this.sendError(ws, null, "Document ID and token are required", 400);
+      return false;
+    }
+
+    const session = this.activeSessions.get(documentId);
+
+    if (!session) {
+      this.sendError(ws, null, "Session not found", 404);
+      return false;
+    }
+
+    const userDid = await authService.verifyCollaborationToken(
+      collaborationToken,
+      session.collaborationDid
+    );
+
+    if (!userDid) {
+      this.sendError(ws, null, "Authentication failed", 401);
+      return false;
+    }
+
+    ws.authenticated = true;
+    ws.role = "editor";
+
+    ws.documentId = documentId;
+    this.activeSessions.get(documentId)!.clients.add(ws.clientId!);
+
+    console.log("JOINED SESSION", documentId);
+    return true;
+  }
+
+  private async handleAuth(ws: AuthenticatedWebSocket, args: any, seqId: string) {
+    const { username, collaborationToken } = args;
+
+    if (!username || !collaborationToken) {
+      this.sendError(ws, seqId, "Username and token are required", 400);
       return;
     }
 
-    // For now, we'll extract document_id from args or use a default
-    const documentId = args.document_id || "default-room";
+    const documentId = args.documentId;
 
-    // const authResult = await authService.verifyUCAN(token, documentId);
-
-    // if (!authResult.isValid) {
-    //   this.sendError(ws, seq_id, authResult.error || "Authentication failed", 401);
-    //   return;
-    // }
-
-    // Set user information
-    ws.user_id = username;
-    // authService.extractUserIdFromDid(authResult.userDid!);
-    ws.username = username;
-    ws.document_id = documentId;
-    // await authService.getUserRole(documentId, authResult.userDid!);
-    ws.authenticated = true;
-
-    // Add to document connections
-    if (!this.documentConnections.has(documentId)) {
-      ws.role = "owner";
-      this.documentConnections.set(documentId, new Set());
-    } else {
-      ws.role = "editor";
+    if (!documentId) {
+      this.sendError(ws, seqId, "Document ID is required", 400);
+      return;
     }
-    this.documentConnections.get(documentId)!.add(ws.client_id!);
 
-    // // Add to room members
-    // await mongodbStore.addRoomMember(documentId, {
-    //   user_id: ws.user_id!,
-    //   username: ws.username!,
-    //   role: ws.role,
-    //   client_id: ws.client_id,
-    //   joined_at: Date.now(),
-    // });
+    ws.userId = username;
+    ws.username = username;
+    ws.documentId = documentId;
+
+    let isVerified = false;
+    if (!this.activeSessions.has(documentId)) {
+      isVerified = await this.setupSession(ws, args);
+    } else {
+      isVerified = await this.handleJoinSession(ws, args);
+    }
+
+    if (!isVerified) {
+      this.sendError(ws, seqId, "Authentication failed", 401);
+      return;
+    }
 
     // Notify other users about membership change
     this.broadcastToDocument(
@@ -155,7 +213,7 @@ export class WebSocketManager {
           data: {
             action: "user_joined",
             user: {
-              user_id: ws.user_id,
+              userId: ws.userId,
               username: ws.username,
               role: ws.role,
             },
@@ -163,51 +221,64 @@ export class WebSocketManager {
           roomId: documentId,
         },
       },
-      ws.client_id
+      ws.clientId
     );
 
     this.sendMessage(ws, {
       status: true,
-      status_code: 200,
-      seq_id,
+      statusCode: 200,
+      seqId,
       is_handshake_response: true,
       data: {
         message: "Authentication successful",
-        user_id: ws.user_id,
+        userId: ws.userId,
         role: ws.role,
       },
     });
   }
 
-  private async handleDocumentUpdate(ws: AuthenticatedWebSocket, args: any, seq_id: string) {
-    if (!ws.authenticated || !ws.document_id) {
-      this.sendError(ws, seq_id, "Not authenticated", 401);
+  private async handleDocumentUpdate(ws: AuthenticatedWebSocket, args: any, seqId: string) {
+    if (!ws.authenticated || !ws.documentId) {
+      this.sendError(ws, seqId, "Not authenticated", 401);
       return;
     }
 
-    const { data, update_snapshot_ref } = args;
-    const document_id = args.document_id || ws.document_id;
+    const { data, collaborationToken } = args;
+    const documentId = args.documentId || ws.documentId;
 
     if (!data) {
-      this.sendError(ws, seq_id, "Update data is required", 400);
+      this.sendError(ws, seqId, "Update data is required", 400);
+      return;
+    }
+
+    const collaborationDid = this.activeSessions.get(documentId)?.collaborationDid;
+
+    const isVerified = await authService.verifyCollaborationToken(
+      collaborationToken,
+      collaborationDid!
+    );
+
+    console.log("UPDATE IS VERIFIED", isVerified);
+    if (!isVerified) {
+      this.sendError(ws, seqId, "Authentication failed", 401);
       return;
     }
 
     // Create update record
     const update = await mongodbStore.createUpdate({
       id: uuidv4(),
-      document_id,
-      user_id: ws.user_id!,
+      documentId,
+      userId: ws.userId!,
       data,
-      update_type: "yjs_update",
+      updateType: "yjs_update",
       committed: false,
-      commit_cid: null,
-      created_at: Date.now(),
+      commitCid: null,
+      createdAt: Date.now(),
     });
 
     // Broadcast update to other clients
     this.broadcastToDocument(
-      document_id,
+      documentId,
       {
         type: "CONTENT_UPDATE",
         event_type: "CONTENT_UPDATE",
@@ -215,86 +286,97 @@ export class WebSocketManager {
           data: {
             id: update.id,
             data: update.data,
-            user_id: update.user_id,
-            created_at: update.created_at,
+            userId: update.userId,
+            createdAt: update.createdAt,
           },
-          roomId: document_id,
+          roomId: documentId,
         },
       },
-      ws.client_id
+      ws.clientId
     );
 
     this.sendMessage(ws, {
       status: true,
-      status_code: 200,
-      seq_id,
+      statusCode: 200,
+      seqId,
       is_handshake_response: false,
       data: {
-        user_id: update.user_id,
-        commit_cid: update.commit_cid,
-        created_at: update.created_at,
+        userId: update.userId,
+        commitCid: update.commitCid,
+        createdAt: update.createdAt,
         data: update.data,
-        document_id: update.document_id,
+        documentId: update.documentId,
         id: update.id,
-        update_type: update.update_type,
+        updateType: update.updateType,
       },
     });
   }
 
-  private async handleDocumentCommit(ws: AuthenticatedWebSocket, args: any, seq_id: string) {
-    if (!ws.authenticated || !ws.document_id) {
-      this.sendError(ws, seq_id, "Not authenticated", 401);
+  private async handleDocumentCommit(ws: AuthenticatedWebSocket, args: any, seqId: string) {
+    if (!ws.authenticated || !ws.documentId) {
+      this.sendError(ws, seqId, "Not authenticated", 401);
       return;
     }
 
     if (ws.role !== "owner") {
-      this.sendError(ws, seq_id, "Only owners can create commits", 403);
+      this.sendError(ws, seqId, "Only owners can create commits", 403);
       return;
     }
 
-    const { updates, cid } = args;
-    const document_id = args.document_id || ws.document_id;
+    const { updates, cid, ownerToken } = args;
+    const documentId = args.documentId || ws.documentId;
 
     if (!updates || !Array.isArray(updates) || !cid) {
-      this.sendError(ws, seq_id, "Updates array and CID are required", 400);
+      this.sendError(ws, seqId, "Updates array and CID are required", 400);
+      return;
+    }
+
+    const isVerified = await authService.verifyOwnerToken(
+      ownerToken,
+      args.contractAddress,
+      args.ownerAddress
+    );
+
+    if (!isVerified) {
+      this.sendError(ws, seqId, "Authentication failed", 401);
       return;
     }
 
     // Create commit record
     const commit = await mongodbStore.createCommit({
       id: uuidv4(),
-      document_id,
-      user_id: ws.user_id!,
+      documentId,
+      userId: ws.userId!,
       cid,
       updates,
-      created_at: Date.now(),
+      createdAt: Date.now(),
     });
 
     this.sendMessage(ws, {
       status: true,
-      status_code: 200,
-      seq_id,
+      statusCode: 200,
+      seqId,
       is_handshake_response: false,
       data: {
-        user_id: commit.user_id,
+        userId: commit.userId,
         cid: commit.cid,
-        created_at: commit.created_at,
-        document_id: commit.document_id,
+        createdAt: commit.createdAt,
+        documentId: commit.documentId,
         updates: commit.updates,
       },
     });
   }
 
-  private async handleCommitHistory(ws: AuthenticatedWebSocket, args: any, seq_id: string) {
-    if (!ws.authenticated || !ws.document_id) {
-      this.sendError(ws, seq_id, "Not authenticated", 401);
+  private async handleCommitHistory(ws: AuthenticatedWebSocket, args: any, seqId: string) {
+    if (!ws.authenticated || !ws.documentId) {
+      this.sendError(ws, seqId, "Not authenticated", 401);
       return;
     }
 
-    const document_id = args.document_id || ws.document_id;
+    const documentId = args.documentId || ws.documentId;
     const { offset = 0, limit = 10, sort = "desc" } = args;
 
-    const commits = await mongodbStore.getCommitsByDocument(document_id, {
+    const commits = await mongodbStore.getCommitsByDocument(documentId, {
       offset,
       limit,
       sort,
@@ -302,8 +384,8 @@ export class WebSocketManager {
 
     this.sendMessage(ws, {
       status: true,
-      status_code: 200,
-      seq_id,
+      statusCode: 200,
+      seqId,
       is_handshake_response: false,
       data: {
         history: commits,
@@ -312,16 +394,16 @@ export class WebSocketManager {
     });
   }
 
-  private async handleUpdateHistory(ws: AuthenticatedWebSocket, args: any, seq_id: string) {
-    if (!ws.authenticated || !ws.document_id) {
-      this.sendError(ws, seq_id, "Not authenticated", 401);
+  private async handleUpdateHistory(ws: AuthenticatedWebSocket, args: any, seqId: string) {
+    if (!ws.authenticated || !ws.documentId) {
+      this.sendError(ws, seqId, "Not authenticated", 401);
       return;
     }
 
-    const document_id = args.document_id || ws.document_id;
+    const documentId = args.documentId || ws.documentId;
     const { offset = 0, limit = 100, sort = "desc", filters = {} } = args;
 
-    const updates = await mongodbStore.getUpdatesByDocument(document_id, {
+    const updates = await mongodbStore.getUpdatesByDocument(documentId, {
       offset,
       limit,
       sort,
@@ -330,8 +412,8 @@ export class WebSocketManager {
 
     this.sendMessage(ws, {
       status: true,
-      status_code: 200,
-      seq_id,
+      statusCode: 200,
+      seqId,
       is_handshake_response: false,
       data: {
         history: updates,
@@ -340,53 +422,53 @@ export class WebSocketManager {
     });
   }
 
-  private async handlePeersList(ws: AuthenticatedWebSocket, args: any, seq_id: string) {
-    if (!ws.authenticated || !ws.document_id) {
-      this.sendError(ws, seq_id, "Not authenticated", 401);
+  private async handlePeersList(ws: AuthenticatedWebSocket, args: any, seqId: string) {
+    if (!ws.authenticated || !ws.documentId) {
+      this.sendError(ws, seqId, "Not authenticated", 401);
       return;
     }
 
-    const document_id = args.document_id || ws.document_id;
-    const peers = this.documentConnections.get(document_id);
+    const documentId = args.documentId || ws.documentId;
+    const peers = this.activeSessions.get(documentId)?.clients;
 
     this.sendMessage(ws, {
       status: true,
-      status_code: 200,
-      seq_id,
+      statusCode: 200,
+      seqId,
       is_handshake_response: false,
       data: {
-        peers: Array.from(peers!),
+        peers: Array.from(peers || []),
       },
     });
   }
 
-  private async handleAwareness(ws: AuthenticatedWebSocket, args: any, seq_id: string) {
-    if (!ws.authenticated || !ws.document_id) {
-      this.sendError(ws, seq_id, "Not authenticated", 401);
+  private async handleAwareness(ws: AuthenticatedWebSocket, args: any, seqId: string) {
+    if (!ws.authenticated || !ws.documentId) {
+      this.sendError(ws, seqId, "Not authenticated", 401);
       return;
     }
 
-    const document_id = args.document_id || ws.document_id;
+    const documentId = args.documentId || ws.documentId;
     const { data } = args;
 
     // Broadcast awareness update to other clients
     this.broadcastToDocument(
-      document_id,
+      documentId,
       {
         type: "AWARENESS_UPDATE",
         event_type: "AWARENESS_UPDATE",
         event: {
           data,
-          roomId: document_id,
+          roomId: documentId,
         },
       },
-      ws.client_id
+      ws.clientId
     );
 
     this.sendMessage(ws, {
       status: true,
-      status_code: 200,
-      seq_id,
+      statusCode: 200,
+      seqId,
       is_handshake_response: false,
       data: {
         message: "Awareness update broadcasted",
@@ -396,10 +478,10 @@ export class WebSocketManager {
 
   private async handleDisconnection(clientId: string) {
     const ws = this.connections.get(clientId);
-    if (ws && ws.authenticated && ws.document_id) {
+    if (ws && ws.authenticated && ws.documentId) {
       // Notify other users about membership change BEFORE removing from connections
       this.broadcastToDocument(
-        ws.document_id,
+        ws.documentId,
         {
           type: "ROOM_UPDATE",
           event_type: "ROOM_MEMBERSHIP_CHANGE",
@@ -407,28 +489,25 @@ export class WebSocketManager {
             data: {
               action: "user_left",
               user: {
-                user_id: ws.user_id,
+                userId: ws.userId,
                 username: ws.username,
                 role: ws.role,
               },
             },
-            roomId: ws.document_id,
+            roomId: ws.documentId,
           },
         },
         clientId
       );
 
       // Remove from document connections
-      const docConnections = this.documentConnections.get(ws.document_id);
+      const docConnections = this.activeSessions.get(ws.documentId);
       if (docConnections) {
-        docConnections.delete(clientId);
-        if (docConnections.size === 0) {
-          this.documentConnections.delete(ws.document_id);
+        docConnections.clients.delete(clientId);
+        if (docConnections.clients.size === 0) {
+          this.activeSessions.delete(ws.documentId);
         }
       }
-
-      // Remove from room members
-      // await mongodbStore.removeRoomMember(ws.document_id, ws.user_id!);
     }
 
     this.connections.delete(clientId);
@@ -443,26 +522,26 @@ export class WebSocketManager {
 
   private sendError(
     ws: AuthenticatedWebSocket,
-    seq_id: string | null,
+    seqId: string | null,
     error: string,
-    status_code: number
+    statusCode: number
   ) {
     this.sendMessage(ws, {
       status: false,
-      status_code,
-      seq_id,
+      statusCode,
+      seqId,
       is_handshake_response: false,
       err: error,
     });
   }
 
   private broadcastToDocument(documentId: string, event: WebSocketEvent, excludeClientId?: string) {
-    const connections = this.documentConnections.get(documentId);
+    const connections = this.activeSessions.get(documentId);
 
     if (!connections) return;
 
     const message = JSON.stringify(event);
-    connections.forEach((clientId) => {
+    connections.clients.forEach((clientId: string) => {
       if (clientId === excludeClientId) return;
 
       const ws = this.connections.get(clientId);
@@ -478,7 +557,7 @@ export class WebSocketManager {
       authenticatedConnections: Array.from(this.connections.values()).filter(
         (ws) => ws.authenticated
       ).length,
-      activeDocuments: this.documentConnections.size,
+      activeSessions: this.activeSessions.size,
       ...(await mongodbStore.getStats()),
     };
   }

@@ -2,34 +2,34 @@ import { WebSocket } from "ws";
 
 export interface DocumentUpdate {
   id: string;
-  document_id: string;
-  user_id: string;
+  documentId: string;
+  userId: string;
   data: string; // encrypted Y.js update
-  update_type: string;
+  updateType: string;
   committed: boolean;
-  commit_cid: string | null;
-  created_at: number;
+  commitCid: string | null;
+  createdAt: number;
 }
 
 export interface DocumentCommit {
   id: string;
-  document_id: string;
-  user_id: string;
+  documentId: string;
+  userId: string;
   cid: string; // IPFS hash
   updates: string[]; // list of update IDs included in this commit
-  created_at: number;
+  createdAt: number;
 }
 
 export interface WebSocketMessage {
   cmd: string;
   args: Record<string, any>;
-  seq_id: string;
+  seqId: string;
 }
 
 export interface WebSocketResponse {
   status: boolean;
-  status_code: number;
-  seq_id: string | null;
+  statusCode: number;
+  seqId: string | null;
   is_handshake_response: boolean;
   data?: Record<string, any>;
   err?: string;
@@ -46,12 +46,12 @@ export interface WebSocketEvent {
 }
 
 export interface AuthenticatedWebSocket extends WebSocket {
-  user_id?: string;
+  userId?: string;
   username?: string;
-  document_id?: string;
+  documentId?: string;
   role?: "owner" | "editor";
   authenticated?: boolean;
-  client_id?: string;
+  clientId?: string;
 }
 
 export interface IPFSUploadResponse {
@@ -95,4 +95,5 @@ export interface ServerConfig {
     windowMs: number;
     max: number;
   };
+  rpcURL: string;
 }

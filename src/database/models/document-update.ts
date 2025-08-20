@@ -3,29 +3,29 @@ import mongoose, { Schema, Document as MongooseDocument } from "mongoose";
 // Update Schema
 interface IDocumentUpdate extends MongooseDocument {
   _id: string;
-  document_id: string;
-  user_id: string;
+  documentId: string;
+  userId: string;
   data: string;
-  update_type: string;
+  updateType: string;
   committed: boolean;
-  commit_cid: string | null;
-  created_at: number;
+  commitCid: string | null;
+  createdAt: number;
 }
 
 const DocumentUpdateSchema = new Schema<IDocumentUpdate>({
   _id: { type: String, required: true },
-  document_id: { type: String, required: true, index: true },
-  user_id: { type: String, required: true },
+  documentId: { type: String, required: true, index: true },
+  userId: { type: String, required: true },
   data: { type: String, required: true },
-  update_type: { type: String, required: true },
+  updateType: { type: String, required: true },
   committed: { type: Boolean, default: false, index: true },
-  commit_cid: { type: String, default: null },
-  created_at: { type: Number, required: true, index: true },
+  commitCid: { type: String, default: null },
+  createdAt: { type: Number, required: true, index: true },
 });
 
 // Compound indexes for efficient queries
-DocumentUpdateSchema.index({ document_id: 1, created_at: 1 });
-DocumentUpdateSchema.index({ document_id: 1, committed: 1, created_at: 1 });
+DocumentUpdateSchema.index({ documentId: 1, createdAt: 1 });
+DocumentUpdateSchema.index({ documentId: 1, committed: 1, createdAt: 1 });
 
 // Create Model
 export const DocumentUpdateModel = mongoose.model<IDocumentUpdate>(

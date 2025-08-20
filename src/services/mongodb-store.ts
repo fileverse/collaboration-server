@@ -7,13 +7,13 @@ export class MongoDBStore {
     try {
       const mongoUpdate = new DocumentUpdateModel({
         _id: update.id,
-        document_id: update.document_id,
-        user_id: update.user_id,
+        documentId: update.documentId,
+        userId: update.userId,
         data: update.data,
-        update_type: update.update_type,
+        updateType: update.updateType,
         committed: update.committed,
-        commit_cid: update.commit_cid,
-        created_at: update.created_at,
+        commitCid: update.commitCid,
+        createdAt: update.createdAt,
       });
 
       await mongoUpdate.save();
@@ -31,13 +31,13 @@ export class MongoDBStore {
 
       return {
         id: update._id,
-        document_id: update.document_id,
-        user_id: update.user_id,
+        documentId: update.documentId,
+        userId: update.userId,
         data: update.data,
-        update_type: update.update_type,
+        updateType: update.updateType,
         committed: update.committed,
-        commit_cid: update.commit_cid,
-        created_at: update.created_at,
+        commitCid: update.commitCid,
+        createdAt: update.createdAt,
       };
     } catch (error) {
       console.error("Error getting update:", error);
@@ -55,7 +55,7 @@ export class MongoDBStore {
     } = {}
   ): Promise<DocumentUpdate[]> {
     try {
-      let query = DocumentUpdateModel.find({ document_id: documentId });
+      let query = DocumentUpdateModel.find({ documentId: documentId });
 
       // Filter by committed status
       if (options.committed !== undefined) {
@@ -64,7 +64,7 @@ export class MongoDBStore {
 
       // Sort by creation time
       const sortOrder = options.sort === "desc" ? -1 : 1;
-      query = query.sort({ created_at: sortOrder });
+      query = query.sort({ createdAt: sortOrder });
 
       // Apply pagination
       if (options.offset) {
@@ -78,13 +78,13 @@ export class MongoDBStore {
 
       return updates.map((update) => ({
         id: update._id,
-        document_id: update.document_id,
-        user_id: update.user_id,
+        documentId: update.documentId,
+        userId: update.userId,
         data: update.data,
-        update_type: update.update_type,
+        updateType: update.updateType,
         committed: update.committed,
-        commit_cid: update.commit_cid,
-        created_at: update.created_at,
+        commitCid: update.commitCid,
+        createdAt: update.createdAt,
       }));
     } catch (error) {
       console.error("Error getting updates by document:", error);
@@ -98,7 +98,7 @@ export class MongoDBStore {
         { _id: { $in: updateIds } },
         {
           committed: true,
-          commit_cid: commitId,
+          commitCid: commitId,
         }
       );
     } catch (error) {
@@ -112,11 +112,11 @@ export class MongoDBStore {
     try {
       const mongoCommit = new DocumentCommitModel({
         _id: commit.id,
-        document_id: commit.document_id,
-        user_id: commit.user_id,
+        documentId: commit.documentId,
+        userId: commit.userId,
         cid: commit.cid,
         updates: commit.updates,
-        created_at: commit.created_at,
+        createdAt: commit.createdAt,
       });
 
       await mongoCommit.save();
@@ -138,11 +138,11 @@ export class MongoDBStore {
 
       return {
         id: commit._id,
-        document_id: commit.document_id,
-        user_id: commit.user_id,
+        documentId: commit.documentId,
+        userId: commit.userId,
         cid: commit.cid,
         updates: commit.updates,
-        created_at: commit.created_at,
+        createdAt: commit.createdAt,
       };
     } catch (error) {
       console.error("Error getting commit:", error);
@@ -159,11 +159,11 @@ export class MongoDBStore {
     } = {}
   ): Promise<DocumentCommit[]> {
     try {
-      let query = DocumentCommitModel.find({ document_id: documentId });
+      let query = DocumentCommitModel.find({ documentId: documentId });
 
       // Sort by creation time
       const sortOrder = options.sort === "desc" ? -1 : 1;
-      query = query.sort({ created_at: sortOrder });
+      query = query.sort({ createdAt: sortOrder });
 
       // Apply pagination
       if (options.offset) {
@@ -177,11 +177,11 @@ export class MongoDBStore {
 
       return commits.map((commit) => ({
         id: commit._id,
-        document_id: commit.document_id,
-        user_id: commit.user_id,
+        documentId: commit.documentId,
+        userId: commit.userId,
         cid: commit.cid,
         updates: commit.updates,
-        created_at: commit.created_at,
+        createdAt: commit.createdAt,
       }));
     } catch (error) {
       console.error("Error getting commits by document:", error);
@@ -192,12 +192,12 @@ export class MongoDBStore {
   // Room member management
   // async getRoomMembers(documentId: string): Promise<RoomMember[]> {
   //   try {
-  //     const members = await RoomMemberModel.find({ document_id: documentId });
+  //     const members = await RoomMemberModel.find({ documentId: documentId });
   //     return members.map((member) => ({
-  //       user_id: member.user_id,
+  //       userId: member.userId,
   //       username: member.username,
   //       role: member.role,
-  //       client_id: member.client_id,
+  //       clientId: member.clientId,
   //       joined_at: member.joined_at,
   //     }));
   //   } catch (error) {
@@ -209,11 +209,11 @@ export class MongoDBStore {
   // async addRoomMember(documentId: string, member: RoomMember) {
   //   try {
   //     await RoomMemberModel.findOneAndUpdate(
-  //       { document_id: documentId, user_id: member.user_id },
+  //       { documentId: documentId, userId: member.userId },
   //       {
   //         username: member.username,
   //         role: member.role,
-  //         client_id: member.client_id,
+  //         clientId: member.clientId,
   //         joined_at: member.joined_at,
   //       },
   //       { upsert: true, new: true }
@@ -227,8 +227,8 @@ export class MongoDBStore {
   // async removeRoomMember(documentId: string, userId: string) {
   //   try {
   //     await RoomMemberModel.deleteOne({
-  //       document_id: documentId,
-  //       user_id: userId,
+  //       documentId: documentId,
+  //       userId: userId,
   //     });
   //   } catch (error) {
   //     console.error("Error removing room member:", error);
@@ -239,17 +239,17 @@ export class MongoDBStore {
   // async getRoomMember(documentId: string, userId: string): Promise<RoomMember | undefined> {
   //   try {
   //     const member = await RoomMemberModel.findOne({
-  //       document_id: documentId,
-  //       user_id: userId,
+  //       documentId: documentId,
+  //       userId: userId,
   //     });
 
   //     if (!member) return undefined;
 
   //     return {
-  //       user_id: member.user_id,
+  //       userId: member.userId,
   //       username: member.username,
   //       role: member.role,
-  //       client_id: member.client_id,
+  //       clientId: member.clientId,
   //       joined_at: member.joined_at,
   //     };
   //   } catch (error) {

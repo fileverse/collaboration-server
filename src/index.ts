@@ -103,9 +103,6 @@ class CollaborationServer {
       // Initialize database connection
       await databaseService.connect();
 
-      // Initialize auth service
-      await authService.initialize();
-
       // Create HTTP server
       this.server = createServer(this.app);
 

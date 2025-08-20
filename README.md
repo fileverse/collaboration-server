@@ -81,9 +81,9 @@ Connect to `ws://localhost:5000/` and send JSON messages:
   "args": {
     "username": "user123",
     "token": "ucan_token_here",
-    "document_id": "room123"
+    "documentId": "room123"
   },
-  "seq_id": "unique_id"
+  "seqId": "unique_id"
 }
 ```
 
@@ -93,11 +93,11 @@ Connect to `ws://localhost:5000/` and send JSON messages:
 {
   "cmd": "/documents/update",
   "args": {
-    "document_id": "room123",
+    "documentId": "room123",
     "data": "encrypted_yjs_update",
     "update_snapshot_ref": null
   },
-  "seq_id": "unique_id"
+  "seqId": "unique_id"
 }
 ```
 
@@ -107,12 +107,12 @@ Connect to `ws://localhost:5000/` and send JSON messages:
 {
   "cmd": "/documents/commit",
   "args": {
-    "document_id": "room123",
+    "documentId": "room123",
     "updates": ["update_id_1", "update_id_2"],
     "cid": "ipfs_hash",
     "data": "encrypted_document_state"
   },
-  "seq_id": "unique_id"
+  "seqId": "unique_id"
 }
 ```
 
@@ -122,9 +122,9 @@ Connect to `ws://localhost:5000/` and send JSON messages:
 {
   "cmd": "/documents/peers/list",
   "args": {
-    "document_id": "room123"
+    "documentId": "room123"
   },
-  "seq_id": "unique_id"
+  "seqId": "unique_id"
 }
 ```
 
@@ -134,12 +134,12 @@ Connect to `ws://localhost:5000/` and send JSON messages:
 {
   "cmd": "/documents/awareness",
   "args": {
-    "document_id": "room123",
+    "documentId": "room123",
     "data": {
       "position": "encrypted_cursor_data"
     }
   },
-  "seq_id": "unique_id"
+  "seqId": "unique_id"
 }
 ```
 
