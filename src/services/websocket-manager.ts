@@ -258,7 +258,6 @@ export class WebSocketManager {
       collaborationDid!
     );
 
-    console.log("UPDATE IS VERIFIED", isVerified);
     if (!isVerified) {
       this.sendError(ws, seqId, "Authentication failed", 401);
       return;
