@@ -256,7 +256,7 @@ export class WebSocketManager {
       return;
     }
 
-    const { updates, cid, data } = args;
+    const { updates, cid } = args;
     const document_id = args.document_id || ws.document_id;
 
     if (!updates || !Array.isArray(updates) || !cid) {
@@ -270,7 +270,6 @@ export class WebSocketManager {
       document_id,
       user_id: ws.user_id!,
       cid,
-      data,
       updates,
       created_at: Date.now(),
     });
@@ -284,7 +283,6 @@ export class WebSocketManager {
         user_id: commit.user_id,
         cid: commit.cid,
         created_at: commit.created_at,
-        data: commit.data,
         document_id: commit.document_id,
         updates: commit.updates,
       },

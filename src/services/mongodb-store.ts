@@ -115,7 +115,6 @@ export class MongoDBStore {
         document_id: commit.document_id,
         user_id: commit.user_id,
         cid: commit.cid,
-        data: commit.data,
         updates: commit.updates,
         created_at: commit.created_at,
       });
@@ -142,7 +141,6 @@ export class MongoDBStore {
         document_id: commit.document_id,
         user_id: commit.user_id,
         cid: commit.cid,
-        data: commit.data,
         updates: commit.updates,
         created_at: commit.created_at,
       };
@@ -182,7 +180,6 @@ export class MongoDBStore {
         document_id: commit.document_id,
         user_id: commit.user_id,
         cid: commit.cid,
-        data: commit.data,
         updates: commit.updates,
         created_at: commit.created_at,
       }));

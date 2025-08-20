@@ -1,4 +1,6 @@
 import { ServerConfig } from "../types/index";
+import dotenv from "dotenv";
+dotenv.config();
 
 export const config: ServerConfig = {
   port: parseInt(process.env.PORT || "5001"),
@@ -6,10 +8,7 @@ export const config: ServerConfig = {
   corsOrigins: process.env.CORS_ORIGINS ? process.env.CORS_ORIGINS.split(",") : ["*"],
 
   database: {
-    uri:
-      process.env.MONGODB_URI ||
-      process.env.DATABASE_URL ||
-      "mongodb://localhost:27017/collaboration",
+    uri: process.env.MONGODB_URI || "mongodb://localhost:27017/collaboration",
   },
 
   auth: {

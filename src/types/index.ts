@@ -16,7 +16,6 @@ export interface DocumentCommit {
   document_id: string;
   user_id: string;
   cid: string; // IPFS hash
-  data: string | null; // encrypted document state
   updates: string[]; // list of update IDs included in this commit
   created_at: number;
 }
