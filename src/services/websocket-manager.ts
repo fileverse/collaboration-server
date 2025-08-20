@@ -74,7 +74,6 @@ export class WebSocketManager {
           break;
 
         case "/documents/update": {
-          console.log("args", args);
           await this.handleDocumentUpdate(ws, args, seq_id);
           break;
         }
@@ -110,8 +109,6 @@ export class WebSocketManager {
       return;
     }
 
-    console.log(args.document_id, "document_id");
-
     // For now, we'll extract document_id from args or use a default
     const documentId = args.document_id || "default-room";
 
@@ -138,7 +135,7 @@ export class WebSocketManager {
       ws.role = "editor";
     }
     this.documentConnections.get(documentId)!.add(ws.client_id!);
-    console.log("this.documentConnections", this.documentConnections);
+
     // // Add to room members
     // await mongodbStore.addRoomMember(documentId, {
     //   user_id: ws.user_id!,
@@ -190,8 +187,7 @@ export class WebSocketManager {
 
     const { data, update_snapshot_ref } = args;
     const document_id = args.document_id || ws.document_id;
-    console.log("data", data);
-    console.log("update_snapshot_ref", update_snapshot_ref);
+
     if (!data) {
       this.sendError(ws, seq_id, "Update data is required", 400);
       return;
@@ -461,9 +457,8 @@ export class WebSocketManager {
   }
 
   private broadcastToDocument(documentId: string, event: WebSocketEvent, excludeClientId?: string) {
-    console.log("documentId", documentId);
     const connections = this.documentConnections.get(documentId);
-    console.log("connections", connections);
+
     if (!connections) return;
 
     const message = JSON.stringify(event);
