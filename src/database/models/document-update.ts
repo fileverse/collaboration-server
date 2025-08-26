@@ -1,6 +1,5 @@
 import mongoose, { Schema, Document as MongooseDocument } from "mongoose";
 
-// Update Schema
 interface IDocumentUpdate extends MongooseDocument {
   _id: string;
   documentId: string;
@@ -23,15 +22,17 @@ const DocumentUpdateSchema = new Schema<IDocumentUpdate>({
   createdAt: { type: Number, required: true, index: true },
 });
 
-// Compound indexes for efficient queries
-DocumentUpdateSchema.index({ documentId: 1, createdAt: 1 });
+DocumentUpdateSchema.index(
+  { documentId: 1, createdAt: 1 },
+  {
+    partialFilterExpression: { committed: false },
+  }
+);
 DocumentUpdateSchema.index({ documentId: 1, committed: 1, createdAt: 1 });
 
-// Create Model
 export const DocumentUpdateModel = mongoose.model<IDocumentUpdate>(
   "DocumentUpdate",
   DocumentUpdateSchema
 );
 
-// Export interface for type checking
 export type { IDocumentUpdate };

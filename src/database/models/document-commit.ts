@@ -1,6 +1,5 @@
 import mongoose, { Schema, Document as MongooseDocument } from "mongoose";
 
-// Commit Schema
 interface IDocumentCommit extends MongooseDocument {
   _id: string;
   documentId: string;
@@ -21,14 +20,11 @@ const DocumentCommitSchema = new Schema<IDocumentCommit>({
   createdAt: { type: Number, required: true, index: true },
 });
 
-// Compound index for efficient queries
 DocumentCommitSchema.index({ documentId: 1, createdAt: 1 });
 
-// Create Model
 export const DocumentCommitModel = mongoose.model<IDocumentCommit>(
   "DocumentCommit",
   DocumentCommitSchema
 );
 
-// Export interface for type checking
 export type { IDocumentCommit };

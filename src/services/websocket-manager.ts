@@ -8,18 +8,10 @@ import {
 } from "../types/index";
 import { authService } from "./auth";
 import { mongodbStore } from "./mongodb-store";
-
-interface CollaborationSession {
-  documentId: string;
-  collaborationDid: string;
-  ownerDid: string;
-  clients: Set<string>;
-  ownerClientId: string;
-}
+import { sessionManager } from "./session-manager";
 
 export class WebSocketManager {
   private connections = new Map<string, AuthenticatedWebSocket>();
-  private activeSessions = new Map<string, CollaborationSession>();
 
   constructor() {
     this.handleConnection = this.handleConnection.bind(this);
@@ -99,6 +91,9 @@ export class WebSocketManager {
         case "/documents/awareness":
           await this.handleAwareness(ws, args, seqId);
           break;
+        case "/documents/terminate":
+          await this.handleTerminateSession(ws, args, seqId);
+          break;
         default:
           this.sendError(ws, seqId, `Unknown command: ${cmd}`, 404);
       }
@@ -106,6 +101,47 @@ export class WebSocketManager {
       console.error(`Error handling command ${cmd}:`, error);
       this.sendError(ws, seqId, "Internal server error", 500);
     }
+  }
+
+  private async handleTerminateSession(ws: AuthenticatedWebSocket, args: any, seqId: string) {
+    const { documentId, ownerToken, ownerAddress, contractAddress } = args;
+    console.log("TERMINATING SESSION", documentId);
+
+    const session = await sessionManager.getSession(documentId);
+    if (!session) {
+      this.sendError(ws, seqId, "Session not found", 404);
+      return;
+    }
+
+    const ownerDid = await authService.verifyOwnerToken(ownerToken, contractAddress, ownerAddress);
+
+    if (ownerDid !== session.ownerDid) {
+      this.sendError(ws, seqId, "Unauthorized", 401);
+      return;
+    }
+
+    this.broadcastToDocument(
+      documentId,
+      {
+        type: "SESSION_TERMINATED",
+        event_type: "SESSION_TERMINATED",
+        event: {
+          data: null,
+          roomId: documentId,
+        },
+      },
+      ws.clientId
+    );
+
+    await sessionManager.terminateSession(documentId);
+
+    this.sendMessage(ws, {
+      status: true,
+      statusCode: 200,
+      seqId,
+      is_handshake_response: false,
+      data: { message: "Session terminated" },
+    });
   }
 
   private async setupSession(ws: AuthenticatedWebSocket, args: any) {
@@ -124,28 +160,28 @@ export class WebSocketManager {
     }
 
     ws.authenticated = true;
-
     ws.role = "owner";
-    this.activeSessions.set(documentId, {
+
+    await sessionManager.createSession({
       documentId,
-      collaborationDid: collaborationDid,
-      ownerDid: ownerDid,
-      ownerClientId: ws.clientId!,
-      clients: new Set([ws.clientId!]),
+      collaborationDid,
+      ownerDid,
     });
+
+    sessionManager.addClientToSession(documentId, ws.clientId!);
     console.log("SETUP DONE", documentId);
     return true;
   }
 
   private async handleJoinSession(ws: AuthenticatedWebSocket, args: any) {
-    const { documentId, collaborationToken } = args;
+    const { documentId, collaborationToken, ownerToken, ownerAddress, contractAddress } = args;
 
     if (!documentId || !collaborationToken) {
       this.sendError(ws, null, "Document ID and token are required", 400);
       return false;
     }
 
-    const session = this.activeSessions.get(documentId);
+    const session = await sessionManager.getSession(documentId);
 
     if (!session) {
       this.sendError(ws, null, "Session not found", 404);
@@ -162,13 +198,18 @@ export class WebSocketManager {
       return false;
     }
 
+    let ownerDid = null;
+    if (ownerToken && ownerAddress && contractAddress) {
+      ownerDid = await authService.verifyOwnerToken(ownerToken, contractAddress, ownerAddress);
+    }
+
     ws.authenticated = true;
-    ws.role = "editor";
-
+    ws.role = ownerDid === session.ownerDid ? "owner" : "editor";
     ws.documentId = documentId;
-    this.activeSessions.get(documentId)!.clients.add(ws.clientId!);
 
-    console.log("JOINED SESSION", documentId);
+    sessionManager.addClientToSession(documentId, ws.clientId!);
+
+    console.log("JOINED SESSION", documentId, ws.role);
     return true;
   }
 
@@ -192,7 +233,8 @@ export class WebSocketManager {
     ws.documentId = documentId;
 
     let isVerified = false;
-    if (!this.activeSessions.has(documentId)) {
+    const existingSession = await sessionManager.getSession(documentId);
+    if (!existingSession) {
       isVerified = await this.setupSession(ws, args);
     } else {
       isVerified = await this.handleJoinSession(ws, args);
@@ -251,7 +293,13 @@ export class WebSocketManager {
       return;
     }
 
-    const collaborationDid = this.activeSessions.get(documentId)?.collaborationDid;
+    const session = sessionManager.getRuntimeSession(documentId);
+    const collaborationDid = session?.collaborationDid;
+
+    if (!collaborationDid) {
+      this.sendError(ws, seqId, "Session not found", 404);
+      return;
+    }
 
     const isVerified = await authService.verifyCollaborationToken(
       collaborationToken,
@@ -428,7 +476,9 @@ export class WebSocketManager {
     }
 
     const documentId = args.documentId || ws.documentId;
-    const peers = this.activeSessions.get(documentId)?.clients;
+
+    const session = await sessionManager.getSession(documentId);
+    const peers = session?.clients;
 
     this.sendMessage(ws, {
       status: true,
@@ -499,14 +549,8 @@ export class WebSocketManager {
         clientId
       );
 
-      // Remove from document connections
-      const docConnections = this.activeSessions.get(ws.documentId);
-      if (docConnections) {
-        docConnections.clients.delete(clientId);
-        if (docConnections.clients.size === 0) {
-          this.activeSessions.delete(ws.documentId);
-        }
-      }
+      // Remove from session and handle session cleanup
+      await sessionManager.removeClientFromSession(ws.documentId, clientId);
     }
 
     this.connections.delete(clientId);
@@ -535,12 +579,12 @@ export class WebSocketManager {
   }
 
   private broadcastToDocument(documentId: string, event: WebSocketEvent, excludeClientId?: string) {
-    const connections = this.activeSessions.get(documentId);
+    const session = sessionManager.getRuntimeSession(documentId);
 
-    if (!connections) return;
+    if (!session) return;
 
     const message = JSON.stringify(event);
-    connections.clients.forEach((clientId: string) => {
+    session.clients.forEach((clientId: string) => {
       if (clientId === excludeClientId) return;
 
       const ws = this.connections.get(clientId);
@@ -556,7 +600,7 @@ export class WebSocketManager {
       authenticatedConnections: Array.from(this.connections.values()).filter(
         (ws) => ws.authenticated
       ).length,
-      activeSessions: this.activeSessions.size,
+      runtimeSessions: sessionManager.activeSessionsCount,
       ...(await mongodbStore.getStats()),
     };
   }

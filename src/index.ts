@@ -150,6 +150,16 @@ class CollaborationServer {
       this.server.close(async () => {
         console.log("HTTP server closed");
 
+        // Cleanup session manager
+        try {
+          await import("./services/session-manager");
+          const { sessionManager } = await import("./services/session-manager");
+          sessionManager.destroy();
+          console.log("Session manager cleaned up");
+        } catch (error) {
+          console.error("Error cleaning up session manager:", error);
+        }
+
         // Disconnect from database
         try {
           await databaseService.disconnect();
@@ -166,6 +176,8 @@ class CollaborationServer {
     setTimeout(async () => {
       console.log("Force closing server");
       try {
+        const { sessionManager } = await import("./services/session-manager");
+        sessionManager.destroy();
         await databaseService.disconnect();
       } catch (error) {
         console.error("Error during force shutdown:", error);
