@@ -21,5 +21,3 @@ export const config: ServerConfig = {
   },
   rpcURL: process.env.RPC_URL || "https://rpc.ankr.com/eth",
 };
-
-export default config;

@@ -1,5 +1,5 @@
 import mongoose from "mongoose";
-import config from "../config/index";
+import { config } from "../config";
 
 class DatabaseService {
   private isConnected = false;
