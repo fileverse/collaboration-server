@@ -25,6 +25,7 @@
   "license": "MIT",
   "dependencies": {
     "@ucans/ucans": "^0.12.0",
+    "@waku/sdk": "^0.0.34",
     "base64-js": "^1.5.1",
     "compression": "^1.7.4",
     "cors": "^2.8.5",

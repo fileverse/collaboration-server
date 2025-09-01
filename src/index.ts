@@ -8,11 +8,13 @@ import config from "./config/index";
 import { authService } from "./services/auth";
 import { wsManager } from "./services/websocket-manager";
 import { databaseService } from "./database";
+import { createLightNode } from "@waku/sdk";
 
 class CollaborationServer {
   private app: express.Application;
   private server: any;
   private wss: WebSocketServer | null = null;
+  private waku: any;
 
   constructor() {
     this.app = express();
@@ -184,6 +186,16 @@ class CollaborationServer {
       }
       process.exit(1);
     }, 10000);
+  }
+
+  async setupWaku() {
+    try {
+      this.waku = await createLightNode({ defaultBootstrap: true });
+      await this.waku.start();
+      console.log("Waku started");
+    } catch (error) {
+      console.error("Error starting Waku:", error);
+    }
   }
 }
 
