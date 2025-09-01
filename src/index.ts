@@ -199,7 +199,11 @@ class CollaborationServer {
 
 // Start the server
 const server = new CollaborationServer();
-server.start().catch((error) => {
-  console.error("Failed to start collaboration server:", error);
-  process.exit(1);
-});
+server.start()
+  .then(() => {
+    server.setupWaku();
+  })
+  .catch((error) => {
+    console.error("Failed to start collaboration server:", error);
+    process.exit(1);
+  });
