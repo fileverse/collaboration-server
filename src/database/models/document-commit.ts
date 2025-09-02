@@ -8,6 +8,7 @@ interface IDocumentCommit extends MongooseDocument {
   data: string | null;
   updates: string[];
   createdAt: number;
+  sessionDid: string;
 }
 
 const DocumentCommitSchema = new Schema<IDocumentCommit>({
@@ -18,9 +19,10 @@ const DocumentCommitSchema = new Schema<IDocumentCommit>({
   data: { type: String, default: null },
   updates: [{ type: String }],
   createdAt: { type: Number, required: true, index: true },
+  sessionDid: { type: String, required: true },
 });
 
-DocumentCommitSchema.index({ documentId: 1, createdAt: 1 });
+DocumentCommitSchema.index({ documentId: 1, createdAt: 1, sessionDid: 1 });
 
 export const DocumentCommitModel = mongoose.model<IDocumentCommit>(
   "DocumentCommit",

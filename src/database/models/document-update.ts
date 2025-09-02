@@ -9,6 +9,7 @@ interface IDocumentUpdate extends MongooseDocument {
   committed: boolean;
   commitCid: string | null;
   createdAt: number;
+  sessionDid: string;
 }
 
 const DocumentUpdateSchema = new Schema<IDocumentUpdate>({
@@ -20,15 +21,16 @@ const DocumentUpdateSchema = new Schema<IDocumentUpdate>({
   committed: { type: Boolean, default: false, index: true },
   commitCid: { type: String, default: null },
   createdAt: { type: Number, required: true, index: true },
+  sessionDid: { type: String, required: true },
 });
 
 DocumentUpdateSchema.index(
-  { documentId: 1, createdAt: 1 },
+  { documentId: 1, createdAt: 1, sessionDid: 1 },
   {
     partialFilterExpression: { committed: false },
   }
 );
-DocumentUpdateSchema.index({ documentId: 1, committed: 1, createdAt: 1 });
+DocumentUpdateSchema.index({ documentId: 1, committed: 1, createdAt: 1, sessionDid: 1 });
 
 export const DocumentUpdateModel = mongoose.model<IDocumentUpdate>(
   "DocumentUpdate",

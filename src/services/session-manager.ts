@@ -1,8 +1,13 @@
-import { SessionModel, ISession } from "../database/models";
+import {
+  SessionModel,
+  ISession,
+  DocumentUpdateModel,
+  DocumentCommitModel,
+} from "../database/models";
 
 interface RuntimeSession {
   documentId: string;
-  collaborationDid: string;
+  sessionDid: string;
   ownerDid: string;
   clients: Set<string>;
 }
@@ -24,7 +29,7 @@ export class SessionManager {
       await SessionModel.findOneAndUpdate(
         {
           documentId: sessionData.documentId,
-          collaborationDid: sessionData.collaborationDid,
+          sessionDid: sessionData.sessionDid,
           ownerDid: sessionData.ownerDid,
         },
         { state: "active" },
@@ -46,7 +51,7 @@ export class SessionManager {
 
     const runtimeSession: RuntimeSession = {
       documentId: dbSession.documentId,
-      collaborationDid: dbSession.collaborationDid,
+      sessionDid: dbSession.sessionDid,
       ownerDid: dbSession.ownerDid,
       clients: new Set<string>(),
     };
@@ -87,11 +92,13 @@ export class SessionManager {
     }
   }
 
-  async terminateSession(documentId: string): Promise<void> {
+  async terminateSession(documentId: string, sessionDid: string): Promise<void> {
     this.sessions.delete(documentId);
 
     try {
-      await SessionModel.findOneAndUpdate({ documentId }, { state: "terminated" });
+      await SessionModel.findOneAndUpdate({ documentId, sessionDid }, { state: "terminated" });
+      await DocumentUpdateModel.deleteMany({ documentId, sessionDid });
+      await DocumentCommitModel.deleteMany({ documentId, sessionDid });
     } catch (error) {
       console.error("Error terminating session in database:", error);
     }

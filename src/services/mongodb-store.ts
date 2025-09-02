@@ -14,6 +14,7 @@ export class MongoDBStore {
         committed: update.committed,
         commitCid: update.commitCid,
         createdAt: update.createdAt,
+        sessionDid: update.sessionDid,
       });
 
       await mongoUpdate.save();
@@ -38,6 +39,7 @@ export class MongoDBStore {
         committed: update.committed,
         commitCid: update.commitCid,
         createdAt: update.createdAt,
+        sessionDid: update.sessionDid,
       };
     } catch (error) {
       console.error("Error getting update:", error);
@@ -85,6 +87,7 @@ export class MongoDBStore {
         committed: update.committed,
         commitCid: update.commitCid,
         createdAt: update.createdAt,
+        sessionDid: update.sessionDid,
       }));
     } catch (error) {
       console.error("Error getting updates by document:", error);
@@ -117,6 +120,7 @@ export class MongoDBStore {
         cid: commit.cid,
         updates: commit.updates,
         createdAt: commit.createdAt,
+        sessionDid: commit.sessionDid,
       });
 
       await mongoCommit.save();
@@ -143,6 +147,7 @@ export class MongoDBStore {
         cid: commit.cid,
         updates: commit.updates,
         createdAt: commit.createdAt,
+        sessionDid: commit.sessionDid,
       };
     } catch (error) {
       console.error("Error getting commit:", error);
@@ -182,6 +187,7 @@ export class MongoDBStore {
         cid: commit.cid,
         updates: commit.updates,
         createdAt: commit.createdAt,
+        sessionDid: commit.sessionDid,
       }));
     } catch (error) {
       console.error("Error getting commits by document:", error);

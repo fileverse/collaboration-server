@@ -9,6 +9,7 @@ export interface DocumentUpdate {
   committed: boolean;
   commitCid: string | null;
   createdAt: number;
+  sessionDid: string;
 }
 
 export interface DocumentCommit {
@@ -18,6 +19,7 @@ export interface DocumentCommit {
   cid: string; // IPFS hash
   updates: string[]; // list of update IDs included in this commit
   createdAt: number;
+  sessionDid: string;
 }
 
 export interface WebSocketMessage {

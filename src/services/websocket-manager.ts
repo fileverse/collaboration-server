@@ -133,7 +133,7 @@ export class WebSocketManager {
       ws.clientId
     );
 
-    await sessionManager.terminateSession(documentId);
+    await sessionManager.terminateSession(documentId, session.sessionDid);
 
     this.sendMessage(ws, {
       status: true,
@@ -164,7 +164,7 @@ export class WebSocketManager {
 
     await sessionManager.createSession({
       documentId,
-      collaborationDid,
+      sessionDid: collaborationDid,
       ownerDid,
     });
 
@@ -190,7 +190,7 @@ export class WebSocketManager {
 
     const userDid = await authService.verifyCollaborationToken(
       collaborationToken,
-      session.collaborationDid
+      session.sessionDid
     );
 
     if (!userDid) {
@@ -294,17 +294,14 @@ export class WebSocketManager {
     }
 
     const session = sessionManager.getRuntimeSession(documentId);
-    const collaborationDid = session?.collaborationDid;
+    const sessionDid = session?.sessionDid;
 
-    if (!collaborationDid) {
+    if (!sessionDid) {
       this.sendError(ws, seqId, "Session not found", 404);
       return;
     }
 
-    const isVerified = await authService.verifyCollaborationToken(
-      collaborationToken,
-      collaborationDid!
-    );
+    const isVerified = await authService.verifyCollaborationToken(collaborationToken, sessionDid!);
 
     if (!isVerified) {
       this.sendError(ws, seqId, "Authentication failed", 401);
@@ -321,6 +318,7 @@ export class WebSocketManager {
       committed: false,
       commitCid: null,
       createdAt: Date.now(),
+      sessionDid: sessionDid,
     });
 
     // Broadcast update to other clients
@@ -373,6 +371,14 @@ export class WebSocketManager {
     const { updates, cid, ownerToken } = args;
     const documentId = args.documentId || ws.documentId;
 
+    const session = sessionManager.getRuntimeSession(documentId);
+    const sessionDid = session?.sessionDid;
+
+    if (!sessionDid) {
+      this.sendError(ws, seqId, "Session not found", 404);
+      return;
+    }
+
     if (!updates || !Array.isArray(updates) || !cid) {
       this.sendError(ws, seqId, "Updates array and CID are required", 400);
       return;
@@ -397,6 +403,7 @@ export class WebSocketManager {
       cid,
       updates,
       createdAt: Date.now(),
+      sessionDid: sessionDid,
     });
 
     this.sendMessage(ws, {
