@@ -3,7 +3,7 @@ import mongoose, { Schema, Document as MongooseDocument } from "mongoose";
 interface IDocumentUpdate extends MongooseDocument {
   _id: string;
   documentId: string;
-  userId: string;
+
   data: string;
   updateType: string;
   committed: boolean;
@@ -15,7 +15,7 @@ interface IDocumentUpdate extends MongooseDocument {
 const DocumentUpdateSchema = new Schema<IDocumentUpdate>({
   _id: { type: String, required: true },
   documentId: { type: String, required: true, index: true },
-  userId: { type: String, required: true },
+
   data: { type: String, required: true },
   updateType: { type: String, required: true },
   committed: { type: Boolean, default: false, index: true },

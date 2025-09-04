@@ -214,9 +214,9 @@ export class WebSocketManager {
   }
 
   private async handleAuth(ws: AuthenticatedWebSocket, args: any, seqId: string) {
-    const { username, collaborationToken } = args;
+    const { collaborationToken } = args;
 
-    if (!username || !collaborationToken) {
+    if (!collaborationToken) {
       this.sendError(ws, seqId, "Username and token are required", 400);
       return;
     }
@@ -228,8 +228,6 @@ export class WebSocketManager {
       return;
     }
 
-    ws.userId = username;
-    ws.username = username;
     ws.documentId = documentId;
 
     let isVerified = false;
@@ -255,8 +253,6 @@ export class WebSocketManager {
           data: {
             action: "user_joined",
             user: {
-              userId: ws.userId,
-              username: ws.username,
               role: ws.role,
             },
           },
@@ -273,7 +269,7 @@ export class WebSocketManager {
       is_handshake_response: true,
       data: {
         message: "Authentication successful",
-        userId: ws.userId,
+
         role: ws.role,
       },
     });
@@ -312,7 +308,7 @@ export class WebSocketManager {
     const update = await mongodbStore.createUpdate({
       id: uuidv4(),
       documentId,
-      userId: ws.userId!,
+
       data,
       updateType: "yjs_update",
       committed: false,
@@ -331,7 +327,7 @@ export class WebSocketManager {
           data: {
             id: update.id,
             data: update.data,
-            userId: update.userId,
+
             createdAt: update.createdAt,
           },
           roomId: documentId,
@@ -346,7 +342,6 @@ export class WebSocketManager {
       seqId,
       is_handshake_response: false,
       data: {
-        userId: update.userId,
         commitCid: update.commitCid,
         createdAt: update.createdAt,
         data: update.data,
@@ -399,7 +394,7 @@ export class WebSocketManager {
     const commit = await mongodbStore.createCommit({
       id: uuidv4(),
       documentId,
-      userId: ws.userId!,
+
       cid,
       updates,
       createdAt: Date.now(),
@@ -412,7 +407,6 @@ export class WebSocketManager {
       seqId,
       is_handshake_response: false,
       data: {
-        userId: commit.userId,
         cid: commit.cid,
         createdAt: commit.createdAt,
         documentId: commit.documentId,
@@ -545,8 +539,6 @@ export class WebSocketManager {
             data: {
               action: "user_left",
               user: {
-                userId: ws.userId,
-                username: ws.username,
                 role: ws.role,
               },
             },

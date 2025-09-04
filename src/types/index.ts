@@ -3,7 +3,7 @@ import { WebSocket } from "ws";
 export interface DocumentUpdate {
   id: string;
   documentId: string;
-  userId: string;
+
   data: string; // encrypted Y.js update
   updateType: string;
   committed: boolean;
@@ -15,7 +15,7 @@ export interface DocumentUpdate {
 export interface DocumentCommit {
   id: string;
   documentId: string;
-  userId: string;
+
   cid: string; // IPFS hash
   updates: string[]; // list of update IDs included in this commit
   createdAt: number;
@@ -48,8 +48,6 @@ export interface WebSocketEvent {
 }
 
 export interface AuthenticatedWebSocket extends WebSocket {
-  userId?: string;
-  username?: string;
   documentId?: string;
   role?: "owner" | "editor";
   authenticated?: boolean;

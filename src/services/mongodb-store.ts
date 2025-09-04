@@ -8,7 +8,7 @@ export class MongoDBStore {
       const mongoUpdate = new DocumentUpdateModel({
         _id: update.id,
         documentId: update.documentId,
-        userId: update.userId,
+
         data: update.data,
         updateType: update.updateType,
         committed: update.committed,
@@ -33,7 +33,7 @@ export class MongoDBStore {
       return {
         id: update._id,
         documentId: update.documentId,
-        userId: update.userId,
+
         data: update.data,
         updateType: update.updateType,
         committed: update.committed,
@@ -81,7 +81,7 @@ export class MongoDBStore {
       return updates.map((update) => ({
         id: update._id,
         documentId: update.documentId,
-        userId: update.userId,
+
         data: update.data,
         updateType: update.updateType,
         committed: update.committed,
@@ -116,7 +116,7 @@ export class MongoDBStore {
       const mongoCommit = new DocumentCommitModel({
         _id: commit.id,
         documentId: commit.documentId,
-        userId: commit.userId,
+
         cid: commit.cid,
         updates: commit.updates,
         createdAt: commit.createdAt,
@@ -143,7 +143,6 @@ export class MongoDBStore {
       return {
         id: commit._id,
         documentId: commit.documentId,
-        userId: commit.userId,
         cid: commit.cid,
         updates: commit.updates,
         createdAt: commit.createdAt,
@@ -183,7 +182,6 @@ export class MongoDBStore {
       return commits.map((commit) => ({
         id: commit._id,
         documentId: commit.documentId,
-        userId: commit.userId,
         cid: commit.cid,
         updates: commit.updates,
         createdAt: commit.createdAt,
@@ -194,75 +192,6 @@ export class MongoDBStore {
       return [];
     }
   }
-
-  // Room member management
-  // async getRoomMembers(documentId: string): Promise<RoomMember[]> {
-  //   try {
-  //     const members = await RoomMemberModel.find({ documentId: documentId });
-  //     return members.map((member) => ({
-  //       userId: member.userId,
-  //       username: member.username,
-  //       role: member.role,
-  //       clientId: member.clientId,
-  //       joined_at: member.joined_at,
-  //     }));
-  //   } catch (error) {
-  //     console.error("Error getting room members:", error);
-  //     return [];
-  //   }
-  // }
-
-  // async addRoomMember(documentId: string, member: RoomMember) {
-  //   try {
-  //     await RoomMemberModel.findOneAndUpdate(
-  //       { documentId: documentId, userId: member.userId },
-  //       {
-  //         username: member.username,
-  //         role: member.role,
-  //         clientId: member.clientId,
-  //         joined_at: member.joined_at,
-  //       },
-  //       { upsert: true, new: true }
-  //     );
-  //   } catch (error) {
-  //     console.error("Error adding room member:", error);
-  //     throw error;
-  //   }
-  // }
-
-  // async removeRoomMember(documentId: string, userId: string) {
-  //   try {
-  //     await RoomMemberModel.deleteOne({
-  //       documentId: documentId,
-  //       userId: userId,
-  //     });
-  //   } catch (error) {
-  //     console.error("Error removing room member:", error);
-  //     throw error;
-  //   }
-  // }
-
-  // async getRoomMember(documentId: string, userId: string): Promise<RoomMember | undefined> {
-  //   try {
-  //     const member = await RoomMemberModel.findOne({
-  //       documentId: documentId,
-  //       userId: userId,
-  //     });
-
-  //     if (!member) return undefined;
-
-  //     return {
-  //       userId: member.userId,
-  //       username: member.username,
-  //       role: member.role,
-  //       clientId: member.clientId,
-  //       joined_at: member.joined_at,
-  //     };
-  //   } catch (error) {
-  //     console.error("Error getting room member:", error);
-  //     return undefined;
-  //   }
-  // }
 
   // Statistics
   async getStats() {

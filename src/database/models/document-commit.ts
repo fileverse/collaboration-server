@@ -3,7 +3,7 @@ import mongoose, { Schema, Document as MongooseDocument } from "mongoose";
 interface IDocumentCommit extends MongooseDocument {
   _id: string;
   documentId: string;
-  userId: string;
+
   cid: string;
   data: string | null;
   updates: string[];
@@ -14,7 +14,7 @@ interface IDocumentCommit extends MongooseDocument {
 const DocumentCommitSchema = new Schema<IDocumentCommit>({
   _id: { type: String, required: true },
   documentId: { type: String, required: true, index: true },
-  userId: { type: String, required: true },
+
   cid: { type: String, required: true },
   data: { type: String, default: null },
   updates: [{ type: String }],
