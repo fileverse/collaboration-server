@@ -11,7 +11,7 @@
   "scripts": {
     "dev": "tsx watch src/index.ts",
     "build": "npx tsc",
-    "start": "tsx src/index.ts",
+    "start": "npx tsx src/index.ts",
     "start:prod": "node --loader tsx/esm src/index.ts",
     "clean": "rm -rf dist",
     "format": "prettier --write .",
