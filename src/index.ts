@@ -4,15 +4,18 @@ import cors from "cors";
 import helmet from "helmet";
 import compression from "compression";
 import { createServer } from "http";
-import config from "./config/index";
+import { config } from "./config";
 import { authService } from "./services/auth";
 import { wsManager } from "./services/websocket-manager";
 import { databaseService } from "./database";
+import { createLightNode } from "@waku/sdk";
+import { sessionManager } from "./services/session-manager";
 
 class CollaborationServer {
   private app: express.Application;
   private server: any;
   private wss: WebSocketServer | null = null;
+  private waku: any;
 
   constructor() {
     this.app = express();
@@ -152,8 +155,6 @@ class CollaborationServer {
 
         // Cleanup session manager
         try {
-          await import("./services/session-manager");
-          const { sessionManager } = await import("./services/session-manager");
           sessionManager.destroy();
           console.log("Session manager cleaned up");
         } catch (error) {
@@ -176,7 +177,6 @@ class CollaborationServer {
     setTimeout(async () => {
       console.log("Force closing server");
       try {
-        const { sessionManager } = await import("./services/session-manager");
         sessionManager.destroy();
         await databaseService.disconnect();
       } catch (error) {
@@ -185,11 +185,25 @@ class CollaborationServer {
       process.exit(1);
     }, 10000);
   }
+
+  async setupWaku() {
+    try {
+      this.waku = await createLightNode({ defaultBootstrap: true });
+      await this.waku.start();
+      console.log("Waku started");
+    } catch (error) {
+      console.error("Error starting Waku:", error);
+    }
+  }
 }
 
 // Start the server
 const server = new CollaborationServer();
-server.start().catch((error) => {
-  console.error("Failed to start collaboration server:", error);
-  process.exit(1);
-});
+server.start()
+  .then(() => {
+    server.setupWaku();
+  })
+  .catch((error) => {
+    console.error("Failed to start collaboration server:", error);
+    process.exit(1);
+  });
