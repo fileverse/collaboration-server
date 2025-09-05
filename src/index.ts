@@ -141,7 +141,7 @@ class CollaborationServer {
   }
 
   private shutdown(signal: string) {
-    console.log(`\n📴 Received ${signal}. Shutting down gracefully...`);
+    console.log(`\n Received ${signal}. Shutting down gracefully...`);
 
     if (this.wss) {
       this.wss.close(() => {

@@ -23,7 +23,8 @@ export interface DocumentCommit {
 }
 
 export interface WebSocketMessage {
-  cmd: string;
+  cmd?: string;
+  event?: string;
   args: Record<string, any>;
   seqId: string;
 }
@@ -34,6 +35,7 @@ export interface WebSocketResponse {
   seqId: string | null;
   is_handshake_response: boolean;
   data?: Record<string, any>;
+  error?: string;
   err?: string;
   err_detail?: Record<string, any> | null;
 }
@@ -52,6 +54,7 @@ export interface AuthenticatedWebSocket extends WebSocket {
   role?: "owner" | "editor";
   authenticated?: boolean;
   clientId?: string;
+  serverId?: string;
 }
 
 export interface IPFSUploadResponse {
@@ -96,4 +99,5 @@ export interface ServerConfig {
     max: number;
   };
   rpcURL: string;
+  redisURL: string;
 }
