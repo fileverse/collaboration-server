@@ -70,8 +70,6 @@ class CollaborationServer {
         },
         process: {
           pid: process.pid,
-          workerId: process.env.WORKER_ID || "0",
-          totalWorkers: process.env.TOTAL_WORKERS || "1",
         },
         stats,
       });

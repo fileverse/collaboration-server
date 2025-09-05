@@ -85,11 +85,16 @@ export interface DatabaseConfig {
   uri: string; // MongoDB connection string
 }
 
+export interface RedisConfig {
+  url: string;
+}
+
 export interface ServerConfig {
   port: number;
   host: string;
   corsOrigins: string[];
   database: DatabaseConfig;
+  redis: RedisConfig;
   auth: {
     serverDid: string;
     serverKeyPair?: any;
@@ -99,5 +104,4 @@ export interface ServerConfig {
     max: number;
   };
   rpcURL: string;
-  redisURL: string;
 }

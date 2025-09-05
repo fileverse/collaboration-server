@@ -120,7 +120,7 @@ export class WebSocketManager {
       return;
     }
 
-    this.broadcastToDocument(
+    await this.broadcastToDocument(
       documentId,
       {
         type: "SESSION_TERMINATED",
@@ -168,7 +168,7 @@ export class WebSocketManager {
       ownerDid,
     });
 
-    sessionManager.addClientToSession(documentId, ws.clientId!);
+    await sessionManager.addClientToSession(documentId, ws.clientId!);
     console.log("SETUP DONE", documentId);
     return true;
   }
@@ -207,7 +207,7 @@ export class WebSocketManager {
     ws.role = ownerDid === session.ownerDid ? "owner" : "editor";
     ws.documentId = documentId;
 
-    sessionManager.addClientToSession(documentId, ws.clientId!);
+    await sessionManager.addClientToSession(documentId, ws.clientId!);
 
     console.log("JOINED SESSION", documentId, ws.role);
     return true;
@@ -244,7 +244,7 @@ export class WebSocketManager {
     }
 
     // Notify other users about membership change
-    this.broadcastToDocument(
+    await this.broadcastToDocument(
       documentId,
       {
         type: "ROOM_UPDATE",
@@ -289,7 +289,7 @@ export class WebSocketManager {
       return;
     }
 
-    const session = sessionManager.getRuntimeSession(documentId);
+    const session = await sessionManager.getRuntimeSession(documentId);
     const sessionDid = session?.sessionDid;
 
     if (!sessionDid) {
@@ -318,7 +318,7 @@ export class WebSocketManager {
     });
 
     // Broadcast update to other clients
-    this.broadcastToDocument(
+    await this.broadcastToDocument(
       documentId,
       {
         type: "CONTENT_UPDATE",
@@ -366,7 +366,7 @@ export class WebSocketManager {
     const { updates, cid, ownerToken } = args;
     const documentId = args.documentId || ws.documentId;
 
-    const session = sessionManager.getRuntimeSession(documentId);
+    const session = await sessionManager.getRuntimeSession(documentId);
     const sessionDid = session?.sessionDid;
 
     if (!sessionDid) {
@@ -502,7 +502,7 @@ export class WebSocketManager {
     const { data } = args;
 
     // Broadcast awareness update to other clients
-    this.broadcastToDocument(
+    await this.broadcastToDocument(
       documentId,
       {
         type: "AWARENESS_UPDATE",
@@ -530,7 +530,7 @@ export class WebSocketManager {
     const ws = this.connections.get(clientId);
     if (ws && ws.authenticated && ws.documentId) {
       // Notify other users about membership change BEFORE removing from connections
-      this.broadcastToDocument(
+      await this.broadcastToDocument(
         ws.documentId,
         {
           type: "ROOM_UPDATE",
@@ -577,8 +577,12 @@ export class WebSocketManager {
     });
   }
 
-  private broadcastToDocument(documentId: string, event: WebSocketEvent, excludeClientId?: string) {
-    const session = sessionManager.getRuntimeSession(documentId);
+  private async broadcastToDocument(
+    documentId: string,
+    event: WebSocketEvent,
+    excludeClientId?: string
+  ) {
+    const session = await sessionManager.getRuntimeSession(documentId);
 
     if (!session) return;
 
@@ -599,7 +603,7 @@ export class WebSocketManager {
       authenticatedConnections: Array.from(this.connections.values()).filter(
         (ws) => ws.authenticated
       ).length,
-      runtimeSessions: sessionManager.activeSessionsCount,
+      runtimeSessions: await sessionManager.getActiveSessionsCount(),
       ...(await mongodbStore.getStats()),
     };
   }
