@@ -24,4 +24,5 @@ export const config: ServerConfig = {
     max: parseInt(process.env.RATE_LIMIT_MAX || "100"), // limit each IP to 100 requests per windowMs
   },
   rpcURL: process.env.RPC_URL || "https://rpc.ankr.com/eth",
+  nodeEnv: process.env.NODE_ENV || "development",
 };

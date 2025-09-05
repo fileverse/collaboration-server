@@ -6,6 +6,7 @@ interface CachedSession {
   sessionDid: string;
   ownerDid: string;
   clients: string[];
+  roomInfo?: string;
 }
 
 export class RedisStore {
@@ -21,7 +22,11 @@ export class RedisStore {
   private setupEventHandlers(): void {
     this.redis.on("connect", () => {
       console.log("Redis connected successfully");
+
       this.isConnected = true;
+      if (config.nodeEnv === "development") {
+        this.clearAllSessions();
+      }
     });
 
     this.redis.on("error", (error: Error) => {
@@ -162,9 +167,26 @@ export class RedisStore {
       if (keys.length > 0) {
         await this.redis.del(...keys);
       }
+      console.log(`cleared ${keys.length} sessions from Redis`);
       return true;
     } catch (error) {
       console.error("Error clearing all sessions from Redis:", error);
+      return false;
+    }
+  }
+
+  async updateRoomInfo(documentId: string, roomInfo: string): Promise<boolean> {
+    if (!this.isConnected) return false;
+
+    try {
+      const session = await this.getSession(documentId);
+      if (!session) return false;
+
+      session.roomInfo = roomInfo;
+      await this.setSession(documentId, session);
+      return true;
+    } catch (error) {
+      console.error("Error updating room info in Redis:", error);
       return false;
     }
   }
@@ -175,7 +197,7 @@ export class RedisStore {
 
   async disconnect(): Promise<void> {
     try {
-      await this.redis.disconnect();
+      this.redis.disconnect();
     } catch (error) {
       console.error("Error disconnecting from Redis:", error);
     }

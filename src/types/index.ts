@@ -104,4 +104,5 @@ export interface ServerConfig {
     max: number;
   };
   rpcURL: string;
+  nodeEnv: string;
 }

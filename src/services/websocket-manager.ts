@@ -166,6 +166,7 @@ export class WebSocketManager {
       documentId,
       sessionDid: collaborationDid,
       ownerDid,
+      roomInfo: args.roomInfo,
     });
 
     await sessionManager.addClientToSession(documentId, ws.clientId!);
@@ -206,6 +207,14 @@ export class WebSocketManager {
     ws.authenticated = true;
     ws.role = ownerDid === session.ownerDid ? "owner" : "editor";
     ws.documentId = documentId;
+    if (ws.role === "owner" && args.roomInfo) {
+      await sessionManager.updateRoomInfo(
+        documentId,
+        session.sessionDid,
+        session.ownerDid,
+        args.roomInfo
+      );
+    }
 
     await sessionManager.addClientToSession(documentId, ws.clientId!);
 
@@ -232,6 +241,7 @@ export class WebSocketManager {
 
     let isVerified = false;
     const existingSession = await sessionManager.getSession(documentId);
+
     if (!existingSession) {
       isVerified = await this.setupSession(ws, args);
     } else {
@@ -269,8 +279,9 @@ export class WebSocketManager {
       is_handshake_response: true,
       data: {
         message: "Authentication successful",
-
         role: ws.role,
+        sessionType: existingSession ? "existing" : "new",
+        roomInfo: existingSession?.roomInfo,
       },
     });
   }

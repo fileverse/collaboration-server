@@ -11,6 +11,7 @@ interface RuntimeSession {
   sessionDid: string;
   ownerDid: string;
   clients: Set<string>;
+  roomInfo?: string;
 }
 
 export class SessionManager {
@@ -29,6 +30,7 @@ export class SessionManager {
         sessionDid: sessionData.sessionDid,
         ownerDid: sessionData.ownerDid,
         clients: [],
+        roomInfo: sessionData.roomInfo,
       });
     }
 
@@ -40,7 +42,7 @@ export class SessionManager {
           sessionDid: sessionData.sessionDid,
           ownerDid: sessionData.ownerDid,
         },
-        { state: "active" },
+        { state: "active", roomInfo: sessionData.roomInfo },
         { upsert: true, new: true }
       );
     } catch (error) {
@@ -52,14 +54,17 @@ export class SessionManager {
 
   async getSession(documentId: string): Promise<RuntimeSession | undefined> {
     // Check Redis cache first (fast)
+    let cachedSession: any;
     if (redisStore.connected) {
-      const cachedSession = await redisStore.getSession(documentId);
+      cachedSession = await redisStore.getSession(documentId);
+
       if (cachedSession) {
         return {
           documentId: cachedSession.documentId,
           sessionDid: cachedSession.sessionDid,
           ownerDid: cachedSession.ownerDid,
           clients: new Set(cachedSession.clients),
+          roomInfo: cachedSession.roomInfo,
         };
       }
     }
@@ -73,15 +78,17 @@ export class SessionManager {
       sessionDid: dbSession.sessionDid,
       ownerDid: dbSession.ownerDid,
       clients: new Set<string>(),
+      roomInfo: dbSession.roomInfo,
     };
 
     // Cache the session in Redis for future access
-    if (redisStore.connected) {
+    if (!cachedSession) {
       await redisStore.setSession(documentId, {
         documentId: runtimeSession.documentId,
         sessionDid: runtimeSession.sessionDid,
         ownerDid: runtimeSession.ownerDid,
         clients: [],
+        roomInfo: runtimeSession.roomInfo,
       });
     }
 
@@ -165,6 +172,22 @@ export class SessionManager {
     } catch (error) {
       console.error("Error getting active sessions count from database:", error);
       return 0;
+    }
+  }
+
+  async updateRoomInfo(
+    documentId: string,
+    sessionDid: string,
+    ownerDid: string,
+    roomInfo: string
+  ): Promise<void> {
+    if (redisStore.connected) {
+      await redisStore.updateRoomInfo(documentId, roomInfo);
+    }
+    try {
+      await SessionModel.findOneAndUpdate({ documentId, sessionDid, ownerDid }, { roomInfo });
+    } catch (error) {
+      console.error("Error updating session in database:", error);
     }
   }
 

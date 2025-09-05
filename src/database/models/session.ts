@@ -6,6 +6,7 @@ export interface ISession extends MongooseDocument {
   ownerDid: string;
   createdAt: Date;
   state: "active" | "terminated";
+  roomInfo: string;
 }
 
 const SessionSchema = new Schema({
@@ -14,6 +15,7 @@ const SessionSchema = new Schema({
   ownerDid: { type: String, required: true },
   createdAt: { type: Date, default: Date.now },
   state: { type: String, enum: ["active", "inactive", "terminated"], default: "active" },
+  roomInfo: { type: String, default: null },
 });
 
 SessionSchema.index({ documentId: 1, createdAt: 1, sessionDid: 1 });
