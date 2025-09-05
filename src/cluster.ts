@@ -2,17 +2,32 @@ import cluster from "cluster";
 import os from "os";
 
 const numCPUs = os.cpus().length;
-const maxWorkers = parseInt(process.env.WEB_CONCURRENCY || "2"); // Heroku sets this
+const maxWorkers = parseInt(process.env.WEB_CONCURRENCY || "1"); // Conservative default
 const workers = Math.min(numCPUs, maxWorkers);
 
-if (cluster.isPrimary) {
-  console.log(`Master ${process.pid} is running`);
-  console.log(`Starting ${workers} workers...`);
+// Memory-aware worker calculation for Heroku
+const dynoMemoryMB = parseInt(process.env.MEMORY_AVAILABLE || "512");
+const workerMemoryMB = 200; // Estimated memory per worker
+const maxMemoryWorkers = Math.floor((dynoMemoryMB - 100) / workerMemoryMB); // Reserve 100MB for master
 
-  // Fork workers
-  for (let i = 0; i < workers; i++) {
-    const worker = cluster.fork();
-    console.log(`Worker ${worker.process.pid} started`);
+const finalWorkers = Math.min(workers, maxMemoryWorkers);
+
+console.log(`💾 Available memory: ${dynoMemoryMB}MB`);
+console.log(
+  `🔧 Calculated workers: ${finalWorkers} (requested: ${maxWorkers}, CPU cores: ${numCPUs})`
+);
+
+if (cluster.isPrimary) {
+  console.log(`🚀 Master ${process.pid} is running`);
+  console.log(`Starting ${finalWorkers} workers...`);
+
+  // Fork workers with memory awareness
+  for (let i = 0; i < finalWorkers; i++) {
+    const worker = cluster.fork({
+      WORKER_ID: i,
+      TOTAL_WORKERS: finalWorkers,
+    });
+    console.log(`👷 Worker ${worker.process.pid} started (${i + 1}/${finalWorkers})`);
   }
 
   // Handle worker exit

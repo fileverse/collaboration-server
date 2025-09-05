@@ -54,13 +54,25 @@ class CollaborationServer {
   }
 
   private setupRoutes() {
-    // Health check
+    // Health check with memory monitoring
     this.app.get("/health", async (req, res) => {
       const stats = await wsManager.getStats();
+      const memoryUsage = process.memoryUsage();
+
       res.json({
         status: "ok",
         timestamp: new Date().toISOString(),
         uptime: process.uptime(),
+        memory: {
+          rss: `${Math.round(memoryUsage.rss / 1024 / 1024)}MB`,
+          heapUsed: `${Math.round(memoryUsage.heapUsed / 1024 / 1024)}MB`,
+          heapTotal: `${Math.round(memoryUsage.heapTotal / 1024 / 1024)}MB`,
+        },
+        process: {
+          pid: process.pid,
+          workerId: process.env.WORKER_ID || "0",
+          totalWorkers: process.env.TOTAL_WORKERS || "1",
+        },
         stats,
       });
     });

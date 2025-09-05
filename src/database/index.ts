@@ -19,10 +19,14 @@ class DatabaseService {
 
       console.log("Connecting to MongoDB...");
 
+      // Adjust pool size based on clustering
+      const totalWorkers = parseInt(process.env.TOTAL_WORKERS || "1");
+      const maxPoolPerWorker = Math.max(2, Math.floor(10 / totalWorkers)); // Distribute pool across workers
+
       await mongoose.connect(connectionString, {
-        // Connection pool settings
-        maxPoolSize: 10,
-        minPoolSize: 2,
+        // Memory-optimized connection pool settings
+        maxPoolSize: maxPoolPerWorker,
+        minPoolSize: 1,
         maxIdleTimeMS: 60000, // Increased to prevent frequent disconnections
 
         // Timeout settings - more lenient
