@@ -22,7 +22,9 @@ const DocumentCommitSchema = new Schema<IDocumentCommit>({
   sessionDid: { type: String, required: true },
 });
 
-DocumentCommitSchema.index({ documentId: 1, createdAt: 1, sessionDid: 1 });
+DocumentCommitSchema.index({ documentId: 1, createdAt: -1 }, { background: true });
+
+DocumentCommitSchema.index({ documentId: 1, sessionDid: 1 }, { background: true });
 
 export const DocumentCommitModel = mongoose.model<IDocumentCommit>(
   "DocumentCommit",

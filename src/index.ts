@@ -199,7 +199,8 @@ class CollaborationServer {
 
 // Start the server
 const server = new CollaborationServer();
-server.start()
+server
+  .start()
   .then(() => {
     server.setupWaku();
   })

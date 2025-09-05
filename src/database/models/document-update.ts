@@ -3,7 +3,6 @@ import mongoose, { Schema, Document as MongooseDocument } from "mongoose";
 interface IDocumentUpdate extends MongooseDocument {
   _id: string;
   documentId: string;
-
   data: string;
   updateType: string;
   committed: boolean;
@@ -15,7 +14,6 @@ interface IDocumentUpdate extends MongooseDocument {
 const DocumentUpdateSchema = new Schema<IDocumentUpdate>({
   _id: { type: String, required: true },
   documentId: { type: String, required: true, index: true },
-
   data: { type: String, required: true },
   updateType: { type: String, required: true },
   committed: { type: Boolean, default: false, index: true },
@@ -24,13 +22,17 @@ const DocumentUpdateSchema = new Schema<IDocumentUpdate>({
   sessionDid: { type: String, required: true },
 });
 
+DocumentUpdateSchema.index({ documentId: 1, committed: 1, createdAt: 1 }, { background: true });
+
 DocumentUpdateSchema.index(
-  { documentId: 1, createdAt: 1, sessionDid: 1 },
+  { documentId: 1, createdAt: 1 },
   {
     partialFilterExpression: { committed: false },
+    background: true,
   }
 );
-DocumentUpdateSchema.index({ documentId: 1, committed: 1, createdAt: 1, sessionDid: 1 });
+
+DocumentUpdateSchema.index({ documentId: 1, sessionDid: 1 }, { background: true });
 
 export const DocumentUpdateModel = mongoose.model<IDocumentUpdate>(
   "DocumentUpdate",
