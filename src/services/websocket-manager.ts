@@ -157,7 +157,7 @@ export class WebSocketManager {
       return;
     }
 
-    await this.broadcastToDocument(
+    await this.broadcastToDynos(
       documentId,
       session.sessionDid,
       {
@@ -314,7 +314,7 @@ export class WebSocketManager {
     }
 
     // Notify other users about membership change
-    await this.broadcastToDocument(
+    await this.broadcastToDynos(
       documentId,
       ws.sessionDid!,
       {
@@ -389,7 +389,7 @@ export class WebSocketManager {
       sessionDid: sessionDid,
     });
 
-    // Broadcast update to other clients
+    // Broadcast update to other clients (local dyno only)
     await this.broadcastToDocument(
       documentId,
       ws.sessionDid!,
@@ -574,7 +574,7 @@ export class WebSocketManager {
     const documentId = args.documentId || ws.documentId;
     const { data } = args;
 
-    // Broadcast awareness update to other clients
+    // Broadcast awareness update to other clients (local dyno only)
     await this.broadcastToDocument(
       documentId,
       ws.sessionDid!,
@@ -605,7 +605,7 @@ export class WebSocketManager {
     if (ws && ws.authenticated && ws.documentId) {
       // Notify other users about membership change BEFORE removing from connections
       if (ws.sessionDid) {
-        await this.broadcastToDocument(
+        await this.broadcastToDynos(
           ws.documentId,
           ws.sessionDid,
           {
@@ -656,7 +656,7 @@ export class WebSocketManager {
     });
   }
 
-  private async broadcastToDocument(
+  private async broadcastToDynos(
     documentId: string,
     sessionDid: string,
     event: WebSocketEvent,
@@ -664,6 +664,31 @@ export class WebSocketManager {
   ) {
     // Use the new cross-dyno broadcasting system
     await sessionManager.broadcastToAllDynos(documentId, sessionDid, event, excludeClientId);
+  }
+
+  private async broadcastToDocument(
+    documentId: string,
+    sessionDid: string,
+    event: WebSocketEvent,
+    excludeClientId?: string
+  ) {
+    // Only broadcast to clients connected to this dyno (for document content)
+    const sessionKey = `${documentId}__${sessionDid}`;
+    const localSession = sessionManager["inMemorySessions"].get(sessionKey);
+
+    if (!localSession) return;
+
+    const message = JSON.stringify(event);
+
+    // Broadcast only to local clients
+    localSession.clients.forEach((clientId: string) => {
+      if (clientId === excludeClientId) return;
+
+      const ws = this.connections.get(clientId);
+      if (ws && ws.readyState === WebSocket.OPEN) {
+        ws.send(message);
+      }
+    });
   }
 
   async getStats() {

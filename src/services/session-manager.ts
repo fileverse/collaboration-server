@@ -29,7 +29,7 @@ export class SessionManager {
   }
 
   private getSessionKey(documentId: string, sessionDid: string): string {
-    return `${documentId}:${sessionDid}`;
+    return `${documentId}__${sessionDid}`;
   }
 
   private setupRedisEventHandlers(): void {
