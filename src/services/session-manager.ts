@@ -15,6 +15,8 @@ interface RuntimeSession {
 }
 
 export class SessionManager {
+  private inMemorySessions = new Map<string, RuntimeSession>();
+
   constructor() {}
 
   async createSession(sessionData: Omit<RuntimeSession, "clients">): Promise<RuntimeSession> {
@@ -22,6 +24,9 @@ export class SessionManager {
       ...sessionData,
       clients: new Set<string>(),
     };
+
+    // Store in memory for immediate access
+    this.inMemorySessions.set(sessionData.documentId, runtimeSession);
 
     // Cache in Redis for fast access
     if (redisStore.connected) {
@@ -53,19 +58,29 @@ export class SessionManager {
   }
 
   async getSession(documentId: string): Promise<RuntimeSession | undefined> {
-    // Check Redis cache first (fast)
+    // Check in-memory first for active sessions
+    let inMemorySession = this.inMemorySessions.get(documentId);
+    if (inMemorySession) {
+      return inMemorySession;
+    }
+
+    // Check Redis cache (fast)
     let cachedSession: any;
     if (redisStore.connected) {
       cachedSession = await redisStore.getSession(documentId);
 
       if (cachedSession) {
-        return {
+        const runtimeSession: RuntimeSession = {
           documentId: cachedSession.documentId,
           sessionDid: cachedSession.sessionDid,
           ownerDid: cachedSession.ownerDid,
           clients: new Set(cachedSession.clients),
           roomInfo: cachedSession.roomInfo,
         };
+
+        // Store in memory for immediate access
+        this.inMemorySessions.set(documentId, runtimeSession);
+        return runtimeSession;
       }
     }
 
@@ -81,8 +96,11 @@ export class SessionManager {
       roomInfo: dbSession.roomInfo,
     };
 
+    // Store in memory
+    this.inMemorySessions.set(documentId, runtimeSession);
+
     // Cache the session in Redis for future access
-    if (!cachedSession) {
+    if (redisStore.connected && !cachedSession) {
       await redisStore.setSession(documentId, {
         documentId: runtimeSession.documentId,
         sessionDid: runtimeSession.sessionDid,
@@ -100,37 +118,44 @@ export class SessionManager {
   }
 
   async addClientToSession(documentId: string, clientId: string): Promise<boolean> {
-    // Check if session exists in Redis first
+    // Get the session (this will check memory, Redis, and MongoDB in order)
+    const session = await this.getSession(documentId);
+    if (!session) return false;
+
+    // Add to in-memory session
+    session.clients.add(clientId);
+
+    // Sync with Redis if connected
     if (redisStore.connected) {
-      return await redisStore.addClientToSession(documentId, clientId);
+      await redisStore.addClientToSession(documentId, clientId);
     }
 
-    // Fallback: check if session exists in MongoDB
-    const dbSession = await SessionModel.findOne({ documentId, state: { $ne: "terminated" } });
-    return !!dbSession;
+    return true;
   }
 
   async removeClientFromSession(documentId: string, clientId: string): Promise<void> {
-    // Update Redis cache and check if session should be deactivated
-    if (redisStore.connected) {
-      const success = await redisStore.removeClientFromSession(documentId, clientId);
-      if (!success) {
-        // Session might have been auto-deactivated by Redis store
+    // Get in-memory session
+    const session = this.inMemorySessions.get(documentId);
+    if (session) {
+      session.clients.delete(clientId);
+
+      // If no more clients, deactivate the session
+      if (session.clients.size === 0) {
+        await this.deactivateSession(documentId);
         return;
       }
+    }
 
-      // Check if there are any clients left
-      const session = await redisStore.getSession(documentId);
-      if (!session || session.clients.length === 0) {
-        await this.deactivateSession(documentId);
-      }
-    } else {
-      // If Redis is not available, just deactivate the session
-      await this.deactivateSession(documentId);
+    // Update Redis cache if connected
+    if (redisStore.connected) {
+      await redisStore.removeClientFromSession(documentId, clientId);
     }
   }
 
   async deactivateSession(documentId: string): Promise<void> {
+    // Remove from in-memory storage
+    this.inMemorySessions.delete(documentId);
+
     // Remove from Redis cache
     if (redisStore.connected) {
       await redisStore.deleteSession(documentId);
@@ -145,6 +170,9 @@ export class SessionManager {
   }
 
   async terminateSession(documentId: string, sessionDid: string): Promise<void> {
+    // Remove from in-memory storage
+    this.inMemorySessions.delete(documentId);
+
     // Remove from Redis cache
     if (redisStore.connected) {
       await redisStore.deleteSession(documentId);
@@ -161,7 +189,15 @@ export class SessionManager {
   }
 
   async getActiveSessionsCount(): Promise<number> {
-    // Try Redis first for distributed count
+    // Use in-memory count for most accurate real-time count
+    const inMemoryCount = this.inMemorySessions.size;
+
+    // If we have in-memory sessions, use that count
+    if (inMemoryCount > 0) {
+      return inMemoryCount;
+    }
+
+    // Try Redis for distributed count
     if (redisStore.connected) {
       return await redisStore.getActiveSessionsCount();
     }
@@ -181,9 +217,18 @@ export class SessionManager {
     ownerDid: string,
     roomInfo: string
   ): Promise<void> {
+    // Update in-memory session
+    const session = this.inMemorySessions.get(documentId);
+    if (session) {
+      session.roomInfo = roomInfo;
+    }
+
+    // Update Redis cache
     if (redisStore.connected) {
       await redisStore.updateRoomInfo(documentId, roomInfo);
     }
+
+    // Update MongoDB
     try {
       await SessionModel.findOneAndUpdate({ documentId, sessionDid, ownerDid }, { roomInfo });
     } catch (error) {
@@ -192,6 +237,9 @@ export class SessionManager {
   }
 
   async destroy(): Promise<void> {
+    // Clear in-memory sessions
+    this.inMemorySessions.clear();
+
     // Disconnect from Redis
     if (redisStore.connected) {
       await redisStore.disconnect();
