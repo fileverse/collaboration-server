@@ -1,5 +1,5 @@
 import Redis from "ioredis";
-import { config } from "../config/index";
+import { config } from "../config";
 
 interface CachedSession {
   documentId: string;
@@ -15,8 +15,10 @@ export class RedisStore {
   private keyPrefix = "collab:";
 
   constructor() {
+    // Redis integration disabled - keeping file for potential future use
     this.redis = new Redis(config.redis.url);
-    this.setupEventHandlers();
+    this.isConnected = false; // Force disconnected state
+    // this.setupEventHandlers();
   }
 
   private setupEventHandlers(): void {
@@ -24,9 +26,10 @@ export class RedisStore {
       console.log("Redis connected successfully");
 
       this.isConnected = true;
-      if (config.nodeEnv === "development") {
-        this.clearAllSessions();
-      }
+      // Clear sessions in development mode
+      // if (process.env.NODE_ENV === "development") {
+      //   this.clearAllSessions();
+      // }
     });
 
     this.redis.on("error", (error: Error) => {
