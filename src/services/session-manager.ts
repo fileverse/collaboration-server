@@ -14,10 +14,95 @@ interface RuntimeSession {
   roomInfo?: string;
 }
 
+type BroadcastHandler = (
+  sessionKey: string,
+  message: any,
+  excludeClientId?: string
+) => Promise<void>;
+
 export class SessionManager {
   private inMemorySessions = new Map<string, RuntimeSession>();
+  private broadcastHandler?: BroadcastHandler;
 
-  constructor() {}
+  constructor() {
+    this.setupRedisEventHandlers();
+  }
+
+  private getSessionKey(documentId: string, sessionDid: string): string {
+    return `${documentId}:${sessionDid}`;
+  }
+
+  private setupRedisEventHandlers(): void {
+    if (!redisStore.connected) return;
+
+    // Handle session events from other dynos
+    redisStore.onSessionEvent("SESSION_CREATED", async (event) => {
+      const { sessionKey, data } = event;
+      const runtimeSession: RuntimeSession = {
+        documentId: data.documentId,
+        sessionDid: data.sessionDid,
+        ownerDid: data.ownerDid,
+        clients: new Set(data.clients),
+        roomInfo: data.roomInfo,
+      };
+      this.inMemorySessions.set(sessionKey, runtimeSession);
+      console.log(`[SessionManager] Synced session creation: ${sessionKey}`);
+    });
+
+    redisStore.onSessionEvent("SESSION_UPDATED", async (event) => {
+      const { sessionKey, data } = event;
+      const existingSession = this.inMemorySessions.get(sessionKey);
+      if (existingSession) {
+        existingSession.clients = new Set(data.clients);
+        existingSession.roomInfo = data.roomInfo;
+        console.log(`[SessionManager] Synced session update: ${sessionKey}`);
+      }
+    });
+
+    redisStore.onSessionEvent("SESSION_DELETED", async (event) => {
+      const { sessionKey } = event;
+      this.inMemorySessions.delete(sessionKey);
+      console.log(`[SessionManager] Synced session deletion: ${sessionKey}`);
+    });
+
+    redisStore.onSessionEvent("CLIENT_JOINED", async (event) => {
+      const { sessionKey, data } = event;
+      const session = this.inMemorySessions.get(sessionKey);
+      if (session) {
+        session.clients.add(data.clientId);
+        console.log(`[SessionManager] Synced client join: ${data.clientId} → ${sessionKey}`);
+      }
+    });
+
+    redisStore.onSessionEvent("CLIENT_LEFT", async (event) => {
+      const { sessionKey, data } = event;
+      const session = this.inMemorySessions.get(sessionKey);
+      if (session) {
+        session.clients.delete(data.clientId);
+        console.log(`[SessionManager] Synced client leave: ${data.clientId} ← ${sessionKey}`);
+      }
+    });
+
+    redisStore.onSessionEvent("ROOM_INFO_UPDATED", async (event) => {
+      const { sessionKey, data } = event;
+      const session = this.inMemorySessions.get(sessionKey);
+      if (session) {
+        session.roomInfo = data.roomInfo;
+        console.log(`[SessionManager] Synced room info: ${sessionKey}`);
+      }
+    });
+
+    redisStore.onSessionEvent("BROADCAST_MESSAGE", async (event) => {
+      const { sessionKey, data } = event;
+      const { message, excludeClientId } = data;
+
+      console.log(`[SessionManager] Broadcasting to local clients: ${sessionKey}`);
+      // Get the broadcast handler if registered
+      if (this.broadcastHandler) {
+        await this.broadcastHandler(sessionKey, message, excludeClientId);
+      }
+    });
+  }
 
   async createSession(sessionData: Omit<RuntimeSession, "clients">): Promise<RuntimeSession> {
     const runtimeSession: RuntimeSession = {
@@ -26,11 +111,12 @@ export class SessionManager {
     };
 
     // Store in memory for immediate access
-    this.inMemorySessions.set(sessionData.documentId, runtimeSession);
+    const sessionKey = this.getSessionKey(sessionData.documentId, sessionData.sessionDid);
+    this.inMemorySessions.set(sessionKey, runtimeSession);
 
     // Cache in Redis for fast access
     if (redisStore.connected) {
-      await redisStore.setSession(sessionData.documentId, {
+      await redisStore.setSession(sessionKey, {
         documentId: sessionData.documentId,
         sessionDid: sessionData.sessionDid,
         ownerDid: sessionData.ownerDid,
@@ -57,9 +143,10 @@ export class SessionManager {
     return runtimeSession;
   }
 
-  async getSession(documentId: string): Promise<RuntimeSession | undefined> {
+  async getSession(documentId: string, sessionDid: string): Promise<RuntimeSession | undefined> {
     // Check in-memory first for active sessions
-    let inMemorySession = this.inMemorySessions.get(documentId);
+    const sessionKey = this.getSessionKey(documentId, sessionDid);
+    let inMemorySession = this.inMemorySessions.get(sessionKey);
     if (inMemorySession) {
       return inMemorySession;
     }
@@ -67,7 +154,7 @@ export class SessionManager {
     // Check Redis cache (fast)
     let cachedSession: any;
     if (redisStore.connected) {
-      cachedSession = await redisStore.getSession(documentId);
+      cachedSession = await redisStore.getSession(sessionKey);
 
       if (cachedSession) {
         const runtimeSession: RuntimeSession = {
@@ -79,13 +166,17 @@ export class SessionManager {
         };
 
         // Store in memory for immediate access
-        this.inMemorySessions.set(documentId, runtimeSession);
+        this.inMemorySessions.set(sessionKey, runtimeSession);
         return runtimeSession;
       }
     }
 
     // Fallback to MongoDB (persistent storage)
-    const dbSession = await SessionModel.findOne({ documentId, state: { $ne: "terminated" } });
+    const dbSession = await SessionModel.findOne({
+      documentId,
+      sessionDid,
+      state: { $ne: "terminated" },
+    });
     if (!dbSession) return undefined;
 
     const runtimeSession: RuntimeSession = {
@@ -97,11 +188,11 @@ export class SessionManager {
     };
 
     // Store in memory
-    this.inMemorySessions.set(documentId, runtimeSession);
+    this.inMemorySessions.set(sessionKey, runtimeSession);
 
     // Cache the session in Redis for future access
     if (redisStore.connected && !cachedSession) {
-      await redisStore.setSession(documentId, {
+      await redisStore.setSession(sessionKey, {
         documentId: runtimeSession.documentId,
         sessionDid: runtimeSession.sessionDid,
         ownerDid: runtimeSession.ownerDid,
@@ -113,13 +204,20 @@ export class SessionManager {
     return runtimeSession;
   }
 
-  async getRuntimeSession(documentId: string): Promise<RuntimeSession | undefined> {
-    return this.getSession(documentId);
+  async getRuntimeSession(
+    documentId: string,
+    sessionDid: string
+  ): Promise<RuntimeSession | undefined> {
+    return this.getSession(documentId, sessionDid);
   }
 
-  async addClientToSession(documentId: string, clientId: string): Promise<boolean> {
+  async addClientToSession(
+    documentId: string,
+    sessionDid: string,
+    clientId: string
+  ): Promise<boolean> {
     // Get the session (this will check memory, Redis, and MongoDB in order)
-    const session = await this.getSession(documentId);
+    const session = await this.getSession(documentId, sessionDid);
     if (!session) return false;
 
     // Add to in-memory session
@@ -127,43 +225,50 @@ export class SessionManager {
 
     // Sync with Redis if connected
     if (redisStore.connected) {
-      await redisStore.addClientToSession(documentId, clientId);
+      const sessionKey = this.getSessionKey(documentId, sessionDid);
+      await redisStore.addClientToSession(sessionKey, clientId);
     }
 
     return true;
   }
 
-  async removeClientFromSession(documentId: string, clientId: string): Promise<void> {
+  async removeClientFromSession(
+    documentId: string,
+    sessionDid: string,
+    clientId: string
+  ): Promise<void> {
     // Get in-memory session
-    const session = this.inMemorySessions.get(documentId);
+    const sessionKey = this.getSessionKey(documentId, sessionDid);
+    const session = this.inMemorySessions.get(sessionKey);
     if (session) {
       session.clients.delete(clientId);
 
       // If no more clients, deactivate the session
       if (session.clients.size === 0) {
-        await this.deactivateSession(documentId);
+        await this.deactivateSession(documentId, sessionDid);
         return;
       }
     }
 
     // Update Redis cache if connected
     if (redisStore.connected) {
-      await redisStore.removeClientFromSession(documentId, clientId);
+      await redisStore.removeClientFromSession(sessionKey, clientId);
     }
   }
 
-  async deactivateSession(documentId: string): Promise<void> {
+  async deactivateSession(documentId: string, sessionDid: string): Promise<void> {
     // Remove from in-memory storage
-    this.inMemorySessions.delete(documentId);
+    const sessionKey = this.getSessionKey(documentId, sessionDid);
+    this.inMemorySessions.delete(sessionKey);
 
     // Remove from Redis cache
     if (redisStore.connected) {
-      await redisStore.deleteSession(documentId);
+      await redisStore.deleteSession(sessionKey);
     }
 
     // Update MongoDB
     try {
-      await SessionModel.findOneAndUpdate({ documentId }, { state: "inactive" });
+      await SessionModel.findOneAndUpdate({ documentId, sessionDid }, { state: "inactive" });
     } catch (error) {
       console.error("Error deactivating session in database:", error);
     }
@@ -171,11 +276,12 @@ export class SessionManager {
 
   async terminateSession(documentId: string, sessionDid: string): Promise<void> {
     // Remove from in-memory storage
-    this.inMemorySessions.delete(documentId);
+    const sessionKey = this.getSessionKey(documentId, sessionDid);
+    this.inMemorySessions.delete(sessionKey);
 
     // Remove from Redis cache
     if (redisStore.connected) {
-      await redisStore.deleteSession(documentId);
+      await redisStore.deleteSession(sessionKey);
     }
 
     // Update MongoDB
@@ -189,17 +295,15 @@ export class SessionManager {
   }
 
   async getActiveSessionsCount(): Promise<number> {
-    // Use in-memory count for most accurate real-time count
-    const inMemoryCount = this.inMemorySessions.size;
-
-    // If we have in-memory sessions, use that count
-    if (inMemoryCount > 0) {
-      return inMemoryCount;
-    }
-
-    // Try Redis for distributed count
+    // For multi-dyno deployment, always use Redis for accurate count
     if (redisStore.connected) {
       return await redisStore.getActiveSessionsCount();
+    }
+
+    // Use in-memory count as fallback
+    const inMemoryCount = this.inMemorySessions.size;
+    if (inMemoryCount > 0) {
+      return inMemoryCount;
     }
 
     // Fallback to MongoDB count
@@ -211,6 +315,22 @@ export class SessionManager {
     }
   }
 
+  async getGlobalClientList(documentId: string, sessionDid: string): Promise<Set<string>> {
+    const sessionKey = this.getSessionKey(documentId, sessionDid);
+
+    // Get clients from Redis (which has the global state)
+    if (redisStore.connected) {
+      const redisSession = await redisStore.getSession(sessionKey);
+      if (redisSession) {
+        return new Set(redisSession.clients);
+      }
+    }
+
+    // Fallback to local session
+    const localSession = this.inMemorySessions.get(sessionKey);
+    return localSession ? localSession.clients : new Set<string>();
+  }
+
   async updateRoomInfo(
     documentId: string,
     sessionDid: string,
@@ -218,14 +338,15 @@ export class SessionManager {
     roomInfo: string
   ): Promise<void> {
     // Update in-memory session
-    const session = this.inMemorySessions.get(documentId);
+    const sessionKey = this.getSessionKey(documentId, sessionDid);
+    const session = this.inMemorySessions.get(sessionKey);
     if (session) {
       session.roomInfo = roomInfo;
     }
 
     // Update Redis cache
     if (redisStore.connected) {
-      await redisStore.updateRoomInfo(documentId, roomInfo);
+      await redisStore.updateRoomInfo(sessionKey, roomInfo);
     }
 
     // Update MongoDB
@@ -233,6 +354,28 @@ export class SessionManager {
       await SessionModel.findOneAndUpdate({ documentId, sessionDid, ownerDid }, { roomInfo });
     } catch (error) {
       console.error("Error updating session in database:", error);
+    }
+  }
+
+  setBroadcastHandler(handler: BroadcastHandler): void {
+    this.broadcastHandler = handler;
+  }
+
+  async broadcastToAllDynos(
+    documentId: string,
+    sessionDid: string,
+    message: any,
+    excludeClientId?: string
+  ): Promise<void> {
+    const sessionKey = this.getSessionKey(documentId, sessionDid);
+
+    if (redisStore.connected) {
+      await redisStore.publishBroadcastMessage(sessionKey, message, excludeClientId);
+    }
+
+    // Also handle local broadcasting immediately
+    if (this.broadcastHandler) {
+      await this.broadcastHandler(sessionKey, message, excludeClientId);
     }
   }
 

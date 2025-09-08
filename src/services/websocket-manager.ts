@@ -9,12 +9,44 @@ import {
 import { authService } from "./auth";
 import { mongodbStore } from "./mongodb-store";
 import { sessionManager } from "./session-manager";
+import { SessionModel } from "../database/models";
 
 export class WebSocketManager {
   private connections = new Map<string, AuthenticatedWebSocket>();
 
   constructor() {
     this.handleConnection = this.handleConnection.bind(this);
+    this.setupSessionBroadcastHandler();
+  }
+
+  private setupSessionBroadcastHandler(): void {
+    // Set up the broadcast handler for cross-dyno communication
+    sessionManager.setBroadcastHandler(
+      async (sessionKey: string, message: any, excludeClientId?: string) => {
+        await this.handleCrossDynoBroadcast(sessionKey, message, excludeClientId);
+      }
+    );
+  }
+
+  private async handleCrossDynoBroadcast(
+    sessionKey: string,
+    message: any,
+    excludeClientId?: string
+  ): Promise<void> {
+    const localSession = sessionManager["inMemorySessions"].get(sessionKey);
+    if (!localSession) return;
+
+    const messageStr = JSON.stringify(message);
+
+    // Broadcast to clients connected to this dyno only
+    localSession.clients.forEach((clientId: string) => {
+      if (clientId === excludeClientId) return;
+
+      const ws = this.connections.get(clientId);
+      if (ws && ws.readyState === WebSocket.OPEN) {
+        ws.send(messageStr);
+      }
+    });
   }
 
   handleConnection(ws: WebSocket) {
@@ -104,10 +136,15 @@ export class WebSocketManager {
   }
 
   private async handleTerminateSession(ws: AuthenticatedWebSocket, args: any, seqId: string) {
-    const { documentId, ownerToken, ownerAddress, contractAddress } = args;
+    const { documentId, ownerToken, ownerAddress, contractAddress, sessionDid } = args;
     console.log("TERMINATING SESSION", documentId);
 
-    const session = await sessionManager.getSession(documentId);
+    if (!sessionDid) {
+      this.sendError(ws, seqId, "Session DID is required", 400);
+      return;
+    }
+
+    const session = await sessionManager.getSession(documentId, sessionDid);
     if (!session) {
       this.sendError(ws, seqId, "Session not found", 404);
       return;
@@ -122,6 +159,7 @@ export class WebSocketManager {
 
     await this.broadcastToDocument(
       documentId,
+      session.sessionDid,
       {
         type: "SESSION_TERMINATED",
         event_type: "SESSION_TERMINATED",
@@ -145,9 +183,9 @@ export class WebSocketManager {
   }
 
   private async setupSession(ws: AuthenticatedWebSocket, args: any) {
-    const { documentId, ownerToken, ownerAddress, contractAddress, collaborationDid } = args;
+    const { documentId, ownerToken, ownerAddress, contractAddress, sessionDid } = args;
 
-    if (!documentId || !ownerToken || !collaborationDid) {
+    if (!documentId || !ownerToken || !sessionDid) {
       this.sendError(ws, null, "Document ID and token are required", 400);
       return false;
     }
@@ -161,28 +199,41 @@ export class WebSocketManager {
 
     ws.authenticated = true;
     ws.role = "owner";
+    ws.sessionDid = sessionDid;
 
     await sessionManager.createSession({
       documentId,
-      sessionDid: collaborationDid,
+      sessionDid: sessionDid,
       ownerDid,
       roomInfo: args.roomInfo,
     });
 
-    await sessionManager.addClientToSession(documentId, ws.clientId!);
+    await sessionManager.addClientToSession(documentId, sessionDid, ws.clientId!);
     console.log("SETUP DONE", documentId);
     return true;
   }
 
   private async handleJoinSession(ws: AuthenticatedWebSocket, args: any) {
-    const { documentId, collaborationToken, ownerToken, ownerAddress, contractAddress } = args;
+    const {
+      documentId,
+      collaborationToken,
+      ownerToken,
+      ownerAddress,
+      contractAddress,
+      sessionDid,
+    } = args;
 
-    if (!documentId || !collaborationToken) {
-      this.sendError(ws, null, "Document ID and token are required", 400);
+    if (!documentId || !collaborationToken || !sessionDid) {
+      this.sendError(
+        ws,
+        null,
+        "Document ID, collaboration token, and session DID are required",
+        400
+      );
       return false;
     }
 
-    const session = await sessionManager.getSession(documentId);
+    const session = await sessionManager.getSession(documentId, sessionDid);
 
     if (!session) {
       this.sendError(ws, null, "Session not found", 404);
@@ -207,6 +258,8 @@ export class WebSocketManager {
     ws.authenticated = true;
     ws.role = ownerDid === session.ownerDid ? "owner" : "editor";
     ws.documentId = documentId;
+    ws.sessionDid = session.sessionDid;
+
     if (ws.role === "owner" && args.roomInfo) {
       await sessionManager.updateRoomInfo(
         documentId,
@@ -216,7 +269,7 @@ export class WebSocketManager {
       );
     }
 
-    await sessionManager.addClientToSession(documentId, ws.clientId!);
+    await sessionManager.addClientToSession(documentId, session.sessionDid, ws.clientId!);
 
     console.log("JOINED SESSION", documentId, ws.role);
     return true;
@@ -240,7 +293,14 @@ export class WebSocketManager {
     ws.documentId = documentId;
 
     let isVerified = false;
-    const existingSession = await sessionManager.getSession(documentId);
+    const { sessionDid } = args;
+
+    if (!sessionDid) {
+      this.sendError(ws, seqId, "Session DID is required", 400);
+      return;
+    }
+
+    const existingSession = await sessionManager.getSession(documentId, sessionDid);
 
     if (!existingSession) {
       isVerified = await this.setupSession(ws, args);
@@ -256,6 +316,7 @@ export class WebSocketManager {
     // Notify other users about membership change
     await this.broadcastToDocument(
       documentId,
+      ws.sessionDid!,
       {
         type: "ROOM_UPDATE",
         event_type: "ROOM_MEMBERSHIP_CHANGE",
@@ -287,8 +348,8 @@ export class WebSocketManager {
   }
 
   private async handleDocumentUpdate(ws: AuthenticatedWebSocket, args: any, seqId: string) {
-    if (!ws.authenticated || !ws.documentId) {
-      this.sendError(ws, seqId, "Not authenticated", 401);
+    if (!ws.authenticated || !ws.documentId || !ws.sessionDid) {
+      this.sendError(ws, seqId, "Not authenticated or session not found", 401);
       return;
     }
 
@@ -300,7 +361,7 @@ export class WebSocketManager {
       return;
     }
 
-    const session = await sessionManager.getRuntimeSession(documentId);
+    const session = await sessionManager.getRuntimeSession(documentId, ws.sessionDid);
     const sessionDid = session?.sessionDid;
 
     if (!sessionDid) {
@@ -331,6 +392,7 @@ export class WebSocketManager {
     // Broadcast update to other clients
     await this.broadcastToDocument(
       documentId,
+      ws.sessionDid!,
       {
         type: "CONTENT_UPDATE",
         event_type: "CONTENT_UPDATE",
@@ -364,8 +426,8 @@ export class WebSocketManager {
   }
 
   private async handleDocumentCommit(ws: AuthenticatedWebSocket, args: any, seqId: string) {
-    if (!ws.authenticated || !ws.documentId) {
-      this.sendError(ws, seqId, "Not authenticated", 401);
+    if (!ws.authenticated || !ws.documentId || !ws.sessionDid) {
+      this.sendError(ws, seqId, "Not authenticated or session not found", 401);
       return;
     }
 
@@ -377,7 +439,7 @@ export class WebSocketManager {
     const { updates, cid, ownerToken } = args;
     const documentId = args.documentId || ws.documentId;
 
-    const session = await sessionManager.getRuntimeSession(documentId);
+    const session = await sessionManager.getRuntimeSession(documentId, ws.sessionDid);
     const sessionDid = session?.sessionDid;
 
     if (!sessionDid) {
@@ -482,14 +544,14 @@ export class WebSocketManager {
   }
 
   private async handlePeersList(ws: AuthenticatedWebSocket, args: any, seqId: string) {
-    if (!ws.authenticated || !ws.documentId) {
-      this.sendError(ws, seqId, "Not authenticated", 401);
+    if (!ws.authenticated || !ws.documentId || !ws.sessionDid) {
+      this.sendError(ws, seqId, "Not authenticated or session not found", 401);
       return;
     }
 
     const documentId = args.documentId || ws.documentId;
 
-    const session = await sessionManager.getSession(documentId);
+    const session = await sessionManager.getSession(documentId, ws.sessionDid);
     const peers = session?.clients;
 
     this.sendMessage(ws, {
@@ -504,8 +566,8 @@ export class WebSocketManager {
   }
 
   private async handleAwareness(ws: AuthenticatedWebSocket, args: any, seqId: string) {
-    if (!ws.authenticated || !ws.documentId) {
-      this.sendError(ws, seqId, "Not authenticated", 401);
+    if (!ws.authenticated || !ws.documentId || !ws.sessionDid) {
+      this.sendError(ws, seqId, "Not authenticated or session not found", 401);
       return;
     }
 
@@ -515,6 +577,7 @@ export class WebSocketManager {
     // Broadcast awareness update to other clients
     await this.broadcastToDocument(
       documentId,
+      ws.sessionDid!,
       {
         type: "AWARENESS_UPDATE",
         event_type: "AWARENESS_UPDATE",
@@ -541,26 +604,31 @@ export class WebSocketManager {
     const ws = this.connections.get(clientId);
     if (ws && ws.authenticated && ws.documentId) {
       // Notify other users about membership change BEFORE removing from connections
-      await this.broadcastToDocument(
-        ws.documentId,
-        {
-          type: "ROOM_UPDATE",
-          event_type: "ROOM_MEMBERSHIP_CHANGE",
-          event: {
-            data: {
-              action: "user_left",
-              user: {
-                role: ws.role,
+      if (ws.sessionDid) {
+        await this.broadcastToDocument(
+          ws.documentId,
+          ws.sessionDid,
+          {
+            type: "ROOM_UPDATE",
+            event_type: "ROOM_MEMBERSHIP_CHANGE",
+            event: {
+              data: {
+                action: "user_left",
+                user: {
+                  role: ws.role,
+                },
               },
+              roomId: ws.documentId,
             },
-            roomId: ws.documentId,
           },
-        },
-        clientId
-      );
+          clientId
+        );
+      }
 
       // Remove from session and handle session cleanup
-      await sessionManager.removeClientFromSession(ws.documentId, clientId);
+      if (ws.sessionDid) {
+        await sessionManager.removeClientFromSession(ws.documentId, ws.sessionDid, clientId);
+      }
     }
 
     this.connections.delete(clientId);
@@ -590,22 +658,12 @@ export class WebSocketManager {
 
   private async broadcastToDocument(
     documentId: string,
+    sessionDid: string,
     event: WebSocketEvent,
     excludeClientId?: string
   ) {
-    const session = await sessionManager.getRuntimeSession(documentId);
-
-    if (!session) return;
-
-    const message = JSON.stringify(event);
-    session.clients.forEach((clientId: string) => {
-      if (clientId === excludeClientId) return;
-
-      const ws = this.connections.get(clientId);
-      if (ws && ws.readyState === WebSocket.OPEN) {
-        ws.send(message);
-      }
-    });
+    // Use the new cross-dyno broadcasting system
+    await sessionManager.broadcastToAllDynos(documentId, sessionDid, event, excludeClientId);
   }
 
   async getStats() {

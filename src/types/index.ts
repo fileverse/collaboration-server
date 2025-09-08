@@ -51,6 +51,7 @@ export interface WebSocketEvent {
 
 export interface AuthenticatedWebSocket extends WebSocket {
   documentId?: string;
+  sessionDid?: string;
   role?: "owner" | "editor";
   authenticated?: boolean;
   clientId?: string;

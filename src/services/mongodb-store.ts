@@ -33,7 +33,6 @@ export class MongoDBStore {
       return {
         id: update._id,
         documentId: update.documentId,
-
         data: update.data,
         updateType: update.updateType,
         committed: update.committed,
