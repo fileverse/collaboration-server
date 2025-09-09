@@ -489,7 +489,7 @@ export class WebSocketManager {
   }
 
   private async handleCommitHistory(ws: AuthenticatedWebSocket, args: any, seqId: string) {
-    if (!ws.authenticated || !ws.documentId) {
+    if (!ws.authenticated || !ws.documentId || !ws.sessionDid) {
       this.sendError(ws, seqId, "Not authenticated", 401);
       return;
     }
@@ -497,11 +497,17 @@ export class WebSocketManager {
     const documentId = args.documentId || ws.documentId;
     const { offset = 0, limit = 10, sort = "desc" } = args;
 
-    const commits = await mongodbStore.getCommitsByDocument(documentId, {
-      offset,
-      limit,
-      sort,
-    });
+    const commits = await mongodbStore.getCommitsByDocument(
+      {
+        documentId,
+        sessionDid: ws.sessionDid,
+      },
+      {
+        offset,
+        limit,
+        sort,
+      }
+    );
 
     this.sendMessage(ws, {
       status: true,
@@ -516,7 +522,7 @@ export class WebSocketManager {
   }
 
   private async handleUpdateHistory(ws: AuthenticatedWebSocket, args: any, seqId: string) {
-    if (!ws.authenticated || !ws.documentId) {
+    if (!ws.authenticated || !ws.documentId || !ws.sessionDid) {
       this.sendError(ws, seqId, "Not authenticated", 401);
       return;
     }
@@ -524,7 +530,12 @@ export class WebSocketManager {
     const documentId = args.documentId || ws.documentId;
     const { offset = 0, limit = 100, sort = "desc", filters = {} } = args;
 
-    const updates = await mongodbStore.getUpdatesByDocument(documentId, {
+    const query = {
+      documentId,
+      sessionDid: ws.sessionDid,
+    };
+
+    const updates = await mongodbStore.getUpdatesByDocument(query, {
       offset,
       limit,
       sort,

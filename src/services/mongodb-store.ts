@@ -47,7 +47,7 @@ export class MongoDBStore {
   }
 
   async getUpdatesByDocument(
-    documentId: string,
+    filters: { documentId: string; sessionDid: string },
     options: {
       limit?: number;
       offset?: number;
@@ -56,7 +56,7 @@ export class MongoDBStore {
     } = {}
   ): Promise<DocumentUpdate[]> {
     try {
-      let query = DocumentUpdateModel.find({ documentId: documentId });
+      let query = DocumentUpdateModel.find(filters);
 
       // Filter by committed status
       if (options.committed !== undefined) {
@@ -154,7 +154,7 @@ export class MongoDBStore {
   }
 
   async getCommitsByDocument(
-    documentId: string,
+    filters: { documentId: string; sessionDid: string },
     options: {
       limit?: number;
       offset?: number;
@@ -162,7 +162,7 @@ export class MongoDBStore {
     } = {}
   ): Promise<DocumentCommit[]> {
     try {
-      let query = DocumentCommitModel.find({ documentId: documentId });
+      let query = DocumentCommitModel.find(filters);
 
       // Sort by creation time
       const sortOrder = options.sort === "desc" ? -1 : 1;
