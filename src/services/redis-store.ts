@@ -38,7 +38,7 @@ export class RedisStore {
     this.redis = new Redis(config.redis.url);
     this.subscriber = new Redis(config.redis.url);
     this.dynoId = `dyno_${Math.random().toString(36).substring(7)}_${Date.now()}`;
-    this.isConnected = true; // Enable Redis for production
+    this.isConnected = false; // Enable Redis for production
     this.setupEventHandlers();
     this.setupPubSub();
   }
@@ -310,7 +310,7 @@ export class RedisStore {
   }
 
   get connected(): boolean {
-    return this.isConnected;
+    return false;
   }
 
   async disconnect(): Promise<void> {

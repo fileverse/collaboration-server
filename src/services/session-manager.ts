@@ -276,6 +276,7 @@ export class SessionManager {
 
   async terminateSession(documentId: string, sessionDid: string): Promise<void> {
     // Remove from in-memory storage
+
     const sessionKey = this.getSessionKey(documentId, sessionDid);
     this.inMemorySessions.delete(sessionKey);
 
@@ -286,7 +287,14 @@ export class SessionManager {
 
     // Update MongoDB
     try {
-      await SessionModel.findOneAndUpdate({ documentId, sessionDid }, { state: "terminated" });
+      const session = await SessionModel.findOneAndUpdate(
+        { documentId, sessionDid },
+        {
+          state: "terminated",
+          roomInfo: null,
+        }
+      );
+
       await DocumentUpdateModel.deleteMany({ documentId, sessionDid });
       await DocumentCommitModel.deleteMany({ documentId, sessionDid });
     } catch (error) {

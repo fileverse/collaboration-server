@@ -10,6 +10,8 @@
   },
   "scripts": {
     "dev": "tsx watch src/index.ts",
+    "debug": "tsx --inspect src/index.ts",
+    "debug:watch": "tsx --inspect watch src/index.ts",
     "build": "npx tsc",
     "start": "npx tsx src/index.ts",
     "start:prod": "node --loader tsx/esm src/index.ts",

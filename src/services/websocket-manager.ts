@@ -16,6 +16,7 @@ export class WebSocketManager {
 
   constructor() {
     this.handleConnection = this.handleConnection.bind(this);
+    this.handleCrossDynoBroadcast = this.handleCrossDynoBroadcast.bind(this);
     this.setupSessionBroadcastHandler();
   }
 
@@ -186,15 +187,21 @@ export class WebSocketManager {
     const { documentId, ownerToken, ownerAddress, contractAddress, sessionDid } = args;
 
     if (!documentId || !ownerToken || !sessionDid) {
-      this.sendError(ws, null, "Document ID and token are required", 400);
-      return false;
+      return {
+        isVerified: false,
+        message: "Document ID, owner token, and session DID are required",
+        statusCode: 400,
+      };
     }
 
     const ownerDid = await authService.verifyOwnerToken(ownerToken, contractAddress, ownerAddress);
 
     if (!ownerDid) {
-      this.sendError(ws, null, "Authentication failed", 401);
-      return false;
+      return {
+        isVerified: false,
+        message: "Authentication failed",
+        statusCode: 401,
+      };
     }
 
     ws.authenticated = true;
@@ -210,10 +217,22 @@ export class WebSocketManager {
 
     await sessionManager.addClientToSession(documentId, sessionDid, ws.clientId!);
     console.log("SETUP DONE", documentId);
-    return true;
+    return {
+      isVerified: true,
+      message: "Session setup successful",
+      statusCode: 200,
+    };
   }
 
-  private async handleJoinSession(ws: AuthenticatedWebSocket, args: any) {
+  private async handleJoinSession(ws: AuthenticatedWebSocket, args: any, session: any) {
+    if (!session) {
+      return {
+        isVerified: false,
+        message: "Session not found",
+        statusCode: 404,
+      };
+    }
+
     const {
       documentId,
       collaborationToken,
@@ -224,20 +243,11 @@ export class WebSocketManager {
     } = args;
 
     if (!documentId || !collaborationToken || !sessionDid) {
-      this.sendError(
-        ws,
-        null,
-        "Document ID, collaboration token, and session DID are required",
-        400
-      );
-      return false;
-    }
-
-    const session = await sessionManager.getSession(documentId, sessionDid);
-
-    if (!session) {
-      this.sendError(ws, null, "Session not found", 404);
-      return false;
+      return {
+        isVerified: false,
+        message: "Document ID, collaboration token, and session DID are required",
+        statusCode: 400,
+      };
     }
 
     const userDid = await authService.verifyCollaborationToken(
@@ -246,8 +256,11 @@ export class WebSocketManager {
     );
 
     if (!userDid) {
-      this.sendError(ws, null, "Authentication failed", 401);
-      return false;
+      return {
+        isVerified: false,
+        message: "Authentication failed",
+        statusCode: 401,
+      };
     }
 
     let ownerDid = null;
@@ -272,7 +285,11 @@ export class WebSocketManager {
     await sessionManager.addClientToSession(documentId, session.sessionDid, ws.clientId!);
 
     console.log("JOINED SESSION", documentId, ws.role);
-    return true;
+    return {
+      isVerified: true,
+      message: "Session joined successfully",
+      statusCode: 200,
+    };
   }
 
   private async handleAuth(ws: AuthenticatedWebSocket, args: any, seqId: string) {
@@ -292,7 +309,11 @@ export class WebSocketManager {
 
     ws.documentId = documentId;
 
-    let isVerified = false;
+    let sessionSetupResponse = {
+      isVerified: false,
+      message: "",
+      statusCode: 0,
+    };
     const { sessionDid } = args;
 
     if (!sessionDid) {
@@ -302,14 +323,14 @@ export class WebSocketManager {
 
     const existingSession = await sessionManager.getSession(documentId, sessionDid);
 
-    if (!existingSession) {
-      isVerified = await this.setupSession(ws, args);
+    console.log(existingSession);
+    if (!existingSession && args.ownerToken) {
+      sessionSetupResponse = await this.setupSession(ws, args);
     } else {
-      isVerified = await this.handleJoinSession(ws, args);
+      sessionSetupResponse = await this.handleJoinSession(ws, args, existingSession);
     }
-
-    if (!isVerified) {
-      this.sendError(ws, seqId, "Authentication failed", 401);
+    if (!sessionSetupResponse.isVerified) {
+      this.sendError(ws, seqId, sessionSetupResponse.message, sessionSetupResponse.statusCode);
       return;
     }
 
