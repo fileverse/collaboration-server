@@ -208,14 +208,14 @@ class CollaborationServer {
 
       // creating encoder
       const encoder = this.waku.createEncoder({
-        contentTopic: `/ddocs/1/server-discovery/proto`,
+        contentTopic: `/ddocs/1/server-discovery/response`,
       });
       console.log('Encoder created:', encoder);
 
       // creating decoder
       console.log('Creating decoder...');
       const decoder = this.waku.createDecoder({
-        contentTopic: `/ddocs/1/server-discovery/proto`,
+        contentTopic: `/ddocs/1/server-discovery/request`,
       });
       console.log('Decoder created:', decoder);
 
@@ -230,6 +230,7 @@ class CollaborationServer {
         sender: "Server",
         message: "dev.fileverse.io",
       });
+      console.log('Waku message send:', wakuMessageSend);
 
       // subscribing to the decoder
       await this.waku.filter.subscribe(
@@ -243,7 +244,7 @@ class CollaborationServer {
           const decodedMessage = DataPacket.decode(wakuMessage.payload);
           console.log('Decoded message:', decodedMessage);
           // sending the message to the encoder
-          this.waku.lightPush.send(encoder, { payload: wakuMessageSend }, { autoRetry: true })
+          this.waku.lightPush.send(encoder, { payload: DataPacket.encode(wakuMessageSend).finish() })
             .then((result: any) => { console.log('Result:', result) })
             .catch(console.log);
         }
