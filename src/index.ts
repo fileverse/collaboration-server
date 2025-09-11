@@ -225,7 +225,7 @@ class CollaborationServer {
         .add(new protobuf.Field("sender", 2, "string"))
         .add(new protobuf.Field("message", 3, "string"));
       // creating a new message object
-      const wakuMessage = DataPacket.create({
+      const wakuMessageSend = DataPacket.create({
         timestamp: Date.now(),
         sender: "Server",
         message: "dev.fileverse.io",
@@ -243,7 +243,9 @@ class CollaborationServer {
           const decodedMessage = DataPacket.decode(wakuMessage.payload);
           console.log('Decoded message:', decodedMessage);
           // sending the message to the encoder
-          encoder.send(wakuMessage);
+          this.waku.lightPush.send(encoder, { payload: wakuMessageSend }, { autoRetry: true })
+            .then((result: any) => { console.log('Result:', result) })
+            .catch(console.log);
         }
       );
     } catch (error) {
