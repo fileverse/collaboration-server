@@ -208,14 +208,14 @@ class CollaborationServer {
 
       // creating encoder
       const encoder = this.waku.createEncoder({
-        contentTopic: `/ddocs/1/server-discovery/response`,
+        contentTopic: `/ddocs/1/server-discovery-response/proto`,
       });
       console.log('Encoder created:', encoder);
 
       // creating decoder
       console.log('Creating decoder...');
       const decoder = this.waku.createDecoder({
-        contentTopic: `/ddocs/1/server-discovery/request`,
+        contentTopic: `/ddocs/1/server-discovery-request/proto`,
       });
       console.log('Decoder created:', decoder);
 
@@ -228,7 +228,7 @@ class CollaborationServer {
       const wakuMessageSend = DataPacket.create({
         timestamp: Date.now(),
         sender: "Server",
-        message: "dev.fileverse.io",
+        message: config.wsURL,
       });
       console.log('Waku message send:', wakuMessageSend);
 
@@ -236,11 +236,6 @@ class CollaborationServer {
       await this.waku.filter.subscribe(
         decoder,
         (wakuMessage: any) => {
-          console.log(
-            'Raw Waku message received, payload length:',
-            wakuMessage.payload?.length
-          );
-          console.log('Waku message received:', wakuMessage);
           const decodedMessage = DataPacket.decode(wakuMessage.payload);
           console.log('Decoded message:', decodedMessage);
           // sending the message to the encoder
@@ -259,7 +254,9 @@ class CollaborationServer {
 const server = new CollaborationServer();
 server.start()
   .then(() => {
-    server.setupWaku().catch(console.log);
+    if (config.wsURL && config.wsURL !== "wss://0.0.0.0:5001") {
+      server.setupWaku().catch(console.log);
+    }
   })
   .catch((error) => {
     console.error("Failed to start collaboration server:", error);

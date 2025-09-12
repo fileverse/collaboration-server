@@ -96,4 +96,5 @@ export interface ServerConfig {
     max: number;
   };
   rpcURL: string;
+  wsURL: string;
 }
