@@ -236,12 +236,14 @@ class CollaborationServer {
       await this.waku.filter.subscribe(
         decoder,
         (wakuMessage: any) => {
-          const decodedMessage = DataPacket.decode(wakuMessage.payload);
+          const decodedMessage: any = DataPacket.decode(wakuMessage.payload);
           console.log('Decoded message:', decodedMessage);
-          // sending the message to the encoder
-          this.waku.lightPush.send(encoder, { payload: DataPacket.encode(wakuMessageSend).finish() })
-            .then((result: any) => { console.log('Result:', result) })
-            .catch(console.log);
+          if (decodedMessage && decodedMessage.sender === 'dDocs-Client') {
+            // sending the message to the encoder
+            this.waku.lightPush.send(encoder, { payload: DataPacket.encode(wakuMessageSend).finish() })
+                .then((result: any) => { console.log('Result:', result) })
+                .catch(console.log);
+          }
         }
       );
     } catch (error) {
