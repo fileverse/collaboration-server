@@ -1,6 +1,14 @@
 # Fileverse Collaboration Server
 
-A WebSocket-based real-time collaboration server that provides document synchronization, awareness features, and UCAN-based authentication.
+This repo covers how Real-Time Collaboration (RTC) with end-to-end encryption is achieved on is achieved via the Fileverse middleware on ddocs.new . Our approach offers both privacy and security via client-side encryption and by offering decentralized ways of enabling RTC on one's own documents.
+
+Tl;dr
+By default, RTC v0.2 on dDocs is facilitated by a stateless web-socket server (v0.1 was WebRTC) that deletes all the encrypted data it stores about a RTC session once the latest state of the document is pushed on IPFS and added to the document creator’s personal onchain content registry.
+All data touching the stateless web-socket server is stored only ephemerally and is first encrypted client-side.
+Self-hosting and Decentralization:
+
+* Bring your own Server: RTC on ddocs.new can also work by self-hosting your own web-socket server and enabling your collaboration session through it.
+* Decentralisation explorations: People using dDocs can also turn on the Waku servers discovery feature, which lets them discover and connect to community-hosted servers for RTC via Waku. This feature is still in early Alpha and highly experimental :warning:. Please use at your own risk. Thank you team Waku and Vàclav san for all the insights in helping us add this first version on dDocs! For the waku enabled version check this branch: feat/waku
 
 ## Features
 
