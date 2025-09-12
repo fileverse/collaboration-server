@@ -14,7 +14,7 @@ const SessionSchema = new Schema({
   sessionDid: { type: String, required: true },
   ownerDid: { type: String, required: true },
   createdAt: { type: Date, default: Date.now },
-  state: { type: String, enum: ["active", "inactive", "terminated"], default: "active" },
+  state: { type: String, enum: ["active", "terminated"], default: "active" },
   roomInfo: { type: String, default: null },
 });
 

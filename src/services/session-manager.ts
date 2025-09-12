@@ -265,13 +265,6 @@ export class SessionManager {
     if (redisStore.connected) {
       await redisStore.deleteSession(sessionKey);
     }
-
-    // Update MongoDB
-    try {
-      await SessionModel.findOneAndUpdate({ documentId, sessionDid }, { state: "inactive" });
-    } catch (error) {
-      console.error("Error deactivating session in database:", error);
-    }
   }
 
   async terminateSession(documentId: string, sessionDid: string): Promise<void> {
@@ -287,7 +280,7 @@ export class SessionManager {
 
     // Update MongoDB
     try {
-      const session = await SessionModel.findOneAndUpdate(
+      await SessionModel.findOneAndUpdate(
         { documentId, sessionDid },
         {
           state: "terminated",

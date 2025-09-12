@@ -310,6 +310,7 @@ export class RedisStore {
   }
 
   get connected(): boolean {
+    // TODO: FIX THIS
     return false;
   }
 
