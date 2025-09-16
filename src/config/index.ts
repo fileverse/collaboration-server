@@ -11,6 +11,10 @@ export const config: ServerConfig = {
     uri: process.env.MONGODB_URI || "mongodb://localhost:27017/collaboration",
   },
 
+  redis: {
+    url: process.env.REDISCLOUD_URL || "redis://localhost:6379",
+  },
+
   auth: {
     serverDid: process.env.SERVER_DID || "did:key:z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK",
   },
@@ -21,4 +25,5 @@ export const config: ServerConfig = {
   },
   rpcURL: process.env.RPC_URL || "https://rpc.ankr.com/eth",
   wsURL: process.env.WS_URL || "wss://0.0.0.0:5001",
+  nodeEnv: process.env.NODE_ENV || "development",
 };

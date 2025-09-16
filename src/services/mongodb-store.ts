@@ -8,12 +8,13 @@ export class MongoDBStore {
       const mongoUpdate = new DocumentUpdateModel({
         _id: update.id,
         documentId: update.documentId,
-        userId: update.userId,
+
         data: update.data,
         updateType: update.updateType,
         committed: update.committed,
         commitCid: update.commitCid,
         createdAt: update.createdAt,
+        sessionDid: update.sessionDid,
       });
 
       await mongoUpdate.save();
@@ -32,12 +33,12 @@ export class MongoDBStore {
       return {
         id: update._id,
         documentId: update.documentId,
-        userId: update.userId,
         data: update.data,
         updateType: update.updateType,
         committed: update.committed,
         commitCid: update.commitCid,
         createdAt: update.createdAt,
+        sessionDid: update.sessionDid,
       };
     } catch (error) {
       console.error("Error getting update:", error);
@@ -46,7 +47,7 @@ export class MongoDBStore {
   }
 
   async getUpdatesByDocument(
-    documentId: string,
+    filters: { documentId: string; sessionDid: string },
     options: {
       limit?: number;
       offset?: number;
@@ -55,7 +56,7 @@ export class MongoDBStore {
     } = {}
   ): Promise<DocumentUpdate[]> {
     try {
-      let query = DocumentUpdateModel.find({ documentId: documentId });
+      let query = DocumentUpdateModel.find(filters);
 
       // Filter by committed status
       if (options.committed !== undefined) {
@@ -79,12 +80,13 @@ export class MongoDBStore {
       return updates.map((update) => ({
         id: update._id,
         documentId: update.documentId,
-        userId: update.userId,
+
         data: update.data,
         updateType: update.updateType,
         committed: update.committed,
         commitCid: update.commitCid,
         createdAt: update.createdAt,
+        sessionDid: update.sessionDid,
       }));
     } catch (error) {
       console.error("Error getting updates by document:", error);
@@ -113,10 +115,11 @@ export class MongoDBStore {
       const mongoCommit = new DocumentCommitModel({
         _id: commit.id,
         documentId: commit.documentId,
-        userId: commit.userId,
+
         cid: commit.cid,
         updates: commit.updates,
         createdAt: commit.createdAt,
+        sessionDid: commit.sessionDid,
       });
 
       await mongoCommit.save();
@@ -139,10 +142,10 @@ export class MongoDBStore {
       return {
         id: commit._id,
         documentId: commit.documentId,
-        userId: commit.userId,
         cid: commit.cid,
         updates: commit.updates,
         createdAt: commit.createdAt,
+        sessionDid: commit.sessionDid,
       };
     } catch (error) {
       console.error("Error getting commit:", error);
@@ -151,7 +154,7 @@ export class MongoDBStore {
   }
 
   async getCommitsByDocument(
-    documentId: string,
+    filters: { documentId: string; sessionDid: string },
     options: {
       limit?: number;
       offset?: number;
@@ -159,7 +162,7 @@ export class MongoDBStore {
     } = {}
   ): Promise<DocumentCommit[]> {
     try {
-      let query = DocumentCommitModel.find({ documentId: documentId });
+      let query = DocumentCommitModel.find(filters);
 
       // Sort by creation time
       const sortOrder = options.sort === "desc" ? -1 : 1;
@@ -178,85 +181,16 @@ export class MongoDBStore {
       return commits.map((commit) => ({
         id: commit._id,
         documentId: commit.documentId,
-        userId: commit.userId,
         cid: commit.cid,
         updates: commit.updates,
         createdAt: commit.createdAt,
+        sessionDid: commit.sessionDid,
       }));
     } catch (error) {
       console.error("Error getting commits by document:", error);
       return [];
     }
   }
-
-  // Room member management
-  // async getRoomMembers(documentId: string): Promise<RoomMember[]> {
-  //   try {
-  //     const members = await RoomMemberModel.find({ documentId: documentId });
-  //     return members.map((member) => ({
-  //       userId: member.userId,
-  //       username: member.username,
-  //       role: member.role,
-  //       clientId: member.clientId,
-  //       joined_at: member.joined_at,
-  //     }));
-  //   } catch (error) {
-  //     console.error("Error getting room members:", error);
-  //     return [];
-  //   }
-  // }
-
-  // async addRoomMember(documentId: string, member: RoomMember) {
-  //   try {
-  //     await RoomMemberModel.findOneAndUpdate(
-  //       { documentId: documentId, userId: member.userId },
-  //       {
-  //         username: member.username,
-  //         role: member.role,
-  //         clientId: member.clientId,
-  //         joined_at: member.joined_at,
-  //       },
-  //       { upsert: true, new: true }
-  //     );
-  //   } catch (error) {
-  //     console.error("Error adding room member:", error);
-  //     throw error;
-  //   }
-  // }
-
-  // async removeRoomMember(documentId: string, userId: string) {
-  //   try {
-  //     await RoomMemberModel.deleteOne({
-  //       documentId: documentId,
-  //       userId: userId,
-  //     });
-  //   } catch (error) {
-  //     console.error("Error removing room member:", error);
-  //     throw error;
-  //   }
-  // }
-
-  // async getRoomMember(documentId: string, userId: string): Promise<RoomMember | undefined> {
-  //   try {
-  //     const member = await RoomMemberModel.findOne({
-  //       documentId: documentId,
-  //       userId: userId,
-  //     });
-
-  //     if (!member) return undefined;
-
-  //     return {
-  //       userId: member.userId,
-  //       username: member.username,
-  //       role: member.role,
-  //       clientId: member.clientId,
-  //       joined_at: member.joined_at,
-  //     };
-  //   } catch (error) {
-  //     console.error("Error getting room member:", error);
-  //     return undefined;
-  //   }
-  // }
 
   // Statistics
   async getStats() {

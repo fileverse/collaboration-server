@@ -20,11 +20,32 @@ class DatabaseService {
       console.log("Connecting to MongoDB...");
 
       await mongoose.connect(connectionString, {
-        // Connection options for better performance and reliability
-        maxPoolSize: 10, // Maintain up to 10 socket connections
-        serverSelectionTimeoutMS: 5000, // Keep trying to send operations for 5 seconds
-        socketTimeoutMS: 45000, // Close sockets after 45 seconds of inactivity
-        bufferCommands: false, // Disable mongoose buffering
+        // Connection pool settings
+        maxPoolSize: 10,
+        minPoolSize: 2,
+        maxIdleTimeMS: 60000, // Increased to prevent frequent disconnections
+
+        // Timeout settings - more lenient
+        serverSelectionTimeoutMS: 30000, // Increased timeout
+        socketTimeoutMS: 0, // No socket timeout for long-running connections
+        connectTimeoutMS: 30000, // Increased connection timeout
+
+        // Heartbeat settings - less frequent to reduce chatter
+        heartbeatFrequencyMS: 30000, // Reduced frequency
+
+        // Simplified write/read concerns
+        writeConcern: {
+          w: 1, // Faster writes
+          j: false, // No journaling requirement
+        },
+        readPreference: "primary",
+
+        // Retry settings
+        retryWrites: true,
+        retryReads: true,
+
+        // Disable buffering for real-time
+        bufferCommands: false,
       });
 
       this.isConnected = true;
@@ -44,6 +65,11 @@ class DatabaseService {
       mongoose.connection.on("reconnected", () => {
         console.log("MongoDB reconnected");
         this.isConnected = true;
+      });
+
+      mongoose.connection.on("close", () => {
+        console.log("MongoDB connection closed");
+        this.isConnected = false;
       });
     } catch (error) {
       console.error("Failed to connect to MongoDB:", error);

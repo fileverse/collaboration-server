@@ -2,20 +2,22 @@ import mongoose, { Schema, Document as MongooseDocument } from "mongoose";
 
 export interface ISession extends MongooseDocument {
   documentId: string;
-  collaborationDid: string;
+  sessionDid: string;
   ownerDid: string;
   createdAt: Date;
   state: "active" | "terminated";
+  roomInfo: string;
 }
 
 const SessionSchema = new Schema({
   documentId: { type: String, required: true },
-  collaborationDid: { type: String, required: true },
+  sessionDid: { type: String, required: true },
   ownerDid: { type: String, required: true },
   createdAt: { type: Date, default: Date.now },
-  state: { type: String, enum: ["active", "inactive", "terminated"], default: "active" },
+  state: { type: String, enum: ["active", "terminated"], default: "active" },
+  roomInfo: { type: String, default: null },
 });
 
-SessionSchema.index({ documentId: 1, createdAt: 1 });
+SessionSchema.index({ documentId: 1, createdAt: 1, sessionDid: 1 });
 
 export const SessionModel = mongoose.model<ISession>("Session", SessionSchema);

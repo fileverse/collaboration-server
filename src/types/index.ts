@@ -3,25 +3,28 @@ import { WebSocket } from "ws";
 export interface DocumentUpdate {
   id: string;
   documentId: string;
-  userId: string;
+
   data: string; // encrypted Y.js update
   updateType: string;
   committed: boolean;
   commitCid: string | null;
   createdAt: number;
+  sessionDid: string;
 }
 
 export interface DocumentCommit {
   id: string;
   documentId: string;
-  userId: string;
+
   cid: string; // IPFS hash
   updates: string[]; // list of update IDs included in this commit
   createdAt: number;
+  sessionDid: string;
 }
 
 export interface WebSocketMessage {
-  cmd: string;
+  cmd?: string;
+  event?: string;
   args: Record<string, any>;
   seqId: string;
 }
@@ -32,6 +35,7 @@ export interface WebSocketResponse {
   seqId: string | null;
   is_handshake_response: boolean;
   data?: Record<string, any>;
+  error?: string;
   err?: string;
   err_detail?: Record<string, any> | null;
 }
@@ -46,12 +50,12 @@ export interface WebSocketEvent {
 }
 
 export interface AuthenticatedWebSocket extends WebSocket {
-  userId?: string;
-  username?: string;
   documentId?: string;
+  sessionDid?: string;
   role?: "owner" | "editor";
   authenticated?: boolean;
   clientId?: string;
+  serverId?: string;
 }
 
 export interface IPFSUploadResponse {
@@ -82,11 +86,16 @@ export interface DatabaseConfig {
   uri: string; // MongoDB connection string
 }
 
+export interface RedisConfig {
+  url: string;
+}
+
 export interface ServerConfig {
   port: number;
   host: string;
   corsOrigins: string[];
   database: DatabaseConfig;
+  redis: RedisConfig;
   auth: {
     serverDid: string;
     serverKeyPair?: any;
@@ -97,4 +106,5 @@ export interface ServerConfig {
   };
   rpcURL: string;
   wsURL: string;
+  nodeEnv: string;
 }

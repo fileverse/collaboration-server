@@ -38,7 +38,7 @@ export class AuthService {
     }
   }
 
-  async verifyCollaborationToken(token: string, collaborationDid: string) {
+  async verifyCollaborationToken(token: string, sessionDid: string) {
     try {
       const result = await ucans.verify(token, {
         audience: this.serverDid,
@@ -48,15 +48,12 @@ export class AuthService {
               with: { scheme: "storage", hierPart: "collaboration" },
               can: { namespace: "collaboration", segments: ["COLLABORATE"] },
             },
-            rootIssuer: collaborationDid,
+            rootIssuer: sessionDid,
           },
         ],
       });
 
-      if (result.ok) {
-        return true;
-      }
-      return false;
+      return result.ok;
     } catch (error) {
       console.error("UCAN verification error:", error);
       return false;

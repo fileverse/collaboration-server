@@ -9,12 +9,45 @@ import {
 import { authService } from "./auth";
 import { mongodbStore } from "./mongodb-store";
 import { sessionManager } from "./session-manager";
+import { SessionModel } from "../database/models";
 
 export class WebSocketManager {
   private connections = new Map<string, AuthenticatedWebSocket>();
 
   constructor() {
     this.handleConnection = this.handleConnection.bind(this);
+    this.handleCrossDynoBroadcast = this.handleCrossDynoBroadcast.bind(this);
+    this.setupSessionBroadcastHandler();
+  }
+
+  private setupSessionBroadcastHandler(): void {
+    // Set up the broadcast handler for cross-dyno communication
+    sessionManager.setBroadcastHandler(
+      async (sessionKey: string, message: any, excludeClientId?: string) => {
+        await this.handleCrossDynoBroadcast(sessionKey, message, excludeClientId);
+      }
+    );
+  }
+
+  private async handleCrossDynoBroadcast(
+    sessionKey: string,
+    message: any,
+    excludeClientId?: string
+  ): Promise<void> {
+    const localSession = sessionManager["inMemorySessions"].get(sessionKey);
+    if (!localSession) return;
+
+    const messageStr = JSON.stringify(message);
+
+    // Broadcast to clients connected to this dyno only
+    localSession.clients.forEach((clientId: string) => {
+      if (clientId === excludeClientId) return;
+
+      const ws = this.connections.get(clientId);
+      if (ws && ws.readyState === WebSocket.OPEN) {
+        ws.send(messageStr);
+      }
+    });
   }
 
   handleConnection(ws: WebSocket) {
@@ -104,10 +137,15 @@ export class WebSocketManager {
   }
 
   private async handleTerminateSession(ws: AuthenticatedWebSocket, args: any, seqId: string) {
-    const { documentId, ownerToken, ownerAddress, contractAddress } = args;
+    const { documentId, ownerToken, ownerAddress, contractAddress, sessionDid } = args;
     console.log("TERMINATING SESSION", documentId);
 
-    const session = await sessionManager.getSession(documentId);
+    if (!sessionDid) {
+      this.sendError(ws, seqId, "Session DID is required", 400);
+      return;
+    }
+
+    const session = await sessionManager.getSession(documentId, sessionDid);
     if (!session) {
       this.sendError(ws, seqId, "Session not found", 404);
       return;
@@ -120,8 +158,9 @@ export class WebSocketManager {
       return;
     }
 
-    this.broadcastToDocument(
+    await this.broadcastToDynos(
       documentId,
+      session.sessionDid,
       {
         type: "SESSION_TERMINATED",
         event_type: "SESSION_TERMINATED",
@@ -133,7 +172,7 @@ export class WebSocketManager {
       ws.clientId
     );
 
-    await sessionManager.terminateSession(documentId);
+    await sessionManager.terminateSession(documentId, session.sessionDid);
 
     this.sendMessage(ws, {
       status: true,
@@ -145,57 +184,101 @@ export class WebSocketManager {
   }
 
   private async setupSession(ws: AuthenticatedWebSocket, args: any) {
-    const { documentId, ownerToken, ownerAddress, contractAddress, collaborationDid } = args;
+    const { documentId, ownerToken, ownerAddress, contractAddress, sessionDid } = args;
 
-    if (!documentId || !ownerToken || !collaborationDid) {
-      this.sendError(ws, null, "Document ID and token are required", 400);
-      return false;
+    if (!documentId || !ownerToken || !sessionDid) {
+      return {
+        isVerified: false,
+        message: "Document ID, owner token, and session DID are required",
+        statusCode: 400,
+      };
     }
 
     const ownerDid = await authService.verifyOwnerToken(ownerToken, contractAddress, ownerAddress);
 
     if (!ownerDid) {
-      this.sendError(ws, null, "Authentication failed", 401);
-      return false;
+      return {
+        isVerified: false,
+        message: "Authentication failed",
+        statusCode: 401,
+      };
     }
 
     ws.authenticated = true;
     ws.role = "owner";
+    ws.sessionDid = sessionDid;
+
+    const existingSessions = await SessionModel.find({ documentId, sessionDid, ownerDid });
+
+    if (existingSessions.length > 0) {
+      // terminate all existing sessions that match the documentId, sessionDid, and ownerDid
+      // also broadcast to the participants of that session only
+      for (const session of existingSessions) {
+        await this.broadcastToDynos(documentId, session.sessionDid, {
+          type: "SESSION_TERMINATED",
+          event_type: "SESSION_TERMINATED",
+          event: {
+            data: null,
+            roomId: documentId,
+          },
+        });
+        await sessionManager.terminateSession(documentId, session.sessionDid);
+      }
+    }
 
     await sessionManager.createSession({
       documentId,
-      collaborationDid,
+      sessionDid: sessionDid,
       ownerDid,
+      roomInfo: args.roomInfo,
     });
 
-    sessionManager.addClientToSession(documentId, ws.clientId!);
+    await sessionManager.addClientToSession(documentId, sessionDid, ws.clientId!);
     console.log("SETUP DONE", documentId);
-    return true;
+    return {
+      isVerified: true,
+      message: "Session setup successful",
+      statusCode: 200,
+    };
   }
 
-  private async handleJoinSession(ws: AuthenticatedWebSocket, args: any) {
-    const { documentId, collaborationToken, ownerToken, ownerAddress, contractAddress } = args;
-
-    if (!documentId || !collaborationToken) {
-      this.sendError(ws, null, "Document ID and token are required", 400);
-      return false;
+  private async handleJoinSession(ws: AuthenticatedWebSocket, args: any, session: any) {
+    if (!session) {
+      return {
+        isVerified: false,
+        message: "Session not found",
+        statusCode: 404,
+      };
     }
 
-    const session = await sessionManager.getSession(documentId);
+    const {
+      documentId,
+      collaborationToken,
+      ownerToken,
+      ownerAddress,
+      contractAddress,
+      sessionDid,
+    } = args;
 
-    if (!session) {
-      this.sendError(ws, null, "Session not found", 404);
-      return false;
+    if (!documentId || !collaborationToken || !sessionDid) {
+      return {
+        isVerified: false,
+        message: "Document ID, collaboration token, and session DID are required",
+        statusCode: 400,
+      };
     }
 
     const userDid = await authService.verifyCollaborationToken(
       collaborationToken,
-      session.collaborationDid
+      session.sessionDid
     );
 
     if (!userDid) {
-      this.sendError(ws, null, "Authentication failed", 401);
-      return false;
+      return {
+        isVerified: false,
+        message: "Authentication failed",
+        statusCode: 401,
+      };
     }
 
     let ownerDid = null;
@@ -206,17 +289,31 @@ export class WebSocketManager {
     ws.authenticated = true;
     ws.role = ownerDid === session.ownerDid ? "owner" : "editor";
     ws.documentId = documentId;
+    ws.sessionDid = session.sessionDid;
 
-    sessionManager.addClientToSession(documentId, ws.clientId!);
+    if (ws.role === "owner" && args.roomInfo) {
+      await sessionManager.updateRoomInfo(
+        documentId,
+        session.sessionDid,
+        session.ownerDid,
+        args.roomInfo
+      );
+    }
+
+    await sessionManager.addClientToSession(documentId, session.sessionDid, ws.clientId!);
 
     console.log("JOINED SESSION", documentId, ws.role);
-    return true;
+    return {
+      isVerified: true,
+      message: "Session joined successfully",
+      statusCode: 200,
+    };
   }
 
   private async handleAuth(ws: AuthenticatedWebSocket, args: any, seqId: string) {
-    const { username, collaborationToken } = args;
+    const { collaborationToken } = args;
 
-    if (!username || !collaborationToken) {
+    if (!collaborationToken) {
       this.sendError(ws, seqId, "Username and token are required", 400);
       return;
     }
@@ -228,26 +325,37 @@ export class WebSocketManager {
       return;
     }
 
-    ws.userId = username;
-    ws.username = username;
     ws.documentId = documentId;
 
-    let isVerified = false;
-    const existingSession = await sessionManager.getSession(documentId);
-    if (!existingSession) {
-      isVerified = await this.setupSession(ws, args);
-    } else {
-      isVerified = await this.handleJoinSession(ws, args);
+    let sessionSetupResponse = {
+      isVerified: false,
+      message: "",
+      statusCode: 0,
+    };
+    const { sessionDid } = args;
+
+    if (!sessionDid) {
+      this.sendError(ws, seqId, "Session DID is required", 400);
+      return;
     }
 
-    if (!isVerified) {
-      this.sendError(ws, seqId, "Authentication failed", 401);
+    const existingSession = await sessionManager.getSession(documentId, sessionDid);
+
+    console.log(existingSession);
+    if (!existingSession && args.ownerToken) {
+      sessionSetupResponse = await this.setupSession(ws, args);
+    } else {
+      sessionSetupResponse = await this.handleJoinSession(ws, args, existingSession);
+    }
+    if (!sessionSetupResponse.isVerified) {
+      this.sendError(ws, seqId, sessionSetupResponse.message, sessionSetupResponse.statusCode);
       return;
     }
 
     // Notify other users about membership change
-    this.broadcastToDocument(
+    await this.broadcastToDynos(
       documentId,
+      ws.sessionDid!,
       {
         type: "ROOM_UPDATE",
         event_type: "ROOM_MEMBERSHIP_CHANGE",
@@ -255,8 +363,6 @@ export class WebSocketManager {
           data: {
             action: "user_joined",
             user: {
-              userId: ws.userId,
-              username: ws.username,
               role: ws.role,
             },
           },
@@ -273,15 +379,16 @@ export class WebSocketManager {
       is_handshake_response: true,
       data: {
         message: "Authentication successful",
-        userId: ws.userId,
         role: ws.role,
+        sessionType: existingSession ? "existing" : "new",
+        roomInfo: existingSession?.roomInfo,
       },
     });
   }
 
   private async handleDocumentUpdate(ws: AuthenticatedWebSocket, args: any, seqId: string) {
-    if (!ws.authenticated || !ws.documentId) {
-      this.sendError(ws, seqId, "Not authenticated", 401);
+    if (!ws.authenticated || !ws.documentId || !ws.sessionDid) {
+      this.sendError(ws, seqId, "Not authenticated or session not found", 401);
       return;
     }
 
@@ -293,18 +400,15 @@ export class WebSocketManager {
       return;
     }
 
-    const session = sessionManager.getRuntimeSession(documentId);
-    const collaborationDid = session?.collaborationDid;
+    const session = await sessionManager.getRuntimeSession(documentId, ws.sessionDid);
+    const sessionDid = session?.sessionDid;
 
-    if (!collaborationDid) {
+    if (!sessionDid) {
       this.sendError(ws, seqId, "Session not found", 404);
       return;
     }
 
-    const isVerified = await authService.verifyCollaborationToken(
-      collaborationToken,
-      collaborationDid!
-    );
+    const isVerified = await authService.verifyCollaborationToken(collaborationToken, sessionDid!);
 
     if (!isVerified) {
       this.sendError(ws, seqId, "Authentication failed", 401);
@@ -315,17 +419,19 @@ export class WebSocketManager {
     const update = await mongodbStore.createUpdate({
       id: uuidv4(),
       documentId,
-      userId: ws.userId!,
+
       data,
       updateType: "yjs_update",
       committed: false,
       commitCid: null,
       createdAt: Date.now(),
+      sessionDid: sessionDid,
     });
 
-    // Broadcast update to other clients
-    this.broadcastToDocument(
+    // Broadcast update to other clients (local dyno only)
+    await this.broadcastToDocument(
       documentId,
+      ws.sessionDid!,
       {
         type: "CONTENT_UPDATE",
         event_type: "CONTENT_UPDATE",
@@ -333,7 +439,7 @@ export class WebSocketManager {
           data: {
             id: update.id,
             data: update.data,
-            userId: update.userId,
+
             createdAt: update.createdAt,
           },
           roomId: documentId,
@@ -348,7 +454,6 @@ export class WebSocketManager {
       seqId,
       is_handshake_response: false,
       data: {
-        userId: update.userId,
         commitCid: update.commitCid,
         createdAt: update.createdAt,
         data: update.data,
@@ -360,8 +465,8 @@ export class WebSocketManager {
   }
 
   private async handleDocumentCommit(ws: AuthenticatedWebSocket, args: any, seqId: string) {
-    if (!ws.authenticated || !ws.documentId) {
-      this.sendError(ws, seqId, "Not authenticated", 401);
+    if (!ws.authenticated || !ws.documentId || !ws.sessionDid) {
+      this.sendError(ws, seqId, "Not authenticated or session not found", 401);
       return;
     }
 
@@ -372,6 +477,14 @@ export class WebSocketManager {
 
     const { updates, cid, ownerToken } = args;
     const documentId = args.documentId || ws.documentId;
+
+    const session = await sessionManager.getRuntimeSession(documentId, ws.sessionDid);
+    const sessionDid = session?.sessionDid;
+
+    if (!sessionDid) {
+      this.sendError(ws, seqId, "Session not found", 404);
+      return;
+    }
 
     if (!updates || !Array.isArray(updates) || !cid) {
       this.sendError(ws, seqId, "Updates array and CID are required", 400);
@@ -393,10 +506,11 @@ export class WebSocketManager {
     const commit = await mongodbStore.createCommit({
       id: uuidv4(),
       documentId,
-      userId: ws.userId!,
+
       cid,
       updates,
       createdAt: Date.now(),
+      sessionDid: sessionDid,
     });
 
     this.sendMessage(ws, {
@@ -405,7 +519,6 @@ export class WebSocketManager {
       seqId,
       is_handshake_response: false,
       data: {
-        userId: commit.userId,
         cid: commit.cid,
         createdAt: commit.createdAt,
         documentId: commit.documentId,
@@ -415,7 +528,7 @@ export class WebSocketManager {
   }
 
   private async handleCommitHistory(ws: AuthenticatedWebSocket, args: any, seqId: string) {
-    if (!ws.authenticated || !ws.documentId) {
+    if (!ws.authenticated || !ws.documentId || !ws.sessionDid) {
       this.sendError(ws, seqId, "Not authenticated", 401);
       return;
     }
@@ -423,11 +536,17 @@ export class WebSocketManager {
     const documentId = args.documentId || ws.documentId;
     const { offset = 0, limit = 10, sort = "desc" } = args;
 
-    const commits = await mongodbStore.getCommitsByDocument(documentId, {
-      offset,
-      limit,
-      sort,
-    });
+    const commits = await mongodbStore.getCommitsByDocument(
+      {
+        documentId,
+        sessionDid: ws.sessionDid,
+      },
+      {
+        offset,
+        limit,
+        sort,
+      }
+    );
 
     this.sendMessage(ws, {
       status: true,
@@ -442,7 +561,7 @@ export class WebSocketManager {
   }
 
   private async handleUpdateHistory(ws: AuthenticatedWebSocket, args: any, seqId: string) {
-    if (!ws.authenticated || !ws.documentId) {
+    if (!ws.authenticated || !ws.documentId || !ws.sessionDid) {
       this.sendError(ws, seqId, "Not authenticated", 401);
       return;
     }
@@ -450,7 +569,12 @@ export class WebSocketManager {
     const documentId = args.documentId || ws.documentId;
     const { offset = 0, limit = 100, sort = "desc", filters = {} } = args;
 
-    const updates = await mongodbStore.getUpdatesByDocument(documentId, {
+    const query = {
+      documentId,
+      sessionDid: ws.sessionDid,
+    };
+
+    const updates = await mongodbStore.getUpdatesByDocument(query, {
       offset,
       limit,
       sort,
@@ -470,14 +594,14 @@ export class WebSocketManager {
   }
 
   private async handlePeersList(ws: AuthenticatedWebSocket, args: any, seqId: string) {
-    if (!ws.authenticated || !ws.documentId) {
-      this.sendError(ws, seqId, "Not authenticated", 401);
+    if (!ws.authenticated || !ws.documentId || !ws.sessionDid) {
+      this.sendError(ws, seqId, "Not authenticated or session not found", 401);
       return;
     }
 
     const documentId = args.documentId || ws.documentId;
 
-    const session = await sessionManager.getSession(documentId);
+    const session = await sessionManager.getSession(documentId, ws.sessionDid);
     const peers = session?.clients;
 
     this.sendMessage(ws, {
@@ -492,17 +616,18 @@ export class WebSocketManager {
   }
 
   private async handleAwareness(ws: AuthenticatedWebSocket, args: any, seqId: string) {
-    if (!ws.authenticated || !ws.documentId) {
-      this.sendError(ws, seqId, "Not authenticated", 401);
+    if (!ws.authenticated || !ws.documentId || !ws.sessionDid) {
+      this.sendError(ws, seqId, "Not authenticated or session not found", 401);
       return;
     }
 
     const documentId = args.documentId || ws.documentId;
     const { data } = args;
 
-    // Broadcast awareness update to other clients
-    this.broadcastToDocument(
+    // Broadcast awareness update to other clients (local dyno only)
+    await this.broadcastToDocument(
       documentId,
+      ws.sessionDid!,
       {
         type: "AWARENESS_UPDATE",
         event_type: "AWARENESS_UPDATE",
@@ -529,28 +654,31 @@ export class WebSocketManager {
     const ws = this.connections.get(clientId);
     if (ws && ws.authenticated && ws.documentId) {
       // Notify other users about membership change BEFORE removing from connections
-      this.broadcastToDocument(
-        ws.documentId,
-        {
-          type: "ROOM_UPDATE",
-          event_type: "ROOM_MEMBERSHIP_CHANGE",
-          event: {
-            data: {
-              action: "user_left",
-              user: {
-                userId: ws.userId,
-                username: ws.username,
-                role: ws.role,
+      if (ws.sessionDid) {
+        await this.broadcastToDynos(
+          ws.documentId,
+          ws.sessionDid,
+          {
+            type: "ROOM_UPDATE",
+            event_type: "ROOM_MEMBERSHIP_CHANGE",
+            event: {
+              data: {
+                action: "user_left",
+                user: {
+                  role: ws.role,
+                },
               },
+              roomId: ws.documentId,
             },
-            roomId: ws.documentId,
           },
-        },
-        clientId
-      );
+          clientId
+        );
+      }
 
       // Remove from session and handle session cleanup
-      await sessionManager.removeClientFromSession(ws.documentId, clientId);
+      if (ws.sessionDid) {
+        await sessionManager.removeClientFromSession(ws.documentId, ws.sessionDid, clientId);
+      }
     }
 
     this.connections.delete(clientId);
@@ -578,13 +706,32 @@ export class WebSocketManager {
     });
   }
 
-  private broadcastToDocument(documentId: string, event: WebSocketEvent, excludeClientId?: string) {
-    const session = sessionManager.getRuntimeSession(documentId);
+  private async broadcastToDynos(
+    documentId: string,
+    sessionDid: string,
+    event: WebSocketEvent,
+    excludeClientId?: string
+  ) {
+    // Use the new cross-dyno broadcasting system
+    await sessionManager.broadcastToAllDynos(documentId, sessionDid, event, excludeClientId);
+  }
 
-    if (!session) return;
+  private async broadcastToDocument(
+    documentId: string,
+    sessionDid: string,
+    event: WebSocketEvent,
+    excludeClientId?: string
+  ) {
+    // Only broadcast to clients connected to this dyno (for document content)
+    const sessionKey = `${documentId}__${sessionDid}`;
+    const localSession = sessionManager["inMemorySessions"].get(sessionKey);
+
+    if (!localSession) return;
 
     const message = JSON.stringify(event);
-    session.clients.forEach((clientId: string) => {
+
+    // Broadcast only to local clients
+    localSession.clients.forEach((clientId: string) => {
       if (clientId === excludeClientId) return;
 
       const ws = this.connections.get(clientId);
@@ -600,7 +747,7 @@ export class WebSocketManager {
       authenticatedConnections: Array.from(this.connections.values()).filter(
         (ws) => ws.authenticated
       ).length,
-      runtimeSessions: sessionManager.activeSessionsCount,
+      runtimeSessions: await sessionManager.getActiveSessionsCount(),
       ...(await mongodbStore.getStats()),
     };
   }

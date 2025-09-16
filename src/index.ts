@@ -56,13 +56,23 @@ class CollaborationServer {
   }
 
   private setupRoutes() {
-    // Health check
+    // Health check with memory monitoring
     this.app.get("/health", async (req, res) => {
       const stats = await wsManager.getStats();
+      const memoryUsage = process.memoryUsage();
+
       res.json({
         status: "ok",
         timestamp: new Date().toISOString(),
         uptime: process.uptime(),
+        memory: {
+          rss: `${Math.round(memoryUsage.rss / 1024 / 1024)}MB`,
+          heapUsed: `${Math.round(memoryUsage.heapUsed / 1024 / 1024)}MB`,
+          heapTotal: `${Math.round(memoryUsage.heapTotal / 1024 / 1024)}MB`,
+        },
+        process: {
+          pid: process.pid,
+        },
         stats,
       });
     });
@@ -143,7 +153,7 @@ class CollaborationServer {
   }
 
   private shutdown(signal: string) {
-    console.log(`\n📴 Received ${signal}. Shutting down gracefully...`);
+    console.log(`\n Received ${signal}. Shutting down gracefully...`);
 
     if (this.wss) {
       this.wss.close(() => {
@@ -254,7 +264,8 @@ class CollaborationServer {
 
 // Start the server
 const server = new CollaborationServer();
-server.start()
+server
+  .start()
   .then(() => {
     if (config.wsURL && config.wsURL !== "wss://0.0.0.0:5001") {
       server.setupWaku().catch(console.log);
