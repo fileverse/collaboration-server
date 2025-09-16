@@ -10,7 +10,9 @@ import { wsManager } from "./services/websocket-manager";
 import { databaseService } from "./database";
 import { createLightNode } from "@waku/sdk";
 import { sessionManager } from "./services/session-manager";
-
+import protobuf from "protobufjs";
+import { generateKeyPairFromSeed } from "@libp2p/crypto/keys";
+import crypto from 'crypto';
 class CollaborationServer {
   private app: express.Application;
   private server: any;
@@ -198,9 +200,62 @@ class CollaborationServer {
 
   async setupWaku() {
     try {
-      this.waku = await createLightNode({ defaultBootstrap: true });
+      const privateKey = await generateKeyPairFromSeed("Ed25519", crypto.randomBytes(32));
+      this.waku = await createLightNode({
+        defaultBootstrap: true,
+        discovery: {
+          dns: true,
+          peerExchange: true,
+          peerCache: true,
+        },
+        libp2p: {
+          privateKey,
+        },
+      });
+      console.log('Waku created:', this.waku);
       await this.waku.start();
       console.log("Waku started");
+
+      // creating encoder
+      const encoder = this.waku.createEncoder({
+        contentTopic: `/ddocs/1/server-discovery-response/proto`,
+      });
+      console.log('Encoder created:', encoder);
+
+      // creating decoder
+      console.log('Creating decoder...');
+      const decoder = this.waku.createDecoder({
+        contentTopic: `/ddocs/1/server-discovery-request/proto`,
+      });
+      console.log('Decoder created:', decoder);
+
+      // Create a message structure using Protobuf
+      const DataPacket = new protobuf.Type("DataPacket")
+        .add(new protobuf.Field("timestamp", 1, "uint64"))
+        .add(new protobuf.Field("sender", 2, "string"))
+        .add(new protobuf.Field("message", 3, "string"));
+      // creating a new message object
+      const wakuMessageSend = DataPacket.create({
+        timestamp: Date.now(),
+        sender: "Server",
+        message: config.wsURL,
+      });
+      console.log('Waku message send:', wakuMessageSend);
+
+      // subscribing to the decoder
+      await this.waku.filter.subscribe(
+        decoder,
+        (wakuMessage: any) => {
+          const decodedMessage: any = DataPacket.decode(wakuMessage.payload);
+          console.log('Decoded message:', decodedMessage);
+          if (decodedMessage && decodedMessage.sender === 'dDocs-Client') {
+            // sending the message to the encoder
+            this.waku.lightPush.send(encoder, { payload: DataPacket.encode(wakuMessageSend).finish() })
+                .then((result: any) => { console.log('Result:', result) })
+                .catch(console.log);
+          }
+        }
+      );
     } catch (error) {
       console.error("Error starting Waku:", error);
     }
@@ -212,7 +267,9 @@ const server = new CollaborationServer();
 server
   .start()
   .then(() => {
-    server.setupWaku();
+    if (config.wsURL && config.wsURL !== "wss://0.0.0.0:5001") {
+      server.setupWaku().catch(console.log);
+    }
   })
   .catch((error) => {
     console.error("Failed to start collaboration server:", error);
