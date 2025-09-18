@@ -16,6 +16,8 @@ export class AuthService {
   async verifyOwnerToken(token: string, contractAddress: Hex, collaboratorAddress: Hex) {
     try {
       const ownerDid = await getOwnerDid(contractAddress, collaboratorAddress);
+      if (!ownerDid) return null;
+
       const result = await ucans.verify(token, {
         audience: this.serverDid,
         requiredCapabilities: [
