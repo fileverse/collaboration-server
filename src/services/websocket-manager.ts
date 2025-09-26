@@ -341,7 +341,6 @@ export class WebSocketManager {
 
     const existingSession = await sessionManager.getSession(documentId, sessionDid);
 
-    console.log(existingSession);
     if (!existingSession && args.ownerToken) {
       sessionSetupResponse = await this.setupSession(ws, args);
     } else {

@@ -70,6 +70,7 @@ export const getV2PortalOwnerDid = async (contractAddress: Hex, collaboratorAddr
 export const getCollaboratorDid = async (contractAddress: Hex, collaboratorAddress: Hex) => {
   let did = null;
   did = await getLegacyPortalCollaboratorKeys(contractAddress, collaboratorAddress);
+
   if (did) return did;
 
   return await getV2PortalOwnerDid(contractAddress, collaboratorAddress);
