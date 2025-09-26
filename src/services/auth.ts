@@ -30,6 +30,7 @@ export class AuthService {
           },
         ],
       });
+
       if (result.ok) {
         return ownerDid;
       }
