@@ -66,14 +66,14 @@ export class MongoDBStore {
       // Sort by creation time
       const sortOrder = options.sort === "desc" ? -1 : 1;
       query = query.sort({ createdAt: sortOrder });
-
+      // TODO: Add pagination
       // Apply pagination
-      if (options.offset) {
-        query = query.skip(options.offset);
-      }
-      if (options.limit) {
-        query = query.limit(options.limit);
-      }
+      // if (options.offset) {
+      //   query = query.skip(options.offset);
+      // }
+      // if (options.limit) {
+      //   query = query.limit(options.limit);
+      // }
 
       const updates = await query.exec();
 
