@@ -1,4 +1,4 @@
-# RTC Node
+# RTC Node (with Waku Support)
 
 This repo covers how Real-Time Collaboration (RTC) with end-to-end encryption is achieved on is achieved via the Fileverse middleware on ddocs.new . Our approach offers both privacy and security via client-side encryption and by offering decentralized ways of enabling RTC on one's own documents.
 Tl;dr
@@ -67,8 +67,13 @@ cp env.example .env
 - `NODE_ENV`: Environment mode (development/production)
 - `CORS_ORIGINS`: Comma-separated list of allowed origins
 - `SERVER_DID`: Server's DID for UCAN authentication
-- `RATE_LIMIT_WINDOW_MS`: Rate limiting window in milliseconds
-- `RATE_LIMIT_MAX`: Maximum requests per window
+- `MONGODB_URI`: MongoDB URI where you want your updates to be saved temporarily
+- `RPC_URL`: RPC URL to query onchain state and only allow people with relevant access to create rooms related to DDocs
+- `WS_URL`: Optional env vars if you want your node to participate in the waku discovery
+
+## Waku Support
+
+For this you just need to start the server with WS_URL set as the wss url that is being provided for the running rtc server. Once the server is up and running you just need to go to settings and trigger waku enabled rtc server discover and let your frontend find this server. If there are multiple options frontend client selects one of the url at random from the avaiable community servers. You can always over ride that option and set it to your own server's wss endpoint. 
 
 ## API Endpoints
 
@@ -80,7 +85,7 @@ cp env.example .env
 
 ### WebSocket API
 
-Connect to `ws://localhost:5000/` and send JSON messages:
+Connect to `ws://${env.HOST}:{env.PORT}/` and send JSON messages:
 
 #### Authentication
 
