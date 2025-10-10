@@ -6,10 +6,11 @@ By default, RTC v0.2 on dDocs is facilitated by a stateless web-socket server (v
 All data touching the stateless web-socket server is stored only ephemerally and is first encrypted client-side.
 
 Self-hosting and Decentralization:
-* Bring your own Server: RTC on ddocs.new can also work by self-hosting your own web-socket server and enabling your collaboration session through it.
-* Decentralisation explorations: People using dDocs can also turn on the Waku servers discovery feature, which lets them discover and connect to community-hosted servers for RTC via Waku. This feature is still in early Alpha and highly experimental :warning:. Please use at your own risk. Thank you team Waku and Vàclav san for all the insights in helping us add this first version on dDocs! For the waku enabled version check this branch: feat/waku
 
-This repo is currently being audited by Dedalo. Findings will be shared in a report here when completed. 
+- Bring your own Server: RTC on ddocs.new can also work by self-hosting your own web-socket server and enabling your collaboration session through it.
+- Decentralisation explorations: People using dDocs can also turn on the Waku servers discovery feature, which lets them discover and connect to community-hosted servers for RTC via Waku. This feature is still in early Alpha and highly experimental :warning:. Please use at your own risk. Thank you team Waku and Vàclav san for all the insights in helping us add this first version on dDocs! For the waku enabled version check this branch: feat/waku
+
+This repo is currently being audited by Dedalo. Findings will be shared in a report here when completed.
 
 ## Features
 
@@ -73,15 +74,13 @@ cp env.example .env
 
 ## Waku Support
 
-For this you just need to start the server with WS_URL set as the wss url that is being provided for the running rtc server. Once the server is up and running you just need to go to settings and trigger waku enabled rtc server discover and let your frontend find this server. If there are multiple options frontend client selects one of the url at random from the avaiable community servers. You can always over ride that option and set it to your own server's wss endpoint. 
+For this you just need to start the server with WS_URL set as the wss url that is being provided for the running rtc server. Once the server is up and running you just need to go to settings and trigger waku enabled rtc server discover and let your frontend find this server. If there are multiple options frontend client selects one of the url at random from the avaiable community servers. You can always over ride that option and set it to your own server's wss endpoint.
 
 ## API Endpoints
 
 ### HTTP Endpoints
 
 - `GET /health` - Health check and server stats
-- `GET /info` - Server information and capabilities
-- `GET /stats` - WebSocket connection statistics
 
 ### WebSocket API
 
