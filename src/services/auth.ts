@@ -41,14 +41,15 @@ export class AuthService {
     }
   }
 
-  async verifyCollaborationToken(token: string, sessionDid: string) {
+  async verifyCollaborationToken(token: string, sessionDid: string, documentId: string) {
     try {
       const result = await ucans.verify(token, {
         audience: this.serverDid,
+
         requiredCapabilities: [
           {
             capability: {
-              with: { scheme: "storage", hierPart: "collaboration" },
+              with: { scheme: "storage", hierPart: documentId },
               can: { namespace: "collaboration", segments: ["COLLABORATE"] },
             },
             rootIssuer: sessionDid,

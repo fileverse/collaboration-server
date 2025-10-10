@@ -270,7 +270,8 @@ export class WebSocketManager {
 
     const userDid = await authService.verifyCollaborationToken(
       collaborationToken,
-      session.sessionDid
+      session.sessionDid,
+      documentId
     );
 
     if (!userDid) {
@@ -407,7 +408,11 @@ export class WebSocketManager {
       return;
     }
 
-    const isVerified = await authService.verifyCollaborationToken(collaborationToken, sessionDid!);
+    const isVerified = await authService.verifyCollaborationToken(
+      collaborationToken,
+      sessionDid!,
+      documentId
+    );
 
     if (!isVerified) {
       this.sendError(ws, seqId, "Authentication failed", 401);
