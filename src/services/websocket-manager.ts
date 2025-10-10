@@ -739,17 +739,6 @@ export class WebSocketManager {
       }
     });
   }
-
-  async getStats() {
-    return {
-      totalConnections: this.connections.size,
-      authenticatedConnections: Array.from(this.connections.values()).filter(
-        (ws) => ws.authenticated
-      ).length,
-      runtimeSessions: await sessionManager.getActiveSessionsCount(),
-      ...(await mongodbStore.getStats()),
-    };
-  }
 }
 
 export const wsManager = new WebSocketManager();

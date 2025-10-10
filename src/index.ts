@@ -12,7 +12,7 @@ import { createLightNode } from "@waku/sdk";
 import { sessionManager } from "./services/session-manager";
 import protobuf from "protobufjs";
 import { generateKeyPairFromSeed } from "@libp2p/crypto/keys";
-import crypto from 'crypto';
+import crypto from "crypto";
 class CollaborationServer {
   private app: express.Application;
   private server: any;
@@ -58,39 +58,11 @@ class CollaborationServer {
   private setupRoutes() {
     // Health check with memory monitoring
     this.app.get("/health", async (req, res) => {
-      const stats = await wsManager.getStats();
-      const memoryUsage = process.memoryUsage();
-
       res.json({
         status: "ok",
         timestamp: new Date().toISOString(),
         uptime: process.uptime(),
-        memory: {
-          rss: `${Math.round(memoryUsage.rss / 1024 / 1024)}MB`,
-          heapUsed: `${Math.round(memoryUsage.heapUsed / 1024 / 1024)}MB`,
-          heapTotal: `${Math.round(memoryUsage.heapTotal / 1024 / 1024)}MB`,
-        },
-        process: {
-          pid: process.pid,
-        },
-        stats,
       });
-    });
-
-    // Server info
-    this.app.get("/info", (req, res) => {
-      res.json({
-        name: "Fileverse Collaboration Server",
-        version: "0.1.0",
-        serverDid: authService.getServerDid(),
-        features: ["websocket_collaboration", "ucan_auth", "real_time_sync", "awareness_protocol"],
-      });
-    });
-
-    // WebSocket stats (for debugging)
-    this.app.get("/stats", async (req, res) => {
-      const stats = await wsManager.getStats();
-      res.json(stats);
     });
 
     // 404 handler
@@ -212,7 +184,7 @@ class CollaborationServer {
           privateKey,
         },
       });
-      console.log('Waku created:', this.waku);
+      console.log("Waku created:", this.waku);
       await this.waku.start();
       console.log("Waku started");
 
@@ -220,14 +192,14 @@ class CollaborationServer {
       const encoder = this.waku.createEncoder({
         contentTopic: `/ddocs/1/server-discovery-response/proto`,
       });
-      console.log('Encoder created:', encoder);
+      console.log("Encoder created:", encoder);
 
       // creating decoder
-      console.log('Creating decoder...');
+      console.log("Creating decoder...");
       const decoder = this.waku.createDecoder({
         contentTopic: `/ddocs/1/server-discovery-request/proto`,
       });
-      console.log('Decoder created:', decoder);
+      console.log("Decoder created:", decoder);
 
       // Create a message structure using Protobuf
       const DataPacket = new protobuf.Type("DataPacket")
@@ -240,22 +212,22 @@ class CollaborationServer {
         sender: "Server",
         message: config.wsURL,
       });
-      console.log('Waku message send:', wakuMessageSend);
+      console.log("Waku message send:", wakuMessageSend);
 
       // subscribing to the decoder
-      await this.waku.filter.subscribe(
-        decoder,
-        (wakuMessage: any) => {
-          const decodedMessage: any = DataPacket.decode(wakuMessage.payload);
-          console.log('Decoded message:', decodedMessage);
-          if (decodedMessage && decodedMessage.sender === 'dDocs-Client') {
-            // sending the message to the encoder
-            this.waku.lightPush.send(encoder, { payload: DataPacket.encode(wakuMessageSend).finish() })
-                .then((result: any) => { console.log('Result:', result) })
-                .catch(console.log);
-          }
+      await this.waku.filter.subscribe(decoder, (wakuMessage: any) => {
+        const decodedMessage: any = DataPacket.decode(wakuMessage.payload);
+        console.log("Decoded message:", decodedMessage);
+        if (decodedMessage && decodedMessage.sender === "dDocs-Client") {
+          // sending the message to the encoder
+          this.waku.lightPush
+            .send(encoder, { payload: DataPacket.encode(wakuMessageSend).finish() })
+            .then((result: any) => {
+              console.log("Result:", result);
+            })
+            .catch(console.log);
         }
-      );
+      });
     } catch (error) {
       console.error("Error starting Waku:", error);
     }
