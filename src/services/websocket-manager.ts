@@ -208,23 +208,7 @@ export class WebSocketManager {
     ws.role = "owner";
     ws.sessionDid = sessionDid;
 
-    const existingSessions = await SessionModel.find({ documentId, sessionDid, ownerDid });
-
-    if (existingSessions.length > 0) {
-      // terminate all existing sessions that match the documentId, sessionDid, and ownerDid
-      // also broadcast to the participants of that session only
-      for (const session of existingSessions) {
-        await this.broadcastToDynos(documentId, session.sessionDid, {
-          type: "SESSION_TERMINATED",
-          event_type: "SESSION_TERMINATED",
-          event: {
-            data: null,
-            roomId: documentId,
-          },
-        });
-        await sessionManager.terminateSession(documentId, session.sessionDid);
-      }
-    }
+    await sessionManager.terminateOtherExistingSessions(documentId, ownerDid);
 
     await sessionManager.createSession({
       documentId,

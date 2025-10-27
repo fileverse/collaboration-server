@@ -295,6 +295,21 @@ export class SessionManager {
     }
   }
 
+  async terminateOtherExistingSessions(documentId: string, ownerDid: string): Promise<void> {
+    try {
+      const existingSessions = await SessionModel.find({ documentId, ownerDid, state: "active" });
+      for (const session of existingSessions) {
+        await this.terminateSession(documentId, session.sessionDid);
+
+        console.log(
+          `[SessionManager] Terminated session: ${session.sessionDid} for document: ${documentId}`
+        );
+      }
+    } catch (error) {
+      console.error("Error terminating existing sessions:", error);
+    }
+  }
+
   async getActiveSessionsCount(): Promise<number> {
     // For multi-dyno deployment, always use Redis for accurate count
     if (redisStore.connected) {
