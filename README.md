@@ -24,6 +24,10 @@ This repo is currently being audited by Dedalo. Findings will be shared in a rep
 
 ## Quick Start
 
+### Prerequisites
+- Redis server should be running and listening on port `:6379`
+- Configuration file/environment variables. See configuration section [below.](#configuration)
+
 ### Installation
 
 ```bash
@@ -71,6 +75,31 @@ cp env.example .env
 - `MONGODB_URI`: MongoDB URI where you want your updates to be saved temporarily
 - `RPC_URL`: RPC URL to query onchain state and only allow people with relevant access to create rooms related to DDocs
 - `WS_URL`: Optional env vars if you want your node to participate in the waku discovery
+
+#### Guide to generate 
+
+- `SERVER_DID`
+  - Run the below script `node <filename>.js`
+    ```js
+    const UCAN = require("@ucans/ucans");
+
+    (async () => {
+      const privateKeyBase64 = "YOUR_PRIVATE_KEY_GOES_HERE";
+      // creating key pair from private key
+      const keyPair = await UCAN.EdKeypair.fromSecretKey(privateKeyBase64);
+      const did = keyPair.did();
+      console.log("Generated DID from private key:", did);
+    })();
+    ```
+- `RPC_URL`
+  - Create an account on [QuickNode](https://www.quicknode.com/).
+  - Sign in to create an endpoint (this should appear under Getting started)
+  - Select Gnosis Chain.
+  - Select your plan and finalize.
+  - In the endpoint dashboard, copy the HTTPS RPC endpoint (It should appear on the right) and put that value in the .env for `RPC_URL`
+- `WS_URL`
+  - For local development, this should be `ws://localhost:5000/`
+  - For production, this should be the url of your web-socket server `wss://your-domain/path`
 
 ## Waku Support
 
