@@ -1,12 +1,11 @@
 # RTC Node (with Waku Support)
 
-This repo covers how Real-Time Collaboration (RTC) with end-to-end encryption is achieved on is achieved via the Fileverse middleware on ddocs.new . Our approach offers both privacy and security via client-side encryption and by offering decentralized ways of enabling RTC on one's own documents.
-Tl;dr
-By default, RTC v0.2 on dDocs is facilitated by a stateless web-socket server (v0.1 was WebRTC) that deletes all the encrypted data it stores about a RTC session once the latest state of the document is pushed on IPFS and added to the document creator’s personal onchain content registry.
+This repo covers how Real-time Collaboration(RTC) with end-to-end encryption is achieved via the Fileverse middleware on [ddocs.new](ddocs.new). Our approach offers both privacy and security via client-side encryption and by offering decentralized ways of enabling RTC on one's own documents.
+
+**Tl;dr** By default, RTC v0.2 on dDocs is facilitated by a stateless web-socket server (v0.1 was WebRTC) that deletes all the encrypted data it stores about a RTC session once the latest state of the document is pushed on IPFS and added to the document creator’s personal onchain content registry.
 All data touching the stateless web-socket server is stored only ephemerally and is first encrypted client-side.
 
 Self-hosting and Decentralization:
-
 - Bring your own Server: RTC on ddocs.new can also work by self-hosting your own web-socket server and enabling your collaboration session through it.
 - Decentralisation explorations: People using dDocs can also turn on the Waku servers discovery feature, which lets them discover and connect to community-hosted servers for RTC via Waku. This feature is still in early Alpha and highly experimental :warning:. Please use at your own risk. Thank you team Waku and Vàclav san for all the insights in helping us add this first version on dDocs! For the waku enabled version check this branch: feat/waku
 
@@ -24,53 +23,73 @@ This repo is currently being audited by Dedalo. Findings will be shared in a rep
 
 ## Quick Start
 
-### Installation
+#### Prerequisites
+- Redis server should be running and listening on port `:6379`
+- Create a configuration file which will contain the environment variables.
+  - Run `cp env.example .env`
+  - Below are the values that go into it
+    ```bash
+    PORT # Server port (default: 5000)
+    HOST # Server host (default: 0.0.0.0)
+    NODE_ENV # Environment mode (development/production)
+    CORS_ORIGINS # Comma-separated list of allowed origins
+    SERVER_DID # Server's DID for UCAN authentication
+    MONGODB_URI # MongoDB URI where you want your updates to be saved temporarily
+    RPC_URL # RPC URL to query onchain state and only allow people with relevant access to create rooms related to DDocs
+    WS_URL # Optional env vars if you want your node to participate in the waku discovery
+    ```
+  - Here's a guide on how to generate values for some of the env variables.
+    - `SERVER_DID`
+      - Run the below script `node <filename>.js`
+        ```js
+        const UCAN = require("@ucans/ucans");
 
-```bash
-npm install
-```
+        (async () => {
+          const privateKeyBase64 = "YOUR_PRIVATE_KEY_GOES_HERE";
+          // creating key pair from private key
+          const keyPair = await UCAN.EdKeypair.fromSecretKey(privateKeyBase64);
+          const did = keyPair.did();
+          console.log("Generated DID from private key:", did);
+        })();
+        ```
+    - `RPC_URL`
+      - Create an account on [QuickNode](https://www.quicknode.com/).
+      - Sign in to create an endpoint (this should appear under Getting started)
+      - Select Gnosis Chain.
+      - Select your plan and finalize.
+      - In the endpoint dashboard, copy the HTTPS RPC endpoint (It should appear on the right) and put that value in the .env for `RPC_URL`
+    - `WS_URL`
+      - For local development, this should be `ws://localhost:5000/`
+      - For production, this should be the url of your web-socket server `wss://your-domain/path`
 
-### Development
+#### Next steps
+- Clone the repository and `cd` into it
+  ```bash
+  git clone https://github.com/fileverse/collaboration-server.git && cd collaboration-server`
+  ```
+- Install the dependencies
+  ```bash
+  npm install
+  ```
+- To start the development server run 
+  ```bash
+  npm run dev
+  ```
+- For production,
+  ```bash
+  # Build the project
+  npm run build
 
-```bash
-# Start in development mode with auto-reload
-npm run dev
-```
+  # Start the production server
+  npm start
 
-### Production
+  # Or use the convenient start script
+  ./start.sh
 
-```bash
-# Build the project
-npm run build
+  # Or with PM2 for process management
+  pm2 start ecosystem.config.js --env production
+  ```
 
-# Start the production server
-npm start
-
-# Or use the convenient start script
-./start.sh
-
-# Or with PM2 for process management
-pm2 start ecosystem.config.js --env production
-```
-
-## Configuration
-
-Copy `env.example` to `.env` and adjust the settings:
-
-```bash
-cp env.example .env
-```
-
-### Environment Variables
-
-- `PORT`: Server port (default: 5000)
-- `HOST`: Server host (default: 0.0.0.0)
-- `NODE_ENV`: Environment mode (development/production)
-- `CORS_ORIGINS`: Comma-separated list of allowed origins
-- `SERVER_DID`: Server's DID for UCAN authentication
-- `MONGODB_URI`: MongoDB URI where you want your updates to be saved temporarily
-- `RPC_URL`: RPC URL to query onchain state and only allow people with relevant access to create rooms related to DDocs
-- `WS_URL`: Optional env vars if you want your node to participate in the waku discovery
 
 ## Waku Support
 
