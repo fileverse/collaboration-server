@@ -82,12 +82,6 @@ This repo is currently being audited by Dedalo. Findings will be shared in a rep
 
   # Start the production server
   npm start
-
-  # Or use the convenient start script
-  ./start.sh
-
-  # Or with PM2 for process management
-  pm2 start ecosystem.config.js --env production
   ```
 
 
