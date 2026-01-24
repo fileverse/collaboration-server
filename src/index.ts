@@ -1,5 +1,6 @@
 import express from "express";
 import { WebSocketServer } from "ws";
+import { Server as SocketIOServer } from "socket.io";
 import cors from "cors";
 import helmet from "helmet";
 import compression from "compression";
@@ -13,11 +14,14 @@ import { sessionManager } from "./services/session-manager";
 import protobuf from "protobufjs";
 import { generateKeyPairFromSeed } from "@libp2p/crypto/keys";
 import crypto from "crypto";
+import { socketIOManager } from "./services/socketIOManager.js";
+
 class CollaborationServer {
   private app: express.Application;
   private server: any;
   private wss: WebSocketServer | null = null;
   private waku: any;
+  private io: any;
 
   constructor() {
     this.app = express();
@@ -106,6 +110,26 @@ class CollaborationServer {
 
       // Handle WebSocket connections
       this.wss.on("connection", wsManager.handleConnection);
+
+      // So SockerIOServer is a Server class exported by socket.io
+      // We instantiate that Server class by passing it an HTTP Server. It attaches extra niceness to the HTTP server such as websockets and long-polling handlers.
+      // So this io thing that gets returned is an instance of the SocketIOServer.
+      // This instance is what manages connections, rooms, namespaces, events.
+      // 
+      // Why socket.io need http server? 
+      // Because socket.io starts as http server, 
+      // and upgrades to websocket if possible.
+      this.io = new SocketIOServer(this.server);
+
+      // This (below) runs once per client
+      // So when a SocketIOClient successfully does
+      // - HTTP handshake,
+      // - Transport negotiation (polling -> websocket upgrade)
+      // - Socket.io protocol setup,
+      // only then this function runs.
+      // 
+      // Handle SocketIO connections
+      this.io.on('connection', socketIOManager.handleConnection);
 
       // Start the server
       this.server.listen(config.port, config.host, () => {

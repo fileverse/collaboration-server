@@ -47,6 +47,7 @@
     "node-cache": "^5.1.2",
     "node-fetch": "^3.3.2",
     "protobufjs": "^7.5.4",
+    "socket.io": "^4.8.3",
     "uuid": "^10.0.0",
     "viem": "^2.34.0",
     "ws": "^8.18.0",
