@@ -10,6 +10,7 @@ import { authService } from "./auth";
 import { mongodbStore } from "./mongodb-store";
 import { sessionManager } from "./session-manager";
 import { SessionModel } from "../database/models";
+import { messageLogger } from "./message-logger";
 
 export class WebSocketManager {
   private connections = new Map<string, AuthenticatedWebSocket>();
@@ -97,6 +98,8 @@ export class WebSocketManager {
   }
 
   private async handleMessage(ws: AuthenticatedWebSocket, message: WebSocketMessage) {
+    messageLogger.logInbound(ws, message, "websocket");
+    
     const { cmd, args, seqId } = message;
 
     try {
@@ -674,6 +677,8 @@ export class WebSocketManager {
   }
 
   private sendMessage(ws: AuthenticatedWebSocket, response: WebSocketResponse) {
+    messageLogger.logOutbound(ws, response, "websocket");
+    
     if (ws.readyState === WebSocket.OPEN) {
       ws.send(JSON.stringify(response));
     }
@@ -712,6 +717,8 @@ export class WebSocketManager {
   ) {
     // Only broadcast to clients connected to this dyno (for document content)
     const sessionKey = `${documentId}__${sessionDid}`;
+    messageLogger.logBroadcast(sessionKey, event, "websocket");
+    
     const localSession = sessionManager["inMemorySessions"].get(sessionKey);
 
     if (!localSession) return;

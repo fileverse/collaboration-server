@@ -15,6 +15,7 @@ import protobuf from "protobufjs";
 import { generateKeyPairFromSeed } from "@libp2p/crypto/keys";
 import crypto from "crypto";
 import { socketIOManager } from "./services/socketIOManager.js";
+import { messageLogger } from "./services/message-logger";
 
 class CollaborationServer {
   private app: express.Application;
@@ -169,6 +170,13 @@ class CollaborationServer {
           console.error("Error cleaning up session manager:", error);
         }
 
+        try {
+          messageLogger.destroy();
+          console.log("Message logger cleaned up");
+        } catch (error) {
+          console.error("Error cleaning up message logger:", error);
+        }
+
         // Disconnect from database
         try {
           await databaseService.disconnect();
@@ -186,6 +194,7 @@ class CollaborationServer {
       console.log("Force closing server");
       try {
         sessionManager.destroy();
+        messageLogger.destroy();
         await databaseService.disconnect();
       } catch (error) {
         console.error("Error during force shutdown:", error);
