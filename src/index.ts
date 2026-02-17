@@ -120,8 +120,8 @@ class CollaborationServer {
       // Why socket.io need http server? 
       // Because socket.io starts as http server, 
       // and upgrades to websocket if possible.
-      this.io = new SocketIOServer(this.server);
-
+      // this.io = new SocketIOServer(this.server);
+      //
       // This (below) runs once per client
       // So when a SocketIOClient successfully does
       // - HTTP handshake,
@@ -130,7 +130,7 @@ class CollaborationServer {
       // only then this function runs.
       // 
       // Handle SocketIO connections
-      this.io.on('connection', socketIOManager.handleConnection);
+      // this.io.on('connection', socketIOManager.handleConnection);
 
       // Start the server
       this.server.listen(config.port, config.host, () => {
