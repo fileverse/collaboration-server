@@ -21,6 +21,8 @@ export interface IMessageLog extends MongooseDocument {
     status: boolean;
     statusCode: number;
     latencyMs: number;
+    isHandshakeResponse?: boolean;
+    data?: any;
   }
   dynoId: string;
 }
@@ -57,6 +59,8 @@ const MessageLogSchema = new Schema({
     status: { type: Boolean },
     statusCode: { type: Number },
     latencyMs: { type: Number },
+    isHandshakeResponse: { type: Boolean },
+    data: { type: Schema.Types.Mixed },
   },
   dynoId: { type: String, required: true },
 });

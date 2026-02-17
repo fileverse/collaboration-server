@@ -73,6 +73,8 @@ class MessageLogger {
       status?: boolean;
       statusCode?: number;
       seqId?: string | null;
+      is_handshake_response?: boolean;
+      data?: Record<string, any>;
     },
     protocol: "websocket" | "socketio"
   ): void {
@@ -92,6 +94,8 @@ class MessageLogger {
         status: response.status ?? false,
         statusCode: response.statusCode ?? 0,
         latencyMs: 0, // not tracking latency for now (simplified)
+        isHandshakeResponse: response.is_handshake_response,
+        data: response.data,
       },
       dynoId: this.dynoId,
     });
