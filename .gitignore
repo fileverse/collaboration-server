@@ -50,3 +50,6 @@ Thumbs.db
 .dockerignore
 docker-compose.override.yml
 scripts.ts
+
+# .md files
+dev-journal.md

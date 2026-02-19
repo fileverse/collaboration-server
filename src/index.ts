@@ -1,22 +1,33 @@
 import express from "express";
-import { WebSocketServer } from "ws";
+import { Server } from "socket.io";
+import { createAdapter } from "@socket.io/redis-adapter";
+import { Redis } from "ioredis";
 import cors from "cors";
 import helmet from "helmet";
 import compression from "compression";
 import { createServer } from "http";
 import { config } from "./config";
 import { authService } from "./services/auth";
-import { wsManager } from "./services/websocket-manager";
+import { registerEventHandlers } from "./services/socket-handlers";
+import { authMiddleware } from "./services/auth-middleware";
 import { databaseService } from "./database";
 import { createLightNode } from "@waku/sdk";
 import { sessionManager } from "./services/session-manager";
 import protobuf from "protobufjs";
 import { generateKeyPairFromSeed } from "@libp2p/crypto/keys";
 import crypto from "crypto";
+import {
+  ClientToServerEvents,
+  ServerToClientEvents,
+  InterServerEvents,
+  SocketData,
+  AppServer,
+} from "./types/index";
+
 class CollaborationServer {
   private app: express.Application;
   private server: any;
-  private wss: WebSocketServer | null = null;
+  private io: AppServer | null = null;
   private waku: any;
 
   constructor() {
@@ -93,26 +104,42 @@ class CollaborationServer {
       // Create HTTP server
       this.server = createServer(this.app);
 
-      // Setup WebSocket server
-      this.wss = new WebSocketServer({
-        server: this.server,
-        path: "/",
-        perMessageDeflate: {
-          // Enable per-message compression
-          threshold: 1024,
-          concurrencyLimit: 10,
+      // Setup Socket.IO server
+      const socketIOOptions = {
+        cors: {
+          origin: config.corsOrigins,
+          credentials: true,
         },
-      });
+        pingInterval: config.socketio.pingInterval,
+        pingTimeout: config.socketio.pingTimeout,
+        maxHttpBufferSize: config.socketio.maxHttpBufferSize,
+      };
+      this.io = new Server<
+        ClientToServerEvents,
+        ServerToClientEvents,
+        InterServerEvents,
+        SocketData
+      >(this.server, socketIOOptions);
 
-      // Handle WebSocket connections
-      this.wss.on("connection", wsManager.handleConnection);
+      // Redis adapter (prepared but disabled by default)
+      if (config.redis.enabled) {
+        const pubClient = new Redis(config.redis.url);
+        const subClient = pubClient.duplicate();
+        this.io.adapter(createAdapter(pubClient, subClient));
+        console.log("Redis adapter enabled for cross-instance communication");
+      }
+
+      // Socket.IO middlewares gets executed for every incoming connection.
+      this.io.use(authMiddleware);
+
+      registerEventHandlers(this.io);
 
       // Start the server
       this.server.listen(config.port, config.host, () => {
-        console.log(`🚀 Collaboration server running on ${config.host}:${config.port}`);
-        console.log(`📡 WebSocket endpoint: ws://${config.host}:${config.port}/`);
-        console.log(`🔑 Server DID: ${authService.getServerDid()}`);
-        console.log(`🌍 CORS origins: ${config.corsOrigins.join(", ")}`);
+        console.log(`Collaboration server running on ${config.host}:${config.port}`);
+        console.log(`Socket.IO endpoint: http://${config.host}:${config.port}/socket.io/`);
+        console.log(`Server DID: ${authService.getServerDid()}`);
+        console.log(`CORS origins: ${config.corsOrigins.join(", ")}`);
       });
 
       // Graceful shutdown
@@ -127,9 +154,9 @@ class CollaborationServer {
   private shutdown(signal: string) {
     console.log(`\n Received ${signal}. Shutting down gracefully...`);
 
-    if (this.wss) {
-      this.wss.close(() => {
-        console.log("WebSocket server closed");
+    if (this.io) {
+      this.io.close(() => {
+        console.log("Socket.IO server closed");
       });
     }
 

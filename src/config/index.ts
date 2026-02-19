@@ -13,6 +13,13 @@ export const config: ServerConfig = {
 
   redis: {
     url: process.env.REDISCLOUD_URL || "redis://localhost:6379",
+    enabled: process.env.REDIS_ENABLED === "true",
+  },
+
+  socketio: {
+    pingInterval: parseInt(process.env.SOCKETIO_PING_INTERVAL || "25000"),
+    pingTimeout: parseInt(process.env.SOCKETIO_PING_TIMEOUT || "20000"),
+    maxHttpBufferSize: parseInt(process.env.SOCKETIO_MAX_BUFFER || "10485760"), // 10MB
   },
 
   auth: {
@@ -21,7 +28,7 @@ export const config: ServerConfig = {
 
   rateLimit: {
     windowMs: parseInt(process.env.RATE_LIMIT_WINDOW_MS || "900000"), // 15 minutes
-    max: parseInt(process.env.RATE_LIMIT_MAX || "100"), // limit each IP to 100 requests per windowMs
+    max: parseInt(process.env.RATE_LIMIT_MAX || "100"),
   },
   rpcURL: process.env.RPC_URL || "https://rpc.ankr.com/eth",
   wsURL: process.env.WS_URL || "wss://0.0.0.0:5001",
