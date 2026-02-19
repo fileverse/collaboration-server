@@ -1,6 +1,6 @@
 import express from "express";
 import { WebSocketServer } from "ws";
-import { Server as SocketIOServer } from "socket.io";
+// import { Server as SocketIOServer } from "socket.io";
 import cors from "cors";
 import helmet from "helmet";
 import compression from "compression";
@@ -14,7 +14,6 @@ import { sessionManager } from "./services/session-manager";
 import protobuf from "protobufjs";
 import { generateKeyPairFromSeed } from "@libp2p/crypto/keys";
 import crypto from "crypto";
-import { socketIOManager } from "./services/socketIOManager.js";
 import { messageLogger } from "./services/message-logger";
 
 class CollaborationServer {
