@@ -41,24 +41,6 @@ export interface WebSocketResponse {
   err_detail?: Record<string, any> | null;
 }
 
-// export interface SIOSocketResponse {
-//   status: boolean;
-//   statusCode: number;
-//   seqId: string | null;
-//   is_handshake_response: boolean;
-//   data?: Record<string, any>;
-//   error?: string;
-//   err?: string;
-//   err_detail?: Record<string, any> | null; 
-// }
-
-// export interface SIOSocketMessage {
-//   cmd?: string;
-//   event?: string;
-//   args: Record<string, any>;
-//   seqId: string;
-// }
-
 export interface WebSocketEvent {
   type: string;
   event_type: string;
@@ -68,15 +50,6 @@ export interface WebSocketEvent {
   };
 }
 
-// export interface SIOSocketEvent {
-//   type: string;
-//   event_type: string;
-//   event: {
-//     data: any;
-//     roomId: string;
-//   },
-// }
-
 export interface AuthenticatedWebSocket extends WebSocket {
   documentId?: string;
   sessionDid?: string;
@@ -85,15 +58,6 @@ export interface AuthenticatedWebSocket extends WebSocket {
   clientId?: string;
   serverId?: string;
 }
-
-// export interface AuthenticatedSIOSocket extends SIOSocket {
-//   documentId?: string;
-//   sessionDid?: string;
-//   role?: "owner" | "editor";
-//   authenticated?: boolean;
-//   clientId?: string;
-//   serverId?: string;
-// }
 
 export interface IPFSUploadResponse {
   ipfsUrl: string;
