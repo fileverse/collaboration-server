@@ -26,8 +26,8 @@ interface SessionEvent {
 type SessionEventHandler = (event: SessionEvent) => Promise<void>;
 
 export class RedisStore {
-  private redis: Redis;
-  private subscriber: Redis;
+  private redis: Redis | undefined;
+  private subscriber: Redis | undefined;
   private isConnected = false;
   private keyPrefix = "collab:";
   private sessionChannel = "session_events";
@@ -35,15 +35,21 @@ export class RedisStore {
   private eventHandlers = new Map<string, SessionEventHandler>();
 
   constructor() {
+    this.dynoId = `dyno_${Math.random().toString(36).substring(7)}_${Date.now()}`;
+  }
+
+  async connect(): Promise<void> {
+    if (this.redis && this.subscriber) {
+      return; // already connected or connecting
+    }
     this.redis = new Redis(config.redis.url);
     this.subscriber = new Redis(config.redis.url);
-    this.dynoId = `dyno_${Math.random().toString(36).substring(7)}_${Date.now()}`;
-    this.isConnected = false; // Enable Redis for production
     this.setupEventHandlers();
     this.setupPubSub();
   }
 
   private setupEventHandlers(): void {
+    if (!this.redis || !this.subscriber) return;
     this.redis.on("connect", () => {
       console.log(`Redis connected successfully - Dyno ID: ${this.dynoId}`);
       this.isConnected = true;
@@ -69,6 +75,7 @@ export class RedisStore {
   }
 
   private setupPubSub(): void {
+    if (!this.subscriber) return;
     this.subscriber.subscribe(this.sessionChannel);
     console.log(`[${this.dynoId}] Subscribed to Redis pub/sub channel: ${this.sessionChannel}`);
 
@@ -94,7 +101,7 @@ export class RedisStore {
   }
 
   private async publishSessionEvent(event: Omit<SessionEvent, "dynoId">): Promise<void> {
-    if (!this.isConnected) return;
+    if (!this.isConnected || !this.redis) return;
 
     try {
       const fullEvent: SessionEvent = {
@@ -121,7 +128,7 @@ export class RedisStore {
   }
 
   async setSession(sessionKey: string, session: CachedSession, isUpdate = false): Promise<boolean> {
-    if (!this.isConnected) return false;
+    if (!this.isConnected || !this.redis) return false;
 
     try {
       await this.redis.setex(
@@ -145,7 +152,7 @@ export class RedisStore {
   }
 
   async getSession(sessionKey: string): Promise<CachedSession | null> {
-    if (!this.isConnected) return null;
+    if (!this.isConnected || !this.redis) return null;
 
     try {
       const data = await this.redis.get(`${this.keyPrefix}session:${sessionKey}`);
@@ -160,7 +167,7 @@ export class RedisStore {
   }
 
   async addClientToSession(sessionKey: string, clientId: string): Promise<boolean> {
-    if (!this.isConnected) return false;
+    if (!this.isConnected || !this.redis) return false;
 
     try {
       const session = await this.getSession(sessionKey);
@@ -185,7 +192,7 @@ export class RedisStore {
   }
 
   async removeClientFromSession(sessionKey: string, clientId: string): Promise<boolean> {
-    if (!this.isConnected) return false;
+    if (!this.isConnected || !this.redis) return false;
 
     try {
       const session = await this.getSession(sessionKey);
@@ -214,7 +221,7 @@ export class RedisStore {
   }
 
   async deleteSession(sessionKey: string): Promise<boolean> {
-    if (!this.isConnected) return false;
+    if (!this.isConnected || !this.redis) return false;
 
     try {
       await this.redis.del(`${this.keyPrefix}session:${sessionKey}`);
@@ -234,7 +241,7 @@ export class RedisStore {
   }
 
   async getActiveSessionsCount(): Promise<number> {
-    if (!this.isConnected) return 0;
+    if (!this.isConnected || !this.redis) return 0;
 
     try {
       const keys = await this.redis.keys(`${this.keyPrefix}session:*`);
@@ -246,7 +253,7 @@ export class RedisStore {
   }
 
   async getAllActiveSessions(): Promise<string[]> {
-    if (!this.isConnected) return [];
+    if (!this.isConnected || !this.redis) return [];
 
     try {
       const keys = await this.redis.keys(`${this.keyPrefix}session:*`);
@@ -258,7 +265,7 @@ export class RedisStore {
   }
 
   async extendSessionTTL(sessionKey: string, ttlSeconds = 86400): Promise<boolean> {
-    if (!this.isConnected) return false;
+    if (!this.isConnected || !this.redis) return false;
 
     try {
       await this.redis.expire(`${this.keyPrefix}session:${sessionKey}`, ttlSeconds);
@@ -270,7 +277,7 @@ export class RedisStore {
   }
 
   async clearAllSessions(): Promise<boolean> {
-    if (!this.isConnected) return false;
+    if (!this.isConnected || !this.redis) return false;
 
     try {
       const keys = await this.redis.keys(`${this.keyPrefix}session:*`);
@@ -286,7 +293,7 @@ export class RedisStore {
   }
 
   async updateRoomInfo(sessionKey: string, roomInfo: string): Promise<boolean> {
-    if (!this.isConnected) return false;
+    if (!this.isConnected || !this.redis) return false;
 
     try {
       const session = await this.getSession(sessionKey);
@@ -310,14 +317,20 @@ export class RedisStore {
   }
 
   get connected(): boolean {
-    // TODO: FIX THIS
-    return false;
+    return this.isConnected;
   }
 
   async disconnect(): Promise<void> {
     try {
-      this.redis.disconnect();
-      this.subscriber.disconnect();
+      if (this.redis) {
+        this.redis.disconnect();
+        this.redis = undefined;
+      }
+      if (this.subscriber) {
+        this.subscriber.disconnect();
+        this.subscriber = undefined;
+      }
+      this.isConnected = false;
     } catch (error) {
       console.error("Error disconnecting from Redis:", error);
     }

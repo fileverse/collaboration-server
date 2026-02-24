@@ -13,6 +13,7 @@ import { authMiddleware } from "./services/auth-middleware";
 import { databaseService } from "./database";
 import { createLightNode } from "@waku/sdk";
 import { sessionManager } from "./services/session-manager";
+import { redisStore } from "./services/redis-store";
 import protobuf from "protobufjs";
 import { generateKeyPairFromSeed } from "@libp2p/crypto/keys";
 import crypto from "crypto";
@@ -121,16 +122,16 @@ class CollaborationServer {
         SocketData
       >(this.server, socketIOOptions);
 
-      // Redis adapter (prepared but disabled by default)
+      // Redis adapter and session store (prepared but disabled by default)
       if (config.redis.enabled) {
         const pubClient = new Redis(config.redis.url);
         const subClient = pubClient.duplicate();
         this.io.adapter(createAdapter(pubClient, subClient));
+        await redisStore.connect();
         console.log("Redis adapter enabled for cross-instance communication");
       }
 
-      // Register Socket.IO authentication middleware
-      // Function that gets executed for every incoming connection.
+      // Socket.IO middleware runs once per connection, before the connection event fires.
       this.io.use(authMiddleware);
 
       registerEventHandlers(this.io);
@@ -171,6 +172,16 @@ class CollaborationServer {
           console.log("Session manager cleaned up");
         } catch (error) {
           console.error("Error cleaning up session manager:", error);
+        }
+
+        // Disconnect from Redis session store
+        try {
+          if (config.redis.enabled) {
+            await redisStore.disconnect();
+            console.log("Redis session store disconnected");
+          }
+        } catch (error) {
+          console.error("Error disconnecting Redis session store:", error);
         }
 
         // Disconnect from database
