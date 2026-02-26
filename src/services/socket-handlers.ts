@@ -27,6 +27,15 @@ function getRoomName(documentId: string, sessionDid: string): string {
   return `session::${documentId}__${sessionDid}`;
 }
 
+function safeCallback<T>(
+  callback: ((response: AckResponse<T>) => void) | undefined,
+  response: AckResponse<T>
+): void {
+  if (typeof callback === "function") {
+    callback(response);
+  }
+}
+
 export function registerEventHandlers(io: AppServer): void {
   io.on("connection", (socket: AppSocket) => {
     console.log(`New Socket.IO connection: ${socket.id}`);
@@ -62,33 +71,36 @@ async function handleAuth(
   io: AppServer,
   socket: AppSocket,
   args: AuthArgs,
-  callback: (response: AckResponse<AuthResponseData>) => void
+  callback?: (response: AckResponse<AuthResponseData>) => void
 ): Promise<void> {
   try {
     const { documentId, collaborationToken, sessionDid } = args;
 
     if (!collaborationToken) {
-      return callback({
+      safeCallback(callback, {
         status: false,
         statusCode: 400,
         error: "Collaboration token is required",
       });
+      return;
     }
 
     if (!documentId) {
-      return callback({
+      safeCallback(callback, {
         status: false,
         statusCode: 400,
         error: "Document ID is required",
       });
+      return;
     }
 
     if (!sessionDid) {
-      return callback({
+      safeCallback(callback, {
         status: false,
         statusCode: 400,
         error: "Session DID is required",
       });
+      return;
     }
 
     const existingSession = await sessionManager.getSession(documentId, sessionDid);
@@ -100,11 +112,12 @@ async function handleAuth(
     if (!existingSession && args.ownerToken) {
       // - Setup new session (owner flow) -
       if (!args.ownerToken || !sessionDid) {
-        return callback({
+        safeCallback(callback, {
           status: false,
           statusCode: 400,
           error: "Document ID, owner token, and session DID are required",
         });
+        return;
       }
 
       const ownerDid = await authService.verifyOwnerToken(
@@ -114,11 +127,12 @@ async function handleAuth(
       );
 
       if (!ownerDid) {
-        return callback({
+        safeCallback(callback, {
           status: false,
           statusCode: 401,
           error: "Authentication failed",
         });
+        return;
       }
 
       await sessionManager.terminateOtherExistingSessions(documentId, ownerDid);
@@ -142,11 +156,12 @@ async function handleAuth(
       );
 
       if (!userDid) {
-        return callback({
+        safeCallback(callback, {
           status: false,
           statusCode: 401,
           error: "Authentication failed",
         });
+        return;
       }
 
       let ownerDid = null;
@@ -172,11 +187,12 @@ async function handleAuth(
       sessionType = "existing";
       roomInfo = existingSession.roomInfo;
     } else {
-      return callback({
+      safeCallback(callback, {
         status: false,
         statusCode: 404,
         error: "Session not found",
       });
+      return;
     }
 
     // Set socket data
@@ -201,7 +217,7 @@ async function handleAuth(
       roomId: documentId,
     });
 
-    callback({
+    safeCallback(callback, {
       status: true,
       statusCode: 200,
       data: {
@@ -213,7 +229,7 @@ async function handleAuth(
     });
   } catch (error) {
     console.error("Error in auth handler:", error);
-    callback({
+    safeCallback(callback, {
       status: false,
       statusCode: 500,
       error: "Internal server error",
@@ -225,37 +241,40 @@ async function handleDocumentUpdate(
   io: AppServer,
   socket: AppSocket,
   args: DocumentUpdateArgs,
-  callback: (response: AckResponse<DocumentUpdateResponseData>) => void
+  callback?: (response: AckResponse<DocumentUpdateResponseData>) => void
 ): Promise<void> {
   try {
     if (!requireAuth(socket)) {
-      return callback({
+      safeCallback(callback, {
         status: false,
         statusCode: 401,
         error: "Not authenticated or session not found",
       });
+      return;
     }
 
     const { data, collaborationToken } = args;
     const documentId = args.documentId || socket.data.documentId;
 
     if (!data) {
-      return callback({
+      safeCallback(callback, {
         status: false,
         statusCode: 400,
         error: "Update data is required",
       });
+      return;
     }
 
     const session = await sessionManager.getRuntimeSession(documentId, socket.data.sessionDid);
     const sessionDid = session?.sessionDid;
 
     if (!sessionDid) {
-      return callback({
+      safeCallback(callback, {
         status: false,
         statusCode: 404,
         error: "Session not found",
       });
+      return;
     }
 
     const isVerified = await authService.verifyCollaborationToken(
@@ -265,11 +284,12 @@ async function handleDocumentUpdate(
     );
 
     if (!isVerified) {
-      return callback({
+      safeCallback(callback, {
         status: false,
         statusCode: 401,
         error: "Authentication failed",
       });
+      return;
     }
 
     // Create update record
@@ -293,7 +313,7 @@ async function handleDocumentUpdate(
       roomId: documentId,
     });
 
-    callback({
+    safeCallback(callback, {
       status: true,
       statusCode: 200,
       data: {
@@ -307,7 +327,7 @@ async function handleDocumentUpdate(
     });
   } catch (error) {
     console.error("Error in document update handler:", error);
-    callback({
+    safeCallback(callback, {
       status: false,
       statusCode: 500,
       error: "Internal server error",
@@ -318,23 +338,25 @@ async function handleDocumentUpdate(
 async function handleDocumentCommit(
   socket: AppSocket,
   args: DocumentCommitArgs,
-  callback: (response: AckResponse<DocumentCommitResponseData>) => void
+  callback?: (response: AckResponse<DocumentCommitResponseData>) => void
 ): Promise<void> {
   try {
     if (!requireAuth(socket)) {
-      return callback({
+      safeCallback(callback, {
         status: false,
         statusCode: 401,
         error: "Not authenticated or session not found",
       });
+      return;
     }
 
     if (socket.data.role !== "owner") {
-      return callback({
+      safeCallback(callback, {
         status: false,
         statusCode: 403,
         error: "Only owners can create commits",
       });
+      return;
     }
 
     const { updates, cid, ownerToken, ownerAddress, contractAddress } = args;
@@ -344,19 +366,21 @@ async function handleDocumentCommit(
     const sessionDid = session?.sessionDid;
 
     if (!sessionDid) {
-      return callback({
+      safeCallback(callback, {
         status: false,
         statusCode: 404,
         error: "Session not found",
       });
+      return;
     }
 
     if (!updates || !Array.isArray(updates) || !cid) {
-      return callback({
+      safeCallback(callback, {
         status: false,
         statusCode: 400,
         error: "Updates array and CID are required",
       });
+      return;
     }
 
     const isVerified = await authService.verifyOwnerToken(
@@ -366,11 +390,12 @@ async function handleDocumentCommit(
     );
 
     if (!isVerified) {
-      return callback({
+      safeCallback(callback, {
         status: false,
         statusCode: 401,
         error: "Authentication failed",
       });
+      return;
     }
 
     // Create commit record
@@ -383,7 +408,7 @@ async function handleDocumentCommit(
       sessionDid,
     });
 
-    callback({
+    safeCallback(callback, {
       status: true,
       statusCode: 200,
       data: {
@@ -395,7 +420,7 @@ async function handleDocumentCommit(
     });
   } catch (error) {
     console.error("Error in document commit handler:", error);
-    callback({
+    safeCallback(callback, {
       status: false,
       statusCode: 500,
       error: "Internal server error",
@@ -406,15 +431,16 @@ async function handleDocumentCommit(
 async function handleCommitHistory(
   socket: AppSocket,
   args: CommitHistoryArgs,
-  callback: (response: AckResponse<{ history: DocumentCommit[]; total: number }>) => void
+  callback?: (response: AckResponse<{ history: DocumentCommit[]; total: number }>) => void
 ): Promise<void> {
   try {
     if (!requireAuth(socket)) {
-      return callback({
+      safeCallback(callback, {
         status: false,
         statusCode: 401,
         error: "Not authenticated",
       });
+      return;
     }
 
     const documentId = args.documentId || socket.data.documentId;
@@ -425,7 +451,7 @@ async function handleCommitHistory(
       { offset, limit, sort }
     );
 
-    callback({
+    safeCallback(callback, {
       status: true,
       statusCode: 200,
       data: {
@@ -435,7 +461,7 @@ async function handleCommitHistory(
     });
   } catch (error) {
     console.error("Error in commit history handler:", error);
-    callback({
+    safeCallback(callback, {
       status: false,
       statusCode: 500,
       error: "Internal server error",
@@ -446,15 +472,16 @@ async function handleCommitHistory(
 async function handleUpdateHistory(
   socket: AppSocket,
   args: UpdateHistoryArgs,
-  callback: (response: AckResponse<{ history: DocumentUpdate[]; total: number }>) => void
+  callback?: (response: AckResponse<{ history: DocumentUpdate[]; total: number }>) => void
 ): Promise<void> {
   try {
     if (!requireAuth(socket)) {
-      return callback({
+      safeCallback(callback, {
         status: false,
         statusCode: 401,
         error: "Not authenticated",
       });
+      return;
     }
 
     const documentId = args.documentId || socket.data.documentId;
@@ -465,7 +492,7 @@ async function handleUpdateHistory(
       { offset, limit, sort, committed: filters.committed }
     );
 
-    callback({
+    safeCallback(callback, {
       status: true,
       statusCode: 200,
       data: {
@@ -475,7 +502,7 @@ async function handleUpdateHistory(
     });
   } catch (error) {
     console.error("Error in update history handler:", error);
-    callback({
+    safeCallback(callback, {
       status: false,
       statusCode: 500,
       error: "Internal server error",
@@ -487,15 +514,16 @@ async function handlePeersList(
   io: AppServer,
   socket: AppSocket,
   args: PeersListArgs,
-  callback: (response: AckResponse<{ peers: string[] }>) => void
+  callback?: (response: AckResponse<{ peers: string[] }>) => void
 ): Promise<void> {
   try {
     if (!requireAuth(socket)) {
-      return callback({
+      safeCallback(callback, {
         status: false,
         statusCode: 401,
         error: "Not authenticated or session not found",
       });
+      return;
     }
 
     const documentId = args.documentId || socket.data.documentId;
@@ -505,14 +533,14 @@ async function handlePeersList(
     const sockets = await io.in(roomName).fetchSockets();
     const peers = sockets.map((s) => s.id);
 
-    callback({
+    safeCallback(callback, {
       status: true,
       statusCode: 200,
       data: { peers },
     });
   } catch (error) {
     console.error("Error in peers list handler:", error);
-    callback({
+    safeCallback(callback, {
       status: false,
       statusCode: 500,
       error: "Internal server error",
@@ -524,15 +552,16 @@ async function handleAwareness(
   io: AppServer,
   socket: AppSocket,
   args: AwarenessArgs,
-  callback: (response: AckResponse<{ message: string }>) => void
+  callback?: (response: AckResponse<{ message: string }>) => void
 ): Promise<void> {
   try {
     if (!requireAuth(socket)) {
-      return callback({
+      safeCallback(callback, {
         status: false,
         statusCode: 401,
         error: "Not authenticated or session not found",
       });
+      return;
     }
 
     const documentId = args.documentId || socket.data.documentId;
@@ -545,14 +574,14 @@ async function handleAwareness(
       roomId: documentId,
     });
 
-    callback({
+    safeCallback(callback, {
       status: true,
       statusCode: 200,
       data: { message: "Awareness update broadcasted" },
     });
   } catch (error) {
     console.error("Error in awareness handler:", error);
-    callback({
+    safeCallback(callback, {
       status: false,
       statusCode: 500,
       error: "Internal server error",
@@ -564,7 +593,7 @@ async function handleTerminateSession(
   io: AppServer,
   socket: AppSocket,
   args: TerminateSessionArgs,
-  callback: (response: AckResponse<{ message: string }>) => void
+  callback?: (response: AckResponse<{ message: string }>) => void
 ): Promise<void> {
   try {
     const { documentId, sessionDid, ownerToken, ownerAddress, contractAddress } = args;
@@ -572,20 +601,22 @@ async function handleTerminateSession(
     console.log("TERMINATING SESSION", documentId);
 
     if (!sessionDid) {
-      return callback({
+      safeCallback(callback, {
         status: false,
         statusCode: 400,
         error: "Session DID is required",
       });
+      return;
     }
 
     const session = await sessionManager.getSession(documentId, sessionDid);
     if (!session) {
-      return callback({
+      safeCallback(callback, {
         status: false,
         statusCode: 404,
         error: "Session not found",
       });
+      return;
     }
 
     const ownerDid = await authService.verifyOwnerToken(
@@ -595,11 +626,12 @@ async function handleTerminateSession(
     );
 
     if (ownerDid !== session.ownerDid) {
-      return callback({
+      safeCallback(callback, {
         status: false,
         statusCode: 401,
         error: "Unauthorized",
       });
+      return;
     }
 
     const roomName = getRoomName(documentId, session.sessionDid);
@@ -618,14 +650,14 @@ async function handleTerminateSession(
 
     await sessionManager.terminateSession(documentId, session.sessionDid);
 
-    callback({
+    safeCallback(callback, {
       status: true,
       statusCode: 200,
       data: { message: "Session terminated" },
     });
   } catch (error) {
     console.error("Error in terminate session handler:", error);
-    callback({
+    safeCallback(callback, {
       status: false,
       statusCode: 500,
       error: "Internal server error",

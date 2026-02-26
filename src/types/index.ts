@@ -199,7 +199,7 @@ export interface SessionTerminatedPayload {
 
 type ClientEventHandler<Args, Data> = (
   args: Args,
-  callback: (response: AckResponse<Data>) => void
+  callback?: (response: AckResponse<Data>) => void
 ) => void;
 
 export interface ClientToServerEvents {
