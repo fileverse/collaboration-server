@@ -1,0 +1,220 @@
+import { describe, it, expect, vi, beforeEach } from "vitest";
+import { handleTerminateSession } from "./socket-handlers";
+import type { AppServer, AppSocket } from "../types/index";
+import type { SocketHandlerDeps } from "./socket-handlers.deps";
+
+function createFakeIO(fetchSocketsResponse: any[] = []): AppServer {
+  const fetchSocketsMock = vi.fn().mockResolvedValue(fetchSocketsResponse);
+
+  return {
+    in: vi.fn(() => ({
+      fetchSockets: fetchSocketsMock,
+    })),
+  } as unknown as AppServer;
+}
+
+/**
+ * Fake socket for handler tests.
+ * If you pass a broadcastOperator, socket.to(room) will return it so you can assert
+ * on broadcastOperator.emit(event, payload) in the test.
+ */
+function createFakeSocket(broadcastOperator?: { emit: ReturnType<typeof vi.fn> }) {
+  const toReturn = broadcastOperator ?? { emit: vi.fn() };
+  const socket = {
+    id: "socket-1",
+    data: {
+      authenticated: true,
+      documentId: "doc-1",
+      sessionDid: "session-1",
+      role: "owner" as const,
+    },
+    to: vi.fn(() => toReturn),
+  } as unknown as AppSocket;
+  return socket;
+}
+
+describe("handleTerminateSession", () => {
+  const fakeAuthService = {
+    verifyOwnerToken: vi.fn<[], Promise<string | null>>(),
+  };
+  const fakeSessionManager = {
+    getSession: vi.fn(),
+    terminateSession: vi.fn(),
+  };
+  const deps: SocketHandlerDeps = {
+    authService: fakeAuthService as any,
+    sessionManager: fakeSessionManager as any,
+  };
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it("returns 400 when sessionDid is empty", async () => {
+    const fakeIO = createFakeIO();
+    const fakeSocket = createFakeSocket();
+    const fakeArgs = {
+      documentId: "test-document-id",
+      sessionDid: "",
+      ownerToken: "test-owner-token",
+      ownerAddress: "test-owner-address",
+      contractAddress: "test-contract-address",
+    };
+    const callback = vi.fn();
+    const callbackResponse = {
+      status: false,
+      statusCode: 400,
+      error: "Session DID is required",
+    }
+    await handleTerminateSession(deps, fakeIO, fakeSocket, fakeArgs, callback);
+    expect(callback).toHaveBeenCalledWith(callbackResponse);
+    expect(fakeSessionManager.getSession).not.toHaveBeenCalled();
+  });
+
+  it("returns 404 when session is not found", async() => {
+    const fakeIO = createFakeIO();
+    const fakeSocket = createFakeSocket();
+    const fakeArgs = {
+      documentId: "test-document-id",
+      sessionDid: "test-session-did",
+      ownerToken: "test-owner-token",
+      ownerAddress: "test-owner-address",
+      contractAddress: "test-contract-address",
+    };
+    const callback = vi.fn();
+
+    fakeSessionManager.getSession.mockResolvedValue(undefined);
+    await handleTerminateSession(deps, fakeIO, fakeSocket, fakeArgs, callback);
+
+    expect(fakeSessionManager.getSession).toHaveBeenCalledOnce();
+    expect(fakeSessionManager.getSession).toHaveBeenCalledWith(fakeArgs.documentId, fakeArgs.sessionDid);
+
+    const callbackResponse = {
+      status: false,
+      statusCode: 404,
+      error: "Session not found",
+    };
+    expect(callback).toHaveBeenCalledWith(callbackResponse);
+  });
+
+  it("returns 401 when ownerDid does not match session owner", async() => {
+    const fakeIO = createFakeIO();
+    const fakeSocket = createFakeSocket();
+    const fakeArgs = {
+      documentId: "test-document-id",
+      sessionDid: "test-session-did",
+      ownerToken: "test-owner-token",
+      ownerAddress: "test-owner-address",
+      contractAddress: "test-contract-address",
+    };
+    const callback = vi.fn();
+
+    const fakeSessionResponse = { ownerDid: "fake-owner-did" };
+    const ownerDidResponse = "different-owner-did";
+    fakeSessionManager.getSession.mockResolvedValue(fakeSessionResponse);
+    fakeAuthService.verifyOwnerToken.mockResolvedValue(ownerDidResponse);
+
+    await handleTerminateSession(deps, fakeIO, fakeSocket, fakeArgs, callback);
+
+    expect(fakeSessionManager.getSession).toHaveBeenCalledOnce();
+    expect(fakeSessionManager.getSession).toHaveBeenCalledWith(fakeArgs.documentId, fakeArgs.sessionDid);
+
+    expect(fakeAuthService.verifyOwnerToken).toHaveBeenCalledOnce();
+    expect(fakeAuthService.verifyOwnerToken).toHaveBeenCalledWith(
+      fakeArgs.ownerToken,
+      fakeArgs.contractAddress,
+      fakeArgs.ownerAddress,
+    );
+
+    const callbackResponse = {
+      status: false,
+      statusCode: 401,
+      error: "Unauthorized",
+    };
+    expect(callback).toHaveBeenCalledWith(callbackResponse);
+  });
+
+  it("returns 200 when session is terminated", async () => {
+    // Mock: io.in(roomName).fetchSockets() will resolve to this array
+    const fetchSocketsResponse = [
+      {
+        id: "peer-1",
+        data: { authenticated: true },
+        leave: vi.fn(),
+      },
+    ];
+    /**
+     * To mock this
+     * const sockets = await io.in(roomName).fetchSockets();
+     * such that, the fetchSockets() returns a mock value that we set.
+     */
+    const fakeIO = createFakeIO(fetchSocketsResponse);
+
+    /**
+     * Likewise, we want to mock
+     * socket.to(roomName).emit() calls
+     * socket.to(roomName) returns a broadcast operator, which has an emit function on itself.
+     * So, we want to mock all of that.
+     */
+    const fakeBroadcastOperator = { emit: vi.fn() };
+    const fakeSocket = createFakeSocket(fakeBroadcastOperator);
+
+    const fakeArgs = {
+      documentId: "test-document-id",
+      sessionDid: "test-session-did",
+      ownerToken: "test-owner-token",
+      ownerAddress: "test-owner-address",
+      contractAddress: "test-contract-address",
+    };
+    const callback = vi.fn();
+
+    const fakeSessionResponse = {
+      sessionDid: fakeArgs.sessionDid,
+      ownerDid: "match-owner-did",
+    };
+    const ownerDidResponse = "match-owner-did";
+
+    // set the mock return values
+    fakeSessionManager.getSession.mockResolvedValue(fakeSessionResponse);
+    fakeAuthService.verifyOwnerToken.mockResolvedValue(ownerDidResponse);
+    fakeSessionManager.terminateSession.mockResolvedValue(undefined);
+
+    // now actually call the function
+    await handleTerminateSession(deps, fakeIO, fakeSocket, fakeArgs, callback);
+
+    expect(fakeSessionManager.getSession).toHaveBeenCalledOnce();
+    expect(fakeSessionManager.getSession).toHaveBeenCalledWith(
+      fakeArgs.documentId,
+      fakeArgs.sessionDid
+    );
+
+    expect(fakeAuthService.verifyOwnerToken).toHaveBeenCalledOnce();
+    expect(fakeAuthService.verifyOwnerToken).toHaveBeenCalledWith(
+      fakeArgs.ownerToken,
+      fakeArgs.contractAddress,
+      fakeArgs.ownerAddress,
+    );
+
+    const roomName = `session::${fakeArgs.documentId}__${fakeSessionResponse.sessionDid}`;
+
+    expect(fakeSocket.to).toHaveBeenCalledWith(roomName);
+    expect(fakeBroadcastOperator.emit).toHaveBeenCalledWith("/session/terminated", {
+      roomId: fakeArgs.documentId,
+    });
+
+    expect(fetchSocketsResponse[0].leave).toHaveBeenCalledWith(roomName);
+    expect(fetchSocketsResponse[0].data.authenticated).toBe(false);
+    expect(fakeSessionManager.terminateSession).toHaveBeenCalledWith(
+      fakeArgs.documentId,
+      fakeSessionResponse.sessionDid
+    );
+
+    const callbackResponse = {
+      status: true,
+      statusCode: 200,
+      data: { message: "Session terminated" },
+    };
+    expect(callback).toHaveBeenCalledWith(callbackResponse);
+  });
+});
+
