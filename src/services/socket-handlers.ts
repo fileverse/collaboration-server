@@ -44,7 +44,7 @@ export function registerEventHandlers(io: AppServer): void {
     socket.on("/documents/commit/history", (args, callback) => handleCommitHistory(socket, args, callback));
     socket.on("/documents/update/history", (args, callback) => handleUpdateHistory(socket, args, callback));
     socket.on("/documents/peers/list", (args, callback) => handlePeersList(io, socket, args, callback));
-    socket.on("/documents/awareness", (args, callback) => handleAwareness(io, socket, args, callback));
+    socket.on("/documents/awareness", (args) => handleAwareness(io, socket, args));
     socket.on("/documents/terminate", (args, callback) => handleTerminateSession(io, socket, args, callback));
 
     // Disconnection handling
@@ -524,15 +524,10 @@ async function handleAwareness(
   io: AppServer,
   socket: AppSocket,
   args: AwarenessArgs,
-  callback: (response: AckResponse<{ message: string }>) => void
 ): Promise<void> {
   try {
     if (!requireAuth(socket)) {
-      return callback({
-        status: false,
-        statusCode: 401,
-        error: "Not authenticated or session not found",
-      });
+      return;
     }
 
     const documentId = args.documentId || socket.data.documentId;
@@ -544,19 +539,8 @@ async function handleAwareness(
       data,
       roomId: documentId,
     });
-
-    callback({
-      status: true,
-      statusCode: 200,
-      data: { message: "Awareness update broadcasted" },
-    });
   } catch (error) {
     console.error("Error in awareness handler:", error);
-    callback({
-      status: false,
-      statusCode: 500,
-      error: "Internal server error",
-    });
   }
 }
 
