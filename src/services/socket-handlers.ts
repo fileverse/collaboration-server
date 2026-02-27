@@ -23,6 +23,7 @@ import { authService } from "./auth";
 import { mongodbStore } from "./mongodb-store";
 import { sessionManager } from "./session-manager";
 import { Hex, isAddress } from "viem";
+import type { SocketHandlerDeps } from "./socket-handlers.deps";
 
 function validateHexAddress(address: string | undefined, fieldName: string): address is Hex {
   if (!address || !isAddress(address)) {
@@ -34,6 +35,11 @@ function validateHexAddress(address: string | undefined, fieldName: string): add
 function getRoomName(documentId: string, sessionDid: string): string {
   return `session::${documentId}__${sessionDid}`;
 }
+
+const defaultDeps: SocketHandlerDeps = {
+  authService,
+  sessionManager,
+};
 
 export function registerEventHandlers(io: AppServer): void {
   io.on("connection", (socket: AppSocket) => {
@@ -53,7 +59,9 @@ export function registerEventHandlers(io: AppServer): void {
     socket.on("/documents/update/history", (args, callback) => handleUpdateHistory(socket, args, callback));
     socket.on("/documents/peers/list", (args, callback) => handlePeersList(io, socket, args, callback));
     socket.on("/documents/awareness", (args) => handleAwareness(io, socket, args));
-    socket.on("/documents/terminate", (args, callback) => handleTerminateSession(io, socket, args, callback));
+    socket.on("/documents/terminate", (args, callback) =>
+      handleTerminateSession(defaultDeps, io, socket, args, callback)
+    );
 
     // Disconnection handling
     socket.on("disconnecting", () => handleDisconnecting(socket));
@@ -639,13 +647,15 @@ async function handleAwareness(
   }
 }
 
-async function handleTerminateSession(
+export async function handleTerminateSession(
+  deps: SocketHandlerDeps,
   io: AppServer,
   socket: AppSocket,
   args: TerminateSessionArgs,
   callback: (response: AckResponse<{ message: string }>) => void
 ): Promise<void> {
   try {
+    const { authService, sessionManager } = deps;
     const { documentId, sessionDid, ownerToken, ownerAddress, contractAddress } = args;
 
     console.log("TERMINATING SESSION", documentId);
