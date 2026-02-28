@@ -655,7 +655,7 @@ async function handlePeersList(
   }
 }
 
-async function handleAwareness(
+export async function handleAwareness(
   io: AppServer,
   socket: AppSocket,
   args: AwarenessArgs,
