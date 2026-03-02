@@ -49,6 +49,26 @@ export interface UCANPayload {
 }
 
 // ***************************************
+// Error Codes
+// ***************************************
+
+export enum ErrorCode {
+  AUTH_TOKEN_MISSING = "AUTH_TOKEN_MISSING",
+  AUTH_TOKEN_INVALID = "AUTH_TOKEN_INVALID",
+  SESSION_NOT_FOUND = "SESSION_NOT_FOUND",
+  SESSION_TERMINATED = "SESSION_TERMINATED",
+  SESSION_DID_MISSING = "SESSION_DID_MISSING",
+  DOCUMENT_ID_MISSING = "DOCUMENT_ID_MISSING",
+  UPDATE_DATA_MISSING = "UPDATE_DATA_MISSING",
+  COMMIT_UNAUTHORIZED = "COMMIT_UNAUTHORIZED",
+  COMMIT_MISSING_DATA = "COMMIT_MISSING_DATA",
+  INVALID_ADDRESS = "INVALID_ADDRESS",
+  NOT_AUTHENTICATED = "NOT_AUTHENTICATED",
+  DB_ERROR = "DB_ERROR",
+  INTERNAL_ERROR = "INTERNAL_ERROR",
+}
+
+// ***************************************
 // Socket.IO Acknowledgement Response
 // ***************************************
 
@@ -57,6 +77,7 @@ export interface AckResponse<T = Record<string, any>> {
   statusCode: number;
   data?: T;
   error?: string;
+  errorCode?: ErrorCode;
 }
 
 // ***************************************
@@ -193,6 +214,12 @@ export interface SessionTerminatedPayload {
   roomId: string;
 }
 
+export interface ServerErrorPayload {
+  errorCode: ErrorCode;
+  message: string;
+  roomId: string;
+}
+
 // ***************************************
 // Socket.IO Typed Event Maps
 // ***************************************
@@ -215,6 +242,7 @@ export interface ClientToServerEvents {
 
 export interface ServerToClientEvents {
   "/server/handshake": (data: HandshakePayload) => void;
+  "/server/error": (data: ServerErrorPayload) => void;
   "/document/content_update": (data: ContentUpdatePayload) => void;
   "/document/awareness_update": (data: AwarenessUpdatePayload) => void;
   "/room/membership_change": (data: MembershipChangePayload) => void;

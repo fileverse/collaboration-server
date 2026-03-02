@@ -113,6 +113,15 @@ export class SessionManager {
   async deactivateSession(documentId: string, sessionDid: string): Promise<void> {
     const sessionKey = this.getSessionKey(documentId, sessionDid);
     this.inMemorySessions.delete(sessionKey);
+
+    try {
+      await SessionModel.findOneAndUpdate(
+        { documentId, sessionDid },
+        { state: "inactive" }
+      );
+    } catch (error) {
+      console.error("Error deactivating session in database:", error);
+    }
   }
 
   async terminateSession(documentId: string, sessionDid: string): Promise<void> {
@@ -129,6 +138,24 @@ export class SessionManager {
       await DocumentCommitModel.deleteMany({ documentId, sessionDid });
     } catch (error) {
       console.error("Error terminating session in database:", error);
+    }
+  }
+
+  async getOtherActiveSessions(
+    documentId: string,
+    ownerDid: string,
+    excludeSessionDid?: string
+  ): Promise<Array<{ documentId: string; sessionDid: string }>> {
+    try {
+      const query: Record<string, any> = { documentId, ownerDid, state: "active" };
+      if (excludeSessionDid) {
+        query.sessionDid = { $ne: excludeSessionDid };
+      }
+      const sessions = await SessionModel.find(query);
+      return sessions.map((s) => ({ documentId: s.documentId, sessionDid: s.sessionDid }));
+    } catch (error) {
+      console.error("Error getting other active sessions:", error);
+      return [];
     }
   }
 

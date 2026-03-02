@@ -16,12 +16,20 @@ import {
   DocumentUpdate,
   AppServer,
   AppSocket,
+  ErrorCode,
 } from "../types/index";
 import { requireAuth } from "./auth-middleware";
 import { authService } from "./auth";
 import { mongodbStore } from "./mongodb-store";
 import { sessionManager } from "./session-manager";
-import { Hex } from "viem";
+import { Hex, isAddress } from "viem";
+
+function validateHexAddress(address: string | undefined, fieldName: string): address is Hex {
+  if (!address || !isAddress(address)) {
+    return false;
+  }
+  return true;
+}
 
 function getRoomName(documentId: string, sessionDid: string): string {
   return `session::${documentId}__${sessionDid}`;
@@ -72,6 +80,7 @@ async function handleAuth(
         status: false,
         statusCode: 400,
         error: "Collaboration token is required",
+        errorCode: ErrorCode.AUTH_TOKEN_MISSING,
       });
     }
 
@@ -80,6 +89,7 @@ async function handleAuth(
         status: false,
         statusCode: 400,
         error: "Document ID is required",
+        errorCode: ErrorCode.DOCUMENT_ID_MISSING,
       });
     }
 
@@ -88,6 +98,7 @@ async function handleAuth(
         status: false,
         statusCode: 400,
         error: "Session DID is required",
+        errorCode: ErrorCode.SESSION_DID_MISSING,
       });
     }
 
@@ -104,13 +115,24 @@ async function handleAuth(
           status: false,
           statusCode: 400,
           error: "Document ID, owner token, and session DID are required",
+          errorCode: ErrorCode.AUTH_TOKEN_MISSING,
+        });
+      }
+
+      if (!validateHexAddress(args.contractAddress, "contractAddress") ||
+          !validateHexAddress(args.ownerAddress, "ownerAddress")) {
+        return callback({
+          status: false,
+          statusCode: 400,
+          error: "Invalid contract address or owner address format",
+          errorCode: ErrorCode.INVALID_ADDRESS,
         });
       }
 
       const ownerDid = await authService.verifyOwnerToken(
         args.ownerToken,
-        args.contractAddress as Hex,
-        args.ownerAddress as Hex
+        args.contractAddress,
+        args.ownerAddress
       );
 
       if (!ownerDid) {
@@ -118,10 +140,42 @@ async function handleAuth(
           status: false,
           statusCode: 401,
           error: "Authentication failed",
+          errorCode: ErrorCode.AUTH_TOKEN_INVALID,
         });
       }
 
-      await sessionManager.terminateOtherExistingSessions(documentId, ownerDid);
+      // Terminate other sessions with socket notification
+      const otherSessions = await sessionManager.getOtherActiveSessions(
+        documentId,
+        ownerDid,
+        sessionDid
+      );
+      for (const oldSession of otherSessions) {
+        const oldRoomName = getRoomName(oldSession.documentId, oldSession.sessionDid);
+
+        // Notify connected sockets before terminating
+        io.to(oldRoomName).emit("/server/error", {
+          errorCode: ErrorCode.SESSION_TERMINATED,
+          message: "Session terminated by owner creating a new session",
+          roomId: oldSession.documentId,
+        });
+        io.to(oldRoomName).emit("/session/terminated", {
+          roomId: oldSession.documentId,
+        });
+
+        // Force-leave all sockets and reset auth
+        const socketsInOldRoom = await io.in(oldRoomName).fetchSockets();
+        for (const s of socketsInOldRoom) {
+          s.data.authenticated = false;
+          s.leave(oldRoomName);
+        }
+
+        // Now clean up DB
+        await sessionManager.terminateSession(oldSession.documentId, oldSession.sessionDid);
+        console.log(
+          `[Auth] Terminated old session: ${oldSession.sessionDid} for document: ${documentId}`
+        );
+      }
 
       await sessionManager.createSession({
         documentId,
@@ -146,15 +200,25 @@ async function handleAuth(
           status: false,
           statusCode: 401,
           error: "Authentication failed",
+          errorCode: ErrorCode.AUTH_TOKEN_INVALID,
         });
       }
 
       let ownerDid = null;
       if (args.ownerToken && args.ownerAddress && args.contractAddress) {
+        if (!validateHexAddress(args.contractAddress, "contractAddress") ||
+            !validateHexAddress(args.ownerAddress, "ownerAddress")) {
+          return callback({
+            status: false,
+            statusCode: 400,
+            error: "Invalid contract address or owner address format",
+            errorCode: ErrorCode.INVALID_ADDRESS,
+          });
+        }
         ownerDid = await authService.verifyOwnerToken(
           args.ownerToken,
-          args.contractAddress as Hex,
-          args.ownerAddress as Hex
+          args.contractAddress,
+          args.ownerAddress
         );
       }
 
@@ -176,6 +240,7 @@ async function handleAuth(
         status: false,
         statusCode: 404,
         error: "Session not found",
+        errorCode: ErrorCode.SESSION_NOT_FOUND,
       });
     }
 
@@ -217,6 +282,7 @@ async function handleAuth(
       status: false,
       statusCode: 500,
       error: "Internal server error",
+      errorCode: ErrorCode.INTERNAL_ERROR,
     });
   }
 }
@@ -233,6 +299,7 @@ async function handleDocumentUpdate(
         status: false,
         statusCode: 401,
         error: "Not authenticated or session not found",
+        errorCode: ErrorCode.NOT_AUTHENTICATED,
       });
     }
 
@@ -244,6 +311,7 @@ async function handleDocumentUpdate(
         status: false,
         statusCode: 400,
         error: "Update data is required",
+        errorCode: ErrorCode.UPDATE_DATA_MISSING,
       });
     }
 
@@ -255,6 +323,7 @@ async function handleDocumentUpdate(
         status: false,
         statusCode: 404,
         error: "Session not found",
+        errorCode: ErrorCode.SESSION_NOT_FOUND,
       });
     }
 
@@ -269,6 +338,7 @@ async function handleDocumentUpdate(
         status: false,
         statusCode: 401,
         error: "Authentication failed",
+        errorCode: ErrorCode.AUTH_TOKEN_INVALID,
       });
     }
 
@@ -311,6 +381,7 @@ async function handleDocumentUpdate(
       status: false,
       statusCode: 500,
       error: "Internal server error",
+      errorCode: ErrorCode.INTERNAL_ERROR,
     });
   }
 }
@@ -326,6 +397,7 @@ async function handleDocumentCommit(
         status: false,
         statusCode: 401,
         error: "Not authenticated or session not found",
+        errorCode: ErrorCode.NOT_AUTHENTICATED,
       });
     }
 
@@ -334,6 +406,7 @@ async function handleDocumentCommit(
         status: false,
         statusCode: 403,
         error: "Only owners can create commits",
+        errorCode: ErrorCode.COMMIT_UNAUTHORIZED,
       });
     }
 
@@ -348,6 +421,7 @@ async function handleDocumentCommit(
         status: false,
         statusCode: 404,
         error: "Session not found",
+        errorCode: ErrorCode.SESSION_NOT_FOUND,
       });
     }
 
@@ -356,13 +430,24 @@ async function handleDocumentCommit(
         status: false,
         statusCode: 400,
         error: "Updates array and CID are required",
+        errorCode: ErrorCode.COMMIT_MISSING_DATA,
+      });
+    }
+
+    if (!validateHexAddress(contractAddress, "contractAddress") ||
+        !validateHexAddress(ownerAddress, "ownerAddress")) {
+      return callback({
+        status: false,
+        statusCode: 400,
+        error: "Invalid contract address or owner address format",
+        errorCode: ErrorCode.INVALID_ADDRESS,
       });
     }
 
     const isVerified = await authService.verifyOwnerToken(
       ownerToken,
-      contractAddress as Hex,
-      ownerAddress as Hex
+      contractAddress,
+      ownerAddress
     );
 
     if (!isVerified) {
@@ -370,6 +455,7 @@ async function handleDocumentCommit(
         status: false,
         statusCode: 401,
         error: "Authentication failed",
+        errorCode: ErrorCode.AUTH_TOKEN_INVALID,
       });
     }
 
@@ -399,6 +485,7 @@ async function handleDocumentCommit(
       status: false,
       statusCode: 500,
       error: "Internal server error",
+      errorCode: ErrorCode.INTERNAL_ERROR,
     });
   }
 }
@@ -414,23 +501,25 @@ async function handleCommitHistory(
         status: false,
         statusCode: 401,
         error: "Not authenticated",
+        errorCode: ErrorCode.NOT_AUTHENTICATED,
       });
     }
 
     const documentId = args.documentId || socket.data.documentId;
     const { offset = 0, limit = 10, sort = "desc" } = args;
 
-    const commits = await mongodbStore.getCommitsByDocument(
-      { documentId, sessionDid: socket.data.sessionDid },
-      { offset, limit, sort }
-    );
+    const filterParams = { documentId, sessionDid: socket.data.sessionDid };
+    const [commits, total] = await Promise.all([
+      mongodbStore.getCommitsByDocument(filterParams, { offset, limit, sort }),
+      mongodbStore.countCommitsByDocument(filterParams),
+    ]);
 
     callback({
       status: true,
       statusCode: 200,
       data: {
         history: commits,
-        total: commits.length,
+        total,
       },
     });
   } catch (error) {
@@ -439,6 +528,7 @@ async function handleCommitHistory(
       status: false,
       statusCode: 500,
       error: "Internal server error",
+      errorCode: ErrorCode.INTERNAL_ERROR,
     });
   }
 }
@@ -454,23 +544,25 @@ async function handleUpdateHistory(
         status: false,
         statusCode: 401,
         error: "Not authenticated",
+        errorCode: ErrorCode.NOT_AUTHENTICATED,
       });
     }
 
     const documentId = args.documentId || socket.data.documentId;
     const { offset = 0, limit = 100, sort = "desc", filters = {} } = args;
 
-    const updates = await mongodbStore.getUpdatesByDocument(
-      { documentId, sessionDid: socket.data.sessionDid },
-      { offset, limit, sort, committed: filters.committed }
-    );
+    const filterParams = { documentId, sessionDid: socket.data.sessionDid };
+    const [updates, total] = await Promise.all([
+      mongodbStore.getUpdatesByDocument(filterParams, { offset, limit, sort, committed: filters.committed }),
+      mongodbStore.countUpdatesByDocument(filterParams, { committed: filters.committed }),
+    ]);
 
     callback({
       status: true,
       statusCode: 200,
       data: {
         history: updates,
-        total: updates.length,
+        total,
       },
     });
   } catch (error) {
@@ -479,6 +571,7 @@ async function handleUpdateHistory(
       status: false,
       statusCode: 500,
       error: "Internal server error",
+      errorCode: ErrorCode.INTERNAL_ERROR,
     });
   }
 }
@@ -495,6 +588,7 @@ async function handlePeersList(
         status: false,
         statusCode: 401,
         error: "Not authenticated or session not found",
+        errorCode: ErrorCode.NOT_AUTHENTICATED,
       });
     }
 
@@ -516,6 +610,7 @@ async function handlePeersList(
       status: false,
       statusCode: 500,
       error: "Internal server error",
+      errorCode: ErrorCode.INTERNAL_ERROR,
     });
   }
 }
@@ -560,6 +655,7 @@ async function handleTerminateSession(
         status: false,
         statusCode: 400,
         error: "Session DID is required",
+        errorCode: ErrorCode.SESSION_DID_MISSING,
       });
     }
 
@@ -569,13 +665,24 @@ async function handleTerminateSession(
         status: false,
         statusCode: 404,
         error: "Session not found",
+        errorCode: ErrorCode.SESSION_NOT_FOUND,
+      });
+    }
+
+    if (!validateHexAddress(contractAddress, "contractAddress") ||
+        !validateHexAddress(ownerAddress, "ownerAddress")) {
+      return callback({
+        status: false,
+        statusCode: 400,
+        error: "Invalid contract address or owner address format",
+        errorCode: ErrorCode.INVALID_ADDRESS,
       });
     }
 
     const ownerDid = await authService.verifyOwnerToken(
       ownerToken,
-      contractAddress as Hex,
-      ownerAddress as Hex
+      contractAddress,
+      ownerAddress
     );
 
     if (ownerDid !== session.ownerDid) {
@@ -583,23 +690,30 @@ async function handleTerminateSession(
         status: false,
         statusCode: 401,
         error: "Unauthorized",
+        errorCode: ErrorCode.AUTH_TOKEN_INVALID,
       });
     }
 
     const roomName = getRoomName(documentId, session.sessionDid);
 
-    // Broadcast termination to all in room (excluding sender)
+    // 1. Capture all sockets in room before any mutations
+    const socketsInRoom = await io.in(roomName).fetchSockets();
+
+    // 2. Broadcast termination to all in room (excluding sender)
     socket.to(roomName).emit("/session/terminated", {
       roomId: documentId,
     });
 
-    // Force all sockets to leave the room and reset auth
-    const socketsInRoom = await io.in(roomName).fetchSockets();
+    // 3. Deauth and force-leave all sockets (blocks new handlers)
     for (const s of socketsInRoom) {
-      s.leave(roomName);
       s.data.authenticated = false;
+      s.leave(roomName);
     }
 
+    // 4. Deactivate session in memory (prevents new handlers from finding it)
+    await sessionManager.deactivateSession(documentId, session.sessionDid);
+
+    // 5. Clean up DB
     await sessionManager.terminateSession(documentId, session.sessionDid);
 
     callback({
@@ -613,6 +727,7 @@ async function handleTerminateSession(
       status: false,
       statusCode: 500,
       error: "Internal server error",
+      errorCode: ErrorCode.INTERNAL_ERROR,
     });
   }
 }
