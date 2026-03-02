@@ -11,8 +11,6 @@ interface RuntimeSession {
 export class SessionManager {
   private inMemorySessions = new Map<string, RuntimeSession>();
 
-  constructor() {}
-
   private getSessionKey(documentId: string, sessionDid: string): string {
     return `${documentId}__${sessionDid}`;
   }
