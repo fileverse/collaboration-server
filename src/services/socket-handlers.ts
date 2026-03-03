@@ -32,7 +32,7 @@ function validateHexAddress(address: string | undefined, fieldName: string): add
   return true;
 }
 
-function getRoomName(documentId: string, sessionDid: string): string {
+export function getRoomName(documentId: string, sessionDid: string): string {
   return `session::${documentId}__${sessionDid}`;
 }
 
@@ -584,7 +584,7 @@ async function handleUpdateHistory(
   }
 }
 
-async function handlePeersList(
+export async function handlePeersList(
   io: AppServer,
   socket: AppSocket,
   args: PeersListArgs,
