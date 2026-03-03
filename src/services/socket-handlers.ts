@@ -24,7 +24,7 @@ import { sessionManager } from "./session-manager";
 import { Hex } from "viem";
 import type { SocketHandlerDeps } from "./socket-handlers.deps";
 
-function getRoomName(documentId: string, sessionDid: string): string {
+export function getRoomName(documentId: string, sessionDid: string): string {
   return `session::${documentId}__${sessionDid}`;
 }
 
@@ -491,7 +491,7 @@ async function handleUpdateHistory(
   }
 }
 
-async function handlePeersList(
+export async function handlePeersList(
   io: AppServer,
   socket: AppSocket,
   args: PeersListArgs,
