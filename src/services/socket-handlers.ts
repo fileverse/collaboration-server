@@ -64,7 +64,7 @@ export function registerEventHandlers(io: AppServer): void {
     );
 
     // Disconnection handling
-    socket.on("disconnecting", () => handleDisconnecting(socket));
+    socket.on("disconnecting", () => handleDisconnecting(defaultDeps, socket));
     socket.on("disconnect", (reason) => {
       console.log(`Socket disconnected: ${socket.id}, reason: ${reason}`);
     });
@@ -742,10 +742,12 @@ export async function handleTerminateSession(
   }
 }
 
-async function handleDisconnecting(
+export async function handleDisconnecting(
+  deps: SocketHandlerDeps,
   socket: AppSocket
 ): Promise<void> {
   try {
+    const { sessionManager } = deps;
     if (!socket.data.authenticated || !socket.data.documentId || !socket.data.sessionDid) {
       return;
     }
