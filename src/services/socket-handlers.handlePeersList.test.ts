@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from "vitest";
+import { describe, expect, it, vi, beforeEach } from "vitest";
 import { handlePeersList, getRoomName } from "./socket-handlers";
 // import { PeersListArgs } from "../types";
 import type { AppServer, AppSocket, PeersListArgs } from "../types";
@@ -39,6 +39,10 @@ function createFakeSocket(
 }
 
 describe("tests peers list handler", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  })
+
   it("returns early when socket is not authenticated", async () => {
     const fakeIO = createFakeIO();
     const fakeSocket = createFakeSocket(undefined, { authenticated: false });
