@@ -41,9 +41,11 @@ describe("handleDisconnecting", () => {
   const fakeSessionManager = {
     removeClientFromSession: vi.fn(),
   };
+  const fakeMongoDBStore = {} as any;
   const deps: SocketHandlerDeps = {
     authService: fakeAuthService as any,
     sessionManager: fakeSessionManager as any,
+    mongodbStore: fakeMongoDBStore,
   };
 
   beforeEach(() => {
