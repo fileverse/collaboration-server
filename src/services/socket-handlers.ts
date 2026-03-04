@@ -63,7 +63,9 @@ export function registerEventHandlers(io: AppServer, broadcastBridge?: Broadcast
     socket.on("/auth", (args, callback) => handleAuth(io, socket, args, callback));
     socket.on("/documents/update", (args, callback) => handleDocumentUpdate(io, socket, args, callback));
     socket.on("/documents/commit", (args, callback) => handleDocumentCommit(socket, args, callback));
-    socket.on("/documents/commit/history", (args, callback) => handleCommitHistory(socket, args, callback));
+    socket.on("/documents/commit/history", (args, callback) =>
+      handleCommitHistory(defaultDeps, socket, args, callback)
+    );
     socket.on("/documents/update/history", (args, callback) =>
       handleUpdateHistory(defaultDeps, socket, args, callback)
     );
@@ -529,12 +531,14 @@ async function handleDocumentCommit(
   }
 }
 
-async function handleCommitHistory(
+export async function handleCommitHistory(
+  deps: SocketHandlerDeps,
   socket: AppSocket,
   args: CommitHistoryArgs,
   callback: (response: AckResponse<{ history: DocumentCommit[]; total: number }>) => void
 ): Promise<void> {
   try {
+    const { mongodbStore } = deps;
     if (!requireAuth(socket)) {
       return callback({
         status: false,
