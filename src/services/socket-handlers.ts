@@ -31,6 +31,7 @@ export function getRoomName(documentId: string, sessionDid: string): string {
 const defaultDeps: SocketHandlerDeps = {
   authService,
   sessionManager,
+  mongodbStore,
 };
 
 export function registerEventHandlers(io: AppServer): void {
@@ -48,7 +49,9 @@ export function registerEventHandlers(io: AppServer): void {
     socket.on("/documents/update", (args, callback) => handleDocumentUpdate(io, socket, args, callback));
     socket.on("/documents/commit", (args, callback) => handleDocumentCommit(socket, args, callback));
     socket.on("/documents/commit/history", (args, callback) => handleCommitHistory(socket, args, callback));
-    socket.on("/documents/update/history", (args, callback) => handleUpdateHistory(socket, args, callback));
+    socket.on("/documents/update/history", (args, callback) =>
+      handleUpdateHistory(defaultDeps, socket, args, callback)
+    );
     socket.on("/documents/peers/list", (args, callback) => handlePeersList(io, socket, args, callback));
     socket.on("/documents/awareness", (args) => handleAwareness(io, socket, args));
     socket.on("/documents/terminate", (args, callback) =>
@@ -451,12 +454,14 @@ async function handleCommitHistory(
   }
 }
 
-async function handleUpdateHistory(
+export async function handleUpdateHistory(
+  deps: SocketHandlerDeps,
   socket: AppSocket,
   args: UpdateHistoryArgs,
   callback: (response: AckResponse<{ history: DocumentUpdate[]; total: number }>) => void
 ): Promise<void> {
   try {
+    const { mongodbStore } = deps;
     if (!requireAuth(socket)) {
       return callback({
         status: false,
