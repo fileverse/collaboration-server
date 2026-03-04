@@ -45,9 +45,13 @@ export function registerEventHandlers(io: AppServer): void {
     });
 
     // Register event handlers
-    socket.on("/auth", (args, callback) => handleAuth(io, socket, args, callback));
-    socket.on("/documents/update", (args, callback) => handleDocumentUpdate(io, socket, args, callback));
-    socket.on("/documents/commit", (args, callback) => handleDocumentCommit(socket, args, callback));
+    socket.on("/auth", (args, callback) => handleAuth(defaultDeps, io, socket, args, callback));
+    socket.on("/documents/update", (args, callback) =>
+      handleDocumentUpdate(defaultDeps, io, socket, args, callback)
+    );
+    socket.on("/documents/commit", (args, callback) =>
+      handleDocumentCommit(defaultDeps, socket, args, callback)
+    );
     socket.on("/documents/commit/history", (args, callback) =>
       handleCommitHistory(defaultDeps, socket, args, callback)
     );
@@ -71,13 +75,15 @@ export function registerEventHandlers(io: AppServer): void {
   });
 }
 
-async function handleAuth(
+export async function handleAuth(
+  deps: SocketHandlerDeps,
   io: AppServer,
   socket: AppSocket,
   args: AuthArgs,
   callback: (response: AckResponse<AuthResponseData>) => void
 ): Promise<void> {
   try {
+    const { authService, sessionManager } = deps;
     const { documentId, collaborationToken, sessionDid } = args;
 
     if (!collaborationToken) {
@@ -111,7 +117,7 @@ async function handleAuth(
     let roomInfo: string | undefined;
 
     if (!existingSession && args.ownerToken) {
-      // - Setup new session (owner flow) -
+      // - Set up a new session (owner flow)
       if (!args.ownerToken || !sessionDid) {
         return callback({
           status: false,
@@ -147,7 +153,7 @@ async function handleAuth(
       sessionType = "new";
       roomInfo = args.roomInfo;
     } else if (existingSession) {
-      // - Join existing session -
+      // Join an existing session
       const userDid = await authService.verifyCollaborationToken(
         collaborationToken,
         existingSession.sessionDid,
@@ -234,13 +240,15 @@ async function handleAuth(
   }
 }
 
-async function handleDocumentUpdate(
+export async function handleDocumentUpdate(
+  deps: SocketHandlerDeps,
   io: AppServer,
   socket: AppSocket,
   args: DocumentUpdateArgs,
   callback: (response: AckResponse<DocumentUpdateResponseData>) => void
 ): Promise<void> {
   try {
+    const { authService, sessionManager, mongodbStore } = deps;
     if (!requireAuth(socket)) {
       return callback({
         status: false,
@@ -328,12 +336,14 @@ async function handleDocumentUpdate(
   }
 }
 
-async function handleDocumentCommit(
+export async function handleDocumentCommit(
+  deps: SocketHandlerDeps,
   socket: AppSocket,
   args: DocumentCommitArgs,
   callback: (response: AckResponse<DocumentCommitResponseData>) => void
 ): Promise<void> {
   try {
+    const { authService, sessionManager, mongodbStore } = deps;
     if (!requireAuth(socket)) {
       return callback({
         status: false,
