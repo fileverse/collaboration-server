@@ -1,8 +1,7 @@
 import { describe, vi, it, expect, beforeEach } from "vitest";
-import { handleUpdateHistory } from "./socket-handlers";
-// TODO: does it make any difference if I mention/don't-mention type
+import { handleCommitHistory } from "./socket-handlers";
 import type { SocketHandlerDeps } from "./socket-handlers.deps";
-import type { AppServer, AppSocket, DocumentUpdate, UpdateHistoryArgs } from "../types";
+import type { AppSocket, DocumentCommit, CommitHistoryArgs } from "../types";
 
 function createFakeSocket(
   broadcastOperator?: { emit: ReturnType<typeof vi.fn>},
@@ -29,13 +28,13 @@ function createFakeSocket(
   } as unknown as AppSocket;
 }
 
-describe("updateHistory", () => {
+describe("commitHistory", () => {
   beforeEach(() => {
     vi.clearAllMocks();
   });
 
   const fakeMongodbStore = {
-    getUpdatesByDocument: vi.fn(),
+    getCommitsByDocument: vi.fn(),
   };
 
   const deps: SocketHandlerDeps = {
@@ -46,12 +45,12 @@ describe("updateHistory", () => {
 
   it('returns early when not authenticated', async () => {
     const fakeSocket: AppSocket = createFakeSocket(undefined, { authenticated: false });
-    const fakeArgs: UpdateHistoryArgs = {
+    const fakeArgs: CommitHistoryArgs = {
       documentId: "test-document-id",
     };
     const fakeCallback = vi.fn();
 
-    await handleUpdateHistory(deps, fakeSocket, fakeArgs, fakeCallback);
+    await handleCommitHistory(deps, fakeSocket, fakeArgs, fakeCallback);
 
     expect(fakeCallback).toHaveBeenCalledWith({
       status: false,
@@ -62,10 +61,10 @@ describe("updateHistory", () => {
 
   it('returns early when documentId is empty in socket data', async () => {
     const fakeSocket: AppSocket = createFakeSocket(undefined, { documentId: "" });
-    const fakeArgs: UpdateHistoryArgs = {};
+    const fakeArgs: CommitHistoryArgs = {};
     const fakeCallback = vi.fn();
 
-    await handleUpdateHistory(deps, fakeSocket, fakeArgs, fakeCallback);
+    await handleCommitHistory(deps, fakeSocket, fakeArgs, fakeCallback);
 
     expect(fakeCallback).toHaveBeenCalledWith({
       status: false,
@@ -76,12 +75,12 @@ describe("updateHistory", () => {
 
   it('returns early when sessionDid is empty in socket data', async () => {
     const fakeSocket: AppSocket = createFakeSocket(undefined, { sessionDid: "" });
-    const fakeArgs: UpdateHistoryArgs = {
+    const fakeArgs: CommitHistoryArgs = {
       documentId: "test-document-id",
     };
     const fakeCallback = vi.fn();
 
-    await handleUpdateHistory(deps, fakeSocket, fakeArgs, fakeCallback);
+    await handleCommitHistory(deps, fakeSocket, fakeArgs, fakeCallback);
 
     expect(fakeCallback).toHaveBeenCalledWith({
       status: false,
@@ -90,75 +89,59 @@ describe("updateHistory", () => {
     });
   });
 
-  it('returns update history successfully, with fallback argument values', async () => {
-    const fakeSocket: AppSocket = createFakeSocket(undefined, {
-      documentId: "test-document-id"
-    });
-    const fakeArgs: UpdateHistoryArgs = {
-      documentId: "test-document-id",
-    };
+  it('returns commit history successfully, with fallback argument values', async () => {
+    const fakeSocket: AppSocket = createFakeSocket();
+    const fakeArgs: CommitHistoryArgs = {};
     const fakeCallback = vi.fn();
-    const fakeResponse: DocumentUpdate[] = [];
+    const fakeResponse: DocumentCommit[] = [];
     const documentId = fakeArgs.documentId || fakeSocket.data.documentId;
 
-    fakeMongodbStore.getUpdatesByDocument.mockResolvedValue(fakeResponse);
+    fakeMongodbStore.getCommitsByDocument.mockResolvedValue(fakeResponse);
 
-    await handleUpdateHistory(deps, fakeSocket, fakeArgs, fakeCallback);
+    await handleCommitHistory(deps, fakeSocket, fakeArgs, fakeCallback);
 
-    expect(fakeMongodbStore.getUpdatesByDocument).toHaveBeenCalled();
-    expect(fakeMongodbStore.getUpdatesByDocument).toHaveBeenCalledWith({
+    expect(fakeMongodbStore.getCommitsByDocument).toHaveBeenCalled();
+    expect(fakeMongodbStore.getCommitsByDocument).toHaveBeenCalledWith({
       documentId,
       sessionDid: fakeSocket.data.sessionDid,
     }, {
-      offset: 0, limit: 100, sort: "desc", committed: undefined,
+      offset: 0, limit: 10, sort: "desc"
     });
 
     expect(fakeCallback).toHaveBeenCalledWith({
       status: true,
       statusCode: 200,
       data: {
-        history: [],
-        total: 0,
+        history: fakeResponse,
+        total: fakeResponse.length,
       },
     });
   });
 
   it('returns update history successfully with proper argument values set', async () => {
     const fakeSocket: AppSocket = createFakeSocket();
-    const fakeArgs: UpdateHistoryArgs = {
+    const fakeArgs: CommitHistoryArgs = {
       documentId: "test-document-id",
-      limit: 1000,
+      limit: 15,
       offset: 0,
-      filters: {
-        committed: false,
-      },
       sort: "desc",
     };
     const fakeCallback = vi.fn();
-    const fakeResponse: DocumentUpdate[] = [
-      {
-        "id": "test-id",
-        "documentId": "test-document-id",
-        "data": "test-encrypted-data",
-        "updateType": "yjs_update",
-        "committed": false,
-        "commitCid": null,
-        "createdAt": 1772181495470,
-        "sessionDid": "test-session-did"
-      }
+    const fakeResponse: DocumentCommit[] = [
+      // {}
     ];
     const documentId = fakeArgs.documentId || fakeSocket.data.documentId;
 
-    fakeMongodbStore.getUpdatesByDocument.mockResolvedValue(fakeResponse);
+    fakeMongodbStore.getCommitsByDocument.mockResolvedValue(fakeResponse);
 
-    await handleUpdateHistory(deps, fakeSocket, fakeArgs, fakeCallback);
+    await handleCommitHistory(deps, fakeSocket, fakeArgs, fakeCallback);
 
-    expect(fakeMongodbStore.getUpdatesByDocument).toHaveBeenCalled();
-    expect(fakeMongodbStore.getUpdatesByDocument).toHaveBeenCalledWith({
+    expect(fakeMongodbStore.getCommitsByDocument).toHaveBeenCalled();
+    expect(fakeMongodbStore.getCommitsByDocument).toHaveBeenCalledWith({
       documentId,
       sessionDid: fakeSocket.data.sessionDid,
     }, {
-      offset: fakeArgs.offset, limit: fakeArgs.limit, sort: fakeArgs.sort, committed: fakeArgs.filters?.committed,
+      offset: fakeArgs.offset, limit: fakeArgs.limit, sort: fakeArgs.sort,
     });
 
     expect(fakeCallback).toHaveBeenCalledWith({
@@ -173,28 +156,25 @@ describe("updateHistory", () => {
 
   it('returns 500 due to db operation error', async () => {
     const fakeSocket: AppSocket = createFakeSocket();
-    const fakeArgs: UpdateHistoryArgs = {
+    const fakeArgs: CommitHistoryArgs = {
       documentId: "test-document-id",
-      limit: 1000,
+      limit: 15,
       offset: 0,
-      filters: {
-        committed: false,
-      },
       sort: "desc",
     };
     const fakeCallback = vi.fn();
     const documentId = fakeArgs.documentId || fakeSocket.data.documentId;
 
-    fakeMongodbStore.getUpdatesByDocument.mockRejectedValue(new Error("db error"));
+    fakeMongodbStore.getCommitsByDocument.mockRejectedValue(new Error("db error"));
 
-    await handleUpdateHistory(deps, fakeSocket, fakeArgs, fakeCallback);
+    await handleCommitHistory(deps, fakeSocket, fakeArgs, fakeCallback);
 
-    expect(fakeMongodbStore.getUpdatesByDocument).toHaveBeenCalled();
-    expect(fakeMongodbStore.getUpdatesByDocument).toHaveBeenCalledWith({
+    expect(fakeMongodbStore.getCommitsByDocument).toHaveBeenCalled();
+    expect(fakeMongodbStore.getCommitsByDocument).toHaveBeenCalledWith({
       documentId,
       sessionDid: fakeSocket.data.sessionDid,
     }, {
-      offset: 0, limit: 1000, sort: "desc", committed: false,
+      offset: fakeArgs.offset, limit: fakeArgs.limit, sort: fakeArgs.sort,
     });
 
     expect(fakeCallback).toHaveBeenCalledWith({
