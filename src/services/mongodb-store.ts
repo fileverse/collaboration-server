@@ -66,14 +66,13 @@ export class MongoDBStore {
       // Sort by creation time
       const sortOrder = options.sort === "desc" ? -1 : 1;
       query = query.sort({ createdAt: sortOrder });
-      // TODO: Add pagination
       // Apply pagination
-      // if (options.offset) {
-      //   query = query.skip(options.offset);
-      // }
-      // if (options.limit) {
-      //   query = query.limit(options.limit);
-      // }
+      if (options.offset !== undefined && options.offset > 0) {
+        query = query.skip(options.offset);
+      }
+      if (options.limit !== undefined && options.limit > 0) {
+        query = query.limit(options.limit);
+      }
 
       const updates = await query.exec();
 
@@ -189,6 +188,33 @@ export class MongoDBStore {
     } catch (error) {
       console.error("Error getting commits by document:", error);
       return [];
+    }
+  }
+
+  async countUpdatesByDocument(
+    filters: { documentId: string; sessionDid: string },
+    options: { committed?: boolean } = {}
+  ): Promise<number> {
+    try {
+      const query: Record<string, any> = { ...filters };
+      if (options.committed !== undefined) {
+        query.committed = options.committed;
+      }
+      return await DocumentUpdateModel.countDocuments(query);
+    } catch (error) {
+      console.error("Error counting updates:", error);
+      return 0;
+    }
+  }
+
+  async countCommitsByDocument(
+    filters: { documentId: string; sessionDid: string }
+  ): Promise<number> {
+    try {
+      return await DocumentCommitModel.countDocuments(filters);
+    } catch (error) {
+      console.error("Error counting commits:", error);
+      return 0;
     }
   }
 
