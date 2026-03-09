@@ -56,6 +56,7 @@ describe("tests peers list handler", () => {
       status: false,
       statusCode: 401,
       error: "Not authenticated or session not found",
+      errorCode: "NOT_AUTHENTICATED",
     });
   });
 
@@ -72,6 +73,7 @@ describe("tests peers list handler", () => {
       status: false,
       statusCode: 401,
       error: "Not authenticated or session not found",
+      errorCode: "NOT_AUTHENTICATED",
     });
   });
 
@@ -88,6 +90,7 @@ describe("tests peers list handler", () => {
       status: false,
       statusCode: 401,
       error: "Not authenticated or session not found",
+      errorCode: "NOT_AUTHENTICATED",
     });
   });
 
@@ -108,6 +111,7 @@ describe("tests peers list handler", () => {
       status: false,
       statusCode: 500,
       error: "Internal server error",
+      errorCode: "INTERNAL_ERROR",
     });
   });
 

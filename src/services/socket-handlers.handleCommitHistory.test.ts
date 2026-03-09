@@ -4,7 +4,7 @@ import type { SocketHandlerDeps } from "./socket-handlers.deps";
 import type { AppSocket, DocumentCommit, CommitHistoryArgs } from "../types";
 
 function createFakeSocket(
-  broadcastOperator?: { emit: ReturnType<typeof vi.fn>},
+  broadcastOperator?: { emit: ReturnType<typeof vi.fn> },
   dataOverrides?: Partial<{
     authenticated: boolean;
     documentId: string;
@@ -35,6 +35,7 @@ describe("commitHistory", () => {
 
   const fakeMongodbStore = {
     getCommitsByDocument: vi.fn(),
+    countCommitsByDocument: vi.fn(),
   };
 
   const deps: SocketHandlerDeps = {
@@ -43,7 +44,7 @@ describe("commitHistory", () => {
     mongodbStore: fakeMongodbStore as any,
   };
 
-  it('returns early when not authenticated', async () => {
+  it("returns early when not authenticated", async () => {
     const fakeSocket: AppSocket = createFakeSocket(undefined, { authenticated: false });
     const fakeArgs: CommitHistoryArgs = {
       documentId: "test-document-id",
@@ -56,10 +57,11 @@ describe("commitHistory", () => {
       status: false,
       statusCode: 401,
       error: "Not authenticated",
+      errorCode: "NOT_AUTHENTICATED",
     });
   });
 
-  it('returns early when documentId is empty in socket data', async () => {
+  it("returns early when documentId is empty in socket data", async () => {
     const fakeSocket: AppSocket = createFakeSocket(undefined, { documentId: "" });
     const fakeArgs: CommitHistoryArgs = {};
     const fakeCallback = vi.fn();
@@ -70,10 +72,11 @@ describe("commitHistory", () => {
       status: false,
       statusCode: 401,
       error: "Not authenticated",
+      errorCode: "NOT_AUTHENTICATED",
     });
   });
 
-  it('returns early when sessionDid is empty in socket data', async () => {
+  it("returns early when sessionDid is empty in socket data", async () => {
     const fakeSocket: AppSocket = createFakeSocket(undefined, { sessionDid: "" });
     const fakeArgs: CommitHistoryArgs = {
       documentId: "test-document-id",
@@ -86,10 +89,11 @@ describe("commitHistory", () => {
       status: false,
       statusCode: 401,
       error: "Not authenticated",
+      errorCode: "NOT_AUTHENTICATED",
     });
   });
 
-  it('returns commit history successfully, with fallback argument values', async () => {
+  it("returns commit history successfully, with fallback argument values", async () => {
     const fakeSocket: AppSocket = createFakeSocket();
     const fakeArgs: CommitHistoryArgs = {};
     const fakeCallback = vi.fn();
@@ -97,15 +101,17 @@ describe("commitHistory", () => {
     const documentId = fakeArgs.documentId || fakeSocket.data.documentId;
 
     fakeMongodbStore.getCommitsByDocument.mockResolvedValue(fakeResponse);
+    fakeMongodbStore.countCommitsByDocument.mockResolvedValue(fakeResponse.length);
 
     await handleCommitHistory(deps, fakeSocket, fakeArgs, fakeCallback);
 
-    expect(fakeMongodbStore.getCommitsByDocument).toHaveBeenCalled();
-    expect(fakeMongodbStore.getCommitsByDocument).toHaveBeenCalledWith({
+    expect(fakeMongodbStore.getCommitsByDocument).toHaveBeenCalledWith(
+      { documentId, sessionDid: fakeSocket.data.sessionDid },
+      { offset: 0, limit: 10, sort: "desc" }
+    );
+    expect(fakeMongodbStore.countCommitsByDocument).toHaveBeenCalledWith({
       documentId,
       sessionDid: fakeSocket.data.sessionDid,
-    }, {
-      offset: 0, limit: 10, sort: "desc"
     });
 
     expect(fakeCallback).toHaveBeenCalledWith({
@@ -118,7 +124,7 @@ describe("commitHistory", () => {
     });
   });
 
-  it('returns update history successfully with proper argument values set', async () => {
+  it("returns update history successfully with proper argument values set", async () => {
     const fakeSocket: AppSocket = createFakeSocket();
     const fakeArgs: CommitHistoryArgs = {
       documentId: "test-document-id",
@@ -127,21 +133,21 @@ describe("commitHistory", () => {
       sort: "desc",
     };
     const fakeCallback = vi.fn();
-    const fakeResponse: DocumentCommit[] = [
-      // {}
-    ];
+    const fakeResponse: DocumentCommit[] = [];
     const documentId = fakeArgs.documentId || fakeSocket.data.documentId;
 
     fakeMongodbStore.getCommitsByDocument.mockResolvedValue(fakeResponse);
+    fakeMongodbStore.countCommitsByDocument.mockResolvedValue(fakeResponse.length);
 
     await handleCommitHistory(deps, fakeSocket, fakeArgs, fakeCallback);
 
-    expect(fakeMongodbStore.getCommitsByDocument).toHaveBeenCalled();
-    expect(fakeMongodbStore.getCommitsByDocument).toHaveBeenCalledWith({
+    expect(fakeMongodbStore.getCommitsByDocument).toHaveBeenCalledWith(
+      { documentId, sessionDid: fakeSocket.data.sessionDid },
+      { offset: fakeArgs.offset, limit: fakeArgs.limit, sort: fakeArgs.sort }
+    );
+    expect(fakeMongodbStore.countCommitsByDocument).toHaveBeenCalledWith({
       documentId,
       sessionDid: fakeSocket.data.sessionDid,
-    }, {
-      offset: fakeArgs.offset, limit: fakeArgs.limit, sort: fakeArgs.sort,
     });
 
     expect(fakeCallback).toHaveBeenCalledWith({
@@ -154,7 +160,7 @@ describe("commitHistory", () => {
     });
   });
 
-  it('returns 500 due to db operation error', async () => {
+  it("returns 500 due to db operation error", async () => {
     const fakeSocket: AppSocket = createFakeSocket();
     const fakeArgs: CommitHistoryArgs = {
       documentId: "test-document-id",
@@ -166,21 +172,27 @@ describe("commitHistory", () => {
     const documentId = fakeArgs.documentId || fakeSocket.data.documentId;
 
     fakeMongodbStore.getCommitsByDocument.mockRejectedValue(new Error("db error"));
+    fakeMongodbStore.countCommitsByDocument.mockResolvedValue(0);
 
     await handleCommitHistory(deps, fakeSocket, fakeArgs, fakeCallback);
 
-    expect(fakeMongodbStore.getCommitsByDocument).toHaveBeenCalled();
-    expect(fakeMongodbStore.getCommitsByDocument).toHaveBeenCalledWith({
-      documentId,
-      sessionDid: fakeSocket.data.sessionDid,
-    }, {
-      offset: fakeArgs.offset, limit: fakeArgs.limit, sort: fakeArgs.sort,
-    });
+    expect(fakeMongodbStore.getCommitsByDocument).toHaveBeenCalledWith(
+      {
+        documentId,
+        sessionDid: fakeSocket.data.sessionDid,
+      },
+      {
+        offset: fakeArgs.offset,
+        limit: fakeArgs.limit,
+        sort: fakeArgs.sort,
+      }
+    );
 
     expect(fakeCallback).toHaveBeenCalledWith({
       status: false,
       statusCode: 500,
       error: "Internal server error",
+      errorCode: "INTERNAL_ERROR",
     });
   });
 });
