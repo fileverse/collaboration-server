@@ -64,6 +64,7 @@ describe("handleDocumentCommit", () => {
       status: false,
       statusCode: 401,
       error: "Not authenticated or session not found",
+      errorCode: "NOT_AUTHENTICATED",
     });
   });
 
@@ -85,6 +86,7 @@ describe("handleDocumentCommit", () => {
       status: false,
       statusCode: 403,
       error: "Only owners can create commits",
+      errorCode: "COMMIT_UNAUTHORIZED",
     });
   });
 
@@ -95,8 +97,8 @@ describe("handleDocumentCommit", () => {
       updates: ["u1"],
       cid: "cid-1",
       ownerToken: "owner-token",
-      ownerAddress: "0xowner",
-      contractAddress: "0xcontract",
+      ownerAddress: "0x0000000000000000000000000000000000000001",
+      contractAddress: "0x0000000000000000000000000000000000000002",
     };
     const callback = vi.fn();
 
@@ -112,6 +114,7 @@ describe("handleDocumentCommit", () => {
       status: false,
       statusCode: 404,
       error: "Session not found",
+      errorCode: "SESSION_NOT_FOUND",
     });
   });
 
@@ -130,16 +133,16 @@ describe("handleDocumentCommit", () => {
         updates: null as any,
         cid: "cid-1",
         ownerToken: "owner-token",
-        ownerAddress: "0xowner",
-        contractAddress: "0xcontract",
+        ownerAddress: "0x0000000000000000000000000000000000000001",
+        contractAddress: "0x0000000000000000000000000000000000000002",
       },
       {
         documentId: "doc-1",
         updates: ["u1"],
         cid: "" as any,
         ownerToken: "owner-token",
-        ownerAddress: "0xowner",
-        contractAddress: "0xcontract",
+        ownerAddress: "0x0000000000000000000000000000000000000001",
+        contractAddress: "0x0000000000000000000000000000000000000002",
       },
     ];
 
@@ -154,6 +157,7 @@ describe("handleDocumentCommit", () => {
         status: false,
         statusCode: 400,
         error: "Updates array and CID are required",
+        errorCode: "COMMIT_MISSING_DATA",
       });
     }
   });
@@ -165,8 +169,8 @@ describe("handleDocumentCommit", () => {
       updates: ["u1"],
       cid: "cid-1",
       ownerToken: "owner-token",
-      ownerAddress: "0xowner",
-      contractAddress: "0xcontract",
+      ownerAddress: "0x0000000000000000000000000000000000000001",
+      contractAddress: "0x0000000000000000000000000000000000000002",
     };
     const callback = vi.fn();
 
@@ -185,6 +189,7 @@ describe("handleDocumentCommit", () => {
       status: false,
       statusCode: 401,
       error: "Authentication failed",
+      errorCode: "AUTH_TOKEN_INVALID",
     });
   });
 
@@ -195,8 +200,8 @@ describe("handleDocumentCommit", () => {
       updates: ["u1", "u2"],
       cid: "cid-1",
       ownerToken: "owner-token",
-      ownerAddress: "0xowner",
-      contractAddress: "0xcontract",
+      ownerAddress: "0x0000000000000000000000000000000000000001",
+      contractAddress: "0x0000000000000000000000000000000000000002",
     };
     const callback = vi.fn();
 
