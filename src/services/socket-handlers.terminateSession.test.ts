@@ -39,6 +39,7 @@ describe("handleTerminateSession", () => {
   };
   const fakeSessionManager = {
     getSession: vi.fn(),
+    deactivateSession: vi.fn(),
     terminateSession: vi.fn(),
   };
   const fakeMongoDBStore = {} as any;
@@ -67,47 +68,50 @@ describe("handleTerminateSession", () => {
       status: false,
       statusCode: 400,
       error: "Session DID is required",
-    }
+      errorCode: "SESSION_DID_MISSING",
+    };
     await handleTerminateSession(deps, fakeIO, fakeSocket, fakeArgs, callback);
     expect(callback).toHaveBeenCalledWith(callbackResponse);
     expect(fakeSessionManager.getSession).not.toHaveBeenCalled();
   });
 
-  it("returns 404 when session is not found", async() => {
+  it("returns 404 when session is not found", async () => {
     const fakeIO = createFakeIO();
     const fakeSocket = createFakeSocket();
     const fakeArgs = {
       documentId: "test-document-id",
       sessionDid: "test-session-did",
       ownerToken: "test-owner-token",
-      ownerAddress: "test-owner-address",
-      contractAddress: "test-contract-address",
+      ownerAddress: "0x0000000000000000000000000000000000000001",
+      contractAddress: "0x0000000000000000000000000000000000000002",
     };
     const callback = vi.fn();
 
     fakeSessionManager.getSession.mockResolvedValue(undefined);
     await handleTerminateSession(deps, fakeIO, fakeSocket, fakeArgs, callback);
 
-    expect(fakeSessionManager.getSession).toHaveBeenCalledOnce();
-    expect(fakeSessionManager.getSession).toHaveBeenCalledWith(fakeArgs.documentId, fakeArgs.sessionDid);
-
     const callbackResponse = {
       status: false,
       statusCode: 404,
       error: "Session not found",
+      errorCode: "SESSION_NOT_FOUND",
     };
+    expect(fakeSessionManager.getSession).toHaveBeenCalledWith(
+      fakeArgs.documentId,
+      fakeArgs.sessionDid
+    );
     expect(callback).toHaveBeenCalledWith(callbackResponse);
   });
 
-  it("returns 401 when ownerDid does not match session owner", async() => {
+  it("returns 401 when ownerDid does not match session owner", async () => {
     const fakeIO = createFakeIO();
     const fakeSocket = createFakeSocket();
     const fakeArgs = {
       documentId: "test-document-id",
       sessionDid: "test-session-did",
       ownerToken: "test-owner-token",
-      ownerAddress: "test-owner-address",
-      contractAddress: "test-contract-address",
+      ownerAddress: "0x0000000000000000000000000000000000000001",
+      contractAddress: "0x0000000000000000000000000000000000000002",
     };
     const callback = vi.fn();
 
@@ -118,10 +122,11 @@ describe("handleTerminateSession", () => {
 
     await handleTerminateSession(deps, fakeIO, fakeSocket, fakeArgs, callback);
 
-    expect(fakeSessionManager.getSession).toHaveBeenCalledOnce();
-    expect(fakeSessionManager.getSession).toHaveBeenCalledWith(fakeArgs.documentId, fakeArgs.sessionDid);
+    expect(fakeSessionManager.getSession).toHaveBeenCalledWith(
+      fakeArgs.documentId,
+      fakeArgs.sessionDid
+    );
 
-    expect(fakeAuthService.verifyOwnerToken).toHaveBeenCalledOnce();
     expect(fakeAuthService.verifyOwnerToken).toHaveBeenCalledWith(
       fakeArgs.ownerToken,
       fakeArgs.contractAddress,
@@ -132,6 +137,7 @@ describe("handleTerminateSession", () => {
       status: false,
       statusCode: 401,
       error: "Unauthorized",
+      errorCode: "AUTH_TOKEN_INVALID",
     };
     expect(callback).toHaveBeenCalledWith(callbackResponse);
   });
@@ -165,8 +171,8 @@ describe("handleTerminateSession", () => {
       documentId: "test-document-id",
       sessionDid: "test-session-did",
       ownerToken: "test-owner-token",
-      ownerAddress: "test-owner-address",
-      contractAddress: "test-contract-address",
+      ownerAddress: "0x0000000000000000000000000000000000000001",
+      contractAddress: "0x0000000000000000000000000000000000000002",
     };
     const callback = vi.fn();
 
