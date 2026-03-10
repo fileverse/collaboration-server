@@ -1,8 +1,8 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { handleDocumentUpdate, getRoomName } from "./socket-handlers";
-import type { AppServer, AppSocket, DocumentUpdateArgs } from "../types";
-import type { SocketHandlerDeps } from "./socket-handlers.deps";
-import { ErrorCode } from "../types";
+import { handleDocumentUpdate, getRoomName } from "../../services/socket-handlers";
+import type { AppServer, AppSocket, DocumentUpdateArgs } from "../../types";
+import type { SocketHandlerDeps } from "../../services/socket-handlers.deps";
+import { ErrorCode } from "../../types";
 
 function createFakeIO(): AppServer {
   return {} as unknown as AppServer;

@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { handleTerminateSession } from "./socket-handlers";
-import type { AppServer, AppSocket } from "../types/index";
-import type { SocketHandlerDeps } from "./socket-handlers.deps";
+import { handleTerminateSession } from "../../services/socket-handlers";
+import type { AppServer, AppSocket } from "../../types";
+import type { SocketHandlerDeps } from "../../services/socket-handlers.deps";
 
 function createFakeIO(fetchSocketsResponse: any[] = []): AppServer {
   const fetchSocketsMock = vi.fn().mockResolvedValue(fetchSocketsResponse);
