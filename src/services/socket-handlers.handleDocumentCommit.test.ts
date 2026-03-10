@@ -206,7 +206,10 @@ describe("handleDocumentCommit", () => {
     fakeAuthService.verifyOwnerToken.mockResolvedValue(false);
 
     await handleDocumentCommit(deps, fakeSocket, fakeArgs, callback);
-
+    expect(fakeSessionManager.getRuntimeSession).toHaveBeenCalledWith(
+      fakeArgs.documentId,
+      fakeSocket.data.sessionDid
+    );
     expect(fakeAuthService.verifyOwnerToken).toHaveBeenCalledWith(
       fakeArgs.ownerToken,
       fakeArgs.contractAddress,
@@ -247,8 +250,18 @@ describe("handleDocumentCommit", () => {
     fakeMongoDBStore.createCommit.mockResolvedValue(fakeCommit);
 
     await handleDocumentCommit(deps, fakeSocket, fakeArgs, callback);
-
-    expect(fakeMongoDBStore.createCommit).toHaveBeenCalled();
+    expect(fakeSessionManager.getRuntimeSession).toHaveBeenCalledWith(
+      fakeArgs.documentId,
+      fakeSocket.data.sessionDid
+    );
+    expect(fakeMongoDBStore.createCommit).toHaveBeenCalledWith({
+      id: expect.any(String),
+      documentId: fakeArgs.documentId,
+      cid: fakeArgs.cid,
+      updates: fakeArgs.updates,
+      createdAt: expect.any(Number),
+      sessionDid: runtimeSession.sessionDid,
+    });
 
     expect(callback).toHaveBeenCalledWith({
       status: true,
