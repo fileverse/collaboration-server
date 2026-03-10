@@ -129,7 +129,7 @@ export async function handleAuth(
 
     if (!existingSession && args.ownerToken) {
       // - Set up a new session (owner flow)
-      if (!args.ownerToken || !sessionDid) {
+      if (!args.ownerToken || !args.sessionDid) {
         return callback({
           status: false,
           statusCode: 400,

@@ -409,6 +409,95 @@ describe("handleAuth", () => {
     });
   });
 
+  it("returns 400 when in owner flow but owner token or session DID is missing", async () => {
+    const fakeIO = createFakeIO();
+    const fakeSocket = createFakeSocket();
+    const callback = vi.fn();
+
+    fakeSessionManager.getSession.mockResolvedValue(undefined);
+
+    let sessionDidReadCount = 0;
+    const argsWithGetterSessionDid = {
+      documentId: "doc-1",
+      get sessionDid() {
+        sessionDidReadCount++;
+        return sessionDidReadCount === 1 ? "session-1" : (undefined as any);
+      },
+      collaborationToken: "collab-token",
+      ownerToken: "owner-token",
+      ownerAddress: "0x0000000000000000000000000000000000000001",
+      contractAddress: "0x0000000000000000000000000000000000000002",
+    } as AuthArgs;
+
+    await handleAuth(deps, fakeIO, fakeSocket, argsWithGetterSessionDid, callback);
+
+    expect(callback).toHaveBeenCalledWith({
+      status: false,
+      statusCode: 400,
+      error: "Document ID, owner token, and session DID are required",
+      errorCode: ErrorCode.AUTH_TOKEN_MISSING,
+    });
+  });
+
+  it("returns 400 when in owner flow with invalid contract or owner address format", async () => {
+    const fakeIO = createFakeIO();
+    const fakeSocket = createFakeSocket();
+    const fakeArgs: AuthArgs = {
+      documentId: "doc-1",
+      sessionDid: "session-1",
+      collaborationToken: "collab-token",
+      ownerToken: "owner-token",
+      ownerAddress: "not-a-valid-address",
+      contractAddress: "0x0000000000000000000000000000000000000002",
+      roomInfo: "room-info",
+    };
+    const callback = vi.fn();
+
+    fakeSessionManager.getSession.mockResolvedValue(undefined);
+
+    await handleAuth(deps, fakeIO, fakeSocket, fakeArgs, callback);
+
+    expect(callback).toHaveBeenCalledWith({
+      status: false,
+      statusCode: 400,
+      error: "Invalid contract address or owner address format",
+      errorCode: ErrorCode.INVALID_ADDRESS,
+    });
+  });
+
+  it("returns 400 when joining existing session with owner token but invalid contract or owner address", async () => {
+    const fakeIO = createFakeIO();
+    const fakeSocket = createFakeSocket();
+    const fakeArgs: AuthArgs = {
+      documentId: "doc-1",
+      sessionDid: "session-1",
+      collaborationToken: "collab-token",
+      ownerToken: "owner-token",
+      ownerAddress: "invalid-hex",
+      contractAddress: "0x0000000000000000000000000000000000000002",
+      roomInfo: "room-info",
+    };
+    const callback = vi.fn();
+
+    const existingSession = {
+      sessionDid: fakeArgs.sessionDid,
+      ownerDid: "owner-did",
+      roomInfo: "existing-room-info",
+    };
+
+    fakeSessionManager.getSession.mockResolvedValue(existingSession);
+    fakeAuthService.verifyCollaborationToken.mockResolvedValue("user-did");
+
+    await handleAuth(deps, fakeIO, fakeSocket, fakeArgs, callback);
+
+    expect(callback).toHaveBeenCalledWith({
+      status: false,
+      statusCode: 400,
+      error: "Invalid contract address or owner address format",
+      errorCode: ErrorCode.INVALID_ADDRESS,
+    });
+  });
+
   it("returns 401 when owner token verification fails in owner flow", async () => {
     const fakeIO = createFakeIO();
     const fakeSocket = createFakeSocket();

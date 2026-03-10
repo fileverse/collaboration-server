@@ -2,6 +2,7 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 import { handleDocumentUpdate, getRoomName } from "./socket-handlers";
 import type { AppServer, AppSocket, DocumentUpdateArgs } from "../types";
 import type { SocketHandlerDeps } from "./socket-handlers.deps";
+import { ErrorCode } from "../types";
 
 function createFakeIO(): AppServer {
   return {} as unknown as AppServer;
@@ -201,6 +202,27 @@ describe("handleDocumentUpdate", () => {
       },
     });
   });
-}
-);
+
+  it("returns 500 when an unexpected error occurs in document update handler", async () => {
+    const fakeIO = createFakeIO();
+    const fakeSocket = createFakeSocket();
+    const fakeArgs: DocumentUpdateArgs = {
+      documentId: "doc-1",
+      data: "update-data",
+      collaborationToken: "token",
+    };
+    const callback = vi.fn();
+
+    fakeSessionManager.getRuntimeSession.mockRejectedValue(new Error("db error"));
+
+    await handleDocumentUpdate(deps, fakeIO, fakeSocket, fakeArgs, callback);
+
+    expect(callback).toHaveBeenCalledWith({
+      status: false,
+      statusCode: 500,
+      error: "Internal server error",
+      errorCode: ErrorCode.INTERNAL_ERROR,
+    });
+  });
+});
 

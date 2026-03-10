@@ -75,6 +75,36 @@ describe("handleTerminateSession", () => {
     expect(fakeSessionManager.getSession).not.toHaveBeenCalled();
   });
 
+  it("returns 400 when contract or owner address format is invalid", async () => {
+    const fakeIO = createFakeIO();
+    const fakeSocket = createFakeSocket();
+    const fakeArgs = {
+      documentId: "test-document-id",
+      sessionDid: "test-session-did",
+      ownerToken: "test-owner-token",
+      ownerAddress: "not-a-valid-address",
+      contractAddress: "0x0000000000000000000000000000000000000002",
+    };
+    const callback = vi.fn();
+
+    const fakeSessionResponse = { ownerDid: "fake-owner-did", sessionDid: fakeArgs.sessionDid };
+    fakeSessionManager.getSession.mockResolvedValue(fakeSessionResponse);
+
+    await handleTerminateSession(deps, fakeIO, fakeSocket, fakeArgs, callback);
+
+    expect(fakeSessionManager.getSession).toHaveBeenCalledWith(
+      fakeArgs.documentId,
+      fakeArgs.sessionDid
+    );
+    expect(callback).toHaveBeenCalledWith({
+      status: false,
+      statusCode: 400,
+      error: "Invalid contract address or owner address format",
+      errorCode: "INVALID_ADDRESS",
+    });
+    expect(fakeAuthService.verifyOwnerToken).not.toHaveBeenCalled();
+  });
+
   it("returns 404 when session is not found", async () => {
     const fakeIO = createFakeIO();
     const fakeSocket = createFakeSocket();
@@ -223,6 +253,30 @@ describe("handleTerminateSession", () => {
       data: { message: "Session terminated" },
     };
     expect(callback).toHaveBeenCalledWith(callbackResponse);
+  });
+
+  it("returns 500 when an unexpected error occurs in terminate session handler", async () => {
+    const fakeIO = createFakeIO();
+    const fakeSocket = createFakeSocket();
+    const fakeArgs = {
+      documentId: "test-document-id",
+      sessionDid: "test-session-did",
+      ownerToken: "test-owner-token",
+      ownerAddress: "0x0000000000000000000000000000000000000001",
+      contractAddress: "0x0000000000000000000000000000000000000002",
+    };
+    const callback = vi.fn();
+
+    fakeSessionManager.getSession.mockRejectedValue(new Error("db error"));
+
+    await handleTerminateSession(deps, fakeIO, fakeSocket, fakeArgs, callback);
+
+    expect(callback).toHaveBeenCalledWith({
+      status: false,
+      statusCode: 500,
+      error: "Internal server error",
+      errorCode: "INTERNAL_ERROR",
+    });
   });
 });
 

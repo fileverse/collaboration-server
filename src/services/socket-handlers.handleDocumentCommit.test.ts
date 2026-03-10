@@ -2,6 +2,7 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 import { handleDocumentCommit } from "./socket-handlers";
 import type { AppSocket, DocumentCommitArgs } from "../types";
 import type { SocketHandlerDeps } from "./socket-handlers.deps";
+import { ErrorCode } from "../types";
 
 function createFakeSocket(
   dataOverrides?: Partial<{
@@ -162,6 +163,32 @@ describe("handleDocumentCommit", () => {
     }
   });
 
+  it("returns 400 when contract or owner address format is invalid", async () => {
+    const fakeSocket = createFakeSocket();
+    const fakeArgs: DocumentCommitArgs = {
+      documentId: "doc-1",
+      updates: ["u1"],
+      cid: "cid-1",
+      ownerToken: "owner-token",
+      ownerAddress: "not-a-valid-address",
+      contractAddress: "0x0000000000000000000000000000000000000002",
+    };
+    const callback = vi.fn();
+
+    const runtimeSession = { sessionDid: fakeSocket.data.sessionDid };
+    fakeSessionManager.getRuntimeSession.mockResolvedValue(runtimeSession);
+
+    await handleDocumentCommit(deps, fakeSocket, fakeArgs, callback);
+
+    expect(callback).toHaveBeenCalledWith({
+      status: false,
+      statusCode: 400,
+      error: "Invalid contract address or owner address format",
+      errorCode: ErrorCode.INVALID_ADDRESS,
+    });
+    expect(fakeAuthService.verifyOwnerToken).not.toHaveBeenCalled();
+  });
+
   it("returns 401 when owner token verification fails", async () => {
     const fakeSocket = createFakeSocket();
     const fakeArgs: DocumentCommitArgs = {
@@ -234,6 +261,29 @@ describe("handleDocumentCommit", () => {
       },
     });
   });
-}
-);
+
+  it("returns 500 when an unexpected error occurs in document commit handler", async () => {
+    const fakeSocket = createFakeSocket();
+    const fakeArgs: DocumentCommitArgs = {
+      documentId: "doc-1",
+      updates: ["u1"],
+      cid: "cid-1",
+      ownerToken: "owner-token",
+      ownerAddress: "0x0000000000000000000000000000000000000001",
+      contractAddress: "0x0000000000000000000000000000000000000002",
+    };
+    const callback = vi.fn();
+
+    fakeSessionManager.getRuntimeSession.mockRejectedValue(new Error("db error"));
+
+    await handleDocumentCommit(deps, fakeSocket, fakeArgs, callback);
+
+    expect(callback).toHaveBeenCalledWith({
+      status: false,
+      statusCode: 500,
+      error: "Internal server error",
+      errorCode: ErrorCode.INTERNAL_ERROR,
+    });
+  });
+});
 
