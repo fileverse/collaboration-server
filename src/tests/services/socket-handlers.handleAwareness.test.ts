@@ -1,7 +1,7 @@
 import { beforeEach, it, describe, vi, expect } from "vitest";
-import { handleAwareness } from "./socket-handlers";
-import type { AppServer, AppSocket } from "../types";
-import type { SocketData } from "../types";
+import { handleAwareness } from "../../services/socket-handlers";
+import type { AppServer, AppSocket } from "../../types";
+import type { SocketData } from "../../types";
 
 const defaultSocketData: SocketData = {
   documentId: "test-document-id",

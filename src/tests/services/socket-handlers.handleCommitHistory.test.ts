@@ -1,7 +1,7 @@
 import { describe, vi, it, expect, beforeEach } from "vitest";
-import { handleCommitHistory } from "./socket-handlers";
-import type { SocketHandlerDeps } from "./socket-handlers.deps";
-import type { AppSocket, DocumentCommit, CommitHistoryArgs } from "../types";
+import { handleCommitHistory } from "../../services/socket-handlers";
+import type { SocketHandlerDeps } from "../../services/socket-handlers.deps";
+import type { AppSocket, DocumentCommit, CommitHistoryArgs } from "../../types";
 
 function createFakeSocket(
   broadcastOperator?: { emit: ReturnType<typeof vi.fn> },

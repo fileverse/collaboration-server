@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { handleAuth, getRoomName } from "./socket-handlers";
-import { AppServer, AppSocket, AuthArgs, ErrorCode } from "../types";
-import type { SocketHandlerDeps } from "./socket-handlers.deps";
+import { handleAuth, getRoomName } from "../../services/socket-handlers";
+import { AppServer, AppSocket, AuthArgs, ErrorCode } from "../../types";
+import type { SocketHandlerDeps } from "../../services/socket-handlers.deps";
 
 function createFakeIO(options?: {
   broadcastOperator?: { emit: ReturnType<typeof vi.fn> };
