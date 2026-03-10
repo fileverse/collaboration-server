@@ -135,7 +135,10 @@ describe("handleDocumentUpdate", () => {
     fakeAuthService.verifyCollaborationToken.mockResolvedValue(false);
 
     await handleDocumentUpdate(deps, fakeIO, fakeSocket, fakeArgs, callback);
-
+    expect(fakeSessionManager.getRuntimeSession).toHaveBeenCalledWith(
+      fakeArgs.documentId,
+      fakeSocket.data.sessionDid,
+    );
     expect(fakeAuthService.verifyCollaborationToken).toHaveBeenCalledWith(
       fakeArgs.collaborationToken,
       runtimeSession.sessionDid,
@@ -181,6 +184,11 @@ describe("handleDocumentUpdate", () => {
     expect(fakeSessionManager.getRuntimeSession).toHaveBeenCalledWith(
       fakeArgs.documentId,
       fakeSocket.data.sessionDid
+    );
+    expect(fakeAuthService.verifyCollaborationToken).toHaveBeenCalledWith(
+      fakeArgs.collaborationToken,
+      runtimeSession.sessionDid,
+      fakeArgs.documentId
     );
     expect(fakeMongoDBStore.createUpdate).toHaveBeenCalledWith({
       id: expect.any(String),
