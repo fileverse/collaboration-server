@@ -25,6 +25,12 @@ import { sessionManager } from "./session-manager";
 import { Hex, isAddress } from "viem";
 import type { SocketHandlerDeps } from "./socket-handlers.deps";
 
+const defaultDeps: SocketHandlerDeps = {
+  authService,
+  sessionManager,
+  mongodbStore,
+};
+
 function validateHexAddress(address: string | undefined, fieldName: string): address is Hex {
   if (!address || !isAddress(address)) {
     return false;
@@ -35,12 +41,6 @@ function validateHexAddress(address: string | undefined, fieldName: string): add
 export function getRoomName(documentId: string, sessionDid: string): string {
   return `session::${documentId}__${sessionDid}`;
 }
-
-const defaultDeps: SocketHandlerDeps = {
-  authService,
-  sessionManager,
-  mongodbStore,
-};
 
 export function registerEventHandlers(io: AppServer): void {
   io.on("connection", (socket: AppSocket) => {
