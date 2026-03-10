@@ -67,4 +67,21 @@ describe('handleAwareness', () => {
       roomId: fakeArgs.documentId,
     });
   });
+
+  it("does not throw when an error occurs in awareness handler", async () => {
+    const fakeIO = createFakeIO();
+    const fakeSocket = createFakeSocket(undefined, { authenticated: true });
+    Object.defineProperty(fakeSocket, "to", {
+      get() {
+        throw new Error("socket.to failed");
+      },
+    });
+    const fakeArgs = {
+      documentId: "test-document-id",
+      data: {},
+      collaborationToken: "",
+    };
+
+    await expect(handleAwareness(fakeIO, fakeSocket as any, fakeArgs)).resolves.not.toThrow();
+  });
 });

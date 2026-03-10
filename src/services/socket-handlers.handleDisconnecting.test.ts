@@ -104,4 +104,16 @@ describe("handleDisconnecting", () => {
       fakeSocket.id
     );
   });
+
+  it("does not throw when an error occurs during disconnection cleanup", async () => {
+    const fakeSocket = createFakeSocket(undefined, {
+      authenticated: true,
+      documentId: "doc-1",
+      sessionDid: "session-1",
+      role: "owner",
+    });
+    fakeSessionManager.removeClientFromSession.mockRejectedValue(new Error("db error"));
+
+    await expect(handleDisconnecting(deps, fakeSocket)).resolves.not.toThrow();
+  });
 });
