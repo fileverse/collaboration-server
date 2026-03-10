@@ -178,7 +178,20 @@ describe("handleDocumentUpdate", () => {
 
     await handleDocumentUpdate(deps, fakeIO, fakeSocket, fakeArgs, callback);
 
-    expect(fakeMongoDBStore.createUpdate).toHaveBeenCalled();
+    expect(fakeSessionManager.getRuntimeSession).toHaveBeenCalledWith(
+      fakeArgs.documentId,
+      fakeSocket.data.sessionDid
+    );
+    expect(fakeMongoDBStore.createUpdate).toHaveBeenCalledWith({
+      id: expect.any(String),
+      documentId: fakeArgs.documentId,
+      data: fakeArgs.data,
+      updateType: "yjs_update",
+      committed: false,
+      commitCid: null,
+      createdAt: expect.any(Number),
+      sessionDid: runtimeSession.sessionDid,
+    });
 
     const roomName = getRoomName(fakeArgs.documentId!, fakeSocket.data.sessionDid);
     expect(fakeSocket.to).toHaveBeenCalledWith(roomName);
