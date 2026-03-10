@@ -1,7 +1,7 @@
 import { describe, expect, it, vi, beforeEach } from "vitest";
-import { handlePeersList, getRoomName } from "./socket-handlers";
-// import { PeersListArgs } from "../types";
-import type { AppServer, AppSocket, PeersListArgs } from "../types";
+import { handlePeersList, getRoomName } from "../../services/socket-handlers";
+// import { PeersListArgs } from "../../types";
+import type { AppServer, AppSocket, PeersListArgs } from "../../types";
 
 function createFakeIO(fetchSocketsResponse: any[] = []): AppServer {
   const fetchSocketsMock = vi.fn().mockResolvedValue(fetchSocketsResponse);

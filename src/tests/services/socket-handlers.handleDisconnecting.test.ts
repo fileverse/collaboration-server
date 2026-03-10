@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { handleDisconnecting } from "./socket-handlers";
-import type { AppSocket } from "../types/index";
-import type { SocketHandlerDeps } from "./socket-handlers.deps";
+import { handleDisconnecting } from "../../services/socket-handlers";
+import type { AppSocket } from "../../types";
+import type { SocketHandlerDeps } from "../../services/socket-handlers.deps";
 
 /**
  * Fake socket for handler tests.

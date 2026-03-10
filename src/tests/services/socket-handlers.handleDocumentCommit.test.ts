@@ -1,8 +1,8 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { handleDocumentCommit } from "./socket-handlers";
-import type { AppSocket, DocumentCommitArgs } from "../types";
-import type { SocketHandlerDeps } from "./socket-handlers.deps";
-import { ErrorCode } from "../types";
+import { handleDocumentCommit } from "../../services/socket-handlers";
+import type { AppSocket, DocumentCommitArgs } from "../../types";
+import type { SocketHandlerDeps } from "../../services/socket-handlers.deps";
+import { ErrorCode } from "../../types";
 
 function createFakeSocket(
   dataOverrides?: Partial<{

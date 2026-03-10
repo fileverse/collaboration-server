@@ -7,7 +7,7 @@ export default defineConfig({
       reporter: ["lcov"],
     },
     environment: "node",
-    include: ["src/**/*.test.ts", "tests/**/*.test.ts"],
+    include: ["src/tests/**/*.test.ts", "tests/**/*.test.ts"],
     globals: true,
   },
 });
