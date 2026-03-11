@@ -1,9 +1,11 @@
 import * as ucans from "@ucans/ucans";
 import { getOwnerDid } from "../utils/contract";
 import { Hex } from "viem";
+import NodeCache from "node-cache";
 
 export class AuthService {
   private serverDid: string;
+  private collaborationTokenCache = new NodeCache({ stdTTL: 3600 });
 
   constructor(serverDid: string) {
     this.serverDid = serverDid;
@@ -42,6 +44,12 @@ export class AuthService {
   }
 
   async verifyCollaborationToken(token: string, sessionDid: string, documentId: string) {
+    const cacheKey = token;
+    const cachedResult = this.collaborationTokenCache.get<boolean>(cacheKey);
+    if (cachedResult !== undefined) {
+      return cachedResult;
+    }
+
     try {
       const result = await ucans.verify(token, {
         audience: this.serverDid,
@@ -57,6 +65,9 @@ export class AuthService {
         ],
       });
 
+      if (result.ok) {
+        this.collaborationTokenCache.set(cacheKey, true);
+      }
       return result.ok;
     } catch (error) {
       console.error("UCAN verification error:", error);

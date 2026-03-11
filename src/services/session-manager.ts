@@ -10,6 +10,19 @@ interface RuntimeSession {
 
 export class SessionManager {
   private inMemorySessions = new Map<string, RuntimeSession>();
+  private cleanupInterval: NodeJS.Timeout;
+
+  constructor() {
+    this.cleanupInterval = setInterval(() => this.cleanupIdleSessions(), 5 * 60 * 1000);
+  }
+
+  private cleanupIdleSessions() {
+    for (const [key, session] of this.inMemorySessions) {
+      if (session.clients.size === 0) {
+        this.inMemorySessions.delete(key);
+      }
+    }
+  }
 
   private getSessionKey(documentId: string, sessionDid: string): string {
     return `${documentId}__${sessionDid}`;
@@ -207,6 +220,7 @@ export class SessionManager {
   }
 
   async destroy(): Promise<void> {
+    clearInterval(this.cleanupInterval);
     this.inMemorySessions.clear();
   }
 }

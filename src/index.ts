@@ -1,4 +1,5 @@
 import express from "express";
+import mongoose from "mongoose";
 import { Server } from "socket.io";
 import { createAdapter } from "@socket.io/redis-adapter";
 import { Redis } from "ioredis";
@@ -67,12 +68,15 @@ class CollaborationServer {
   }
 
   private setupRoutes() {
-    // Health check with memory monitoring
+    // Health check with MongoDB connectivity
     this.app.get("/health", async (req, res) => {
-      res.json({
-        status: "ok",
+      const mongoOk = mongoose.connection.readyState === 1;
+      const status = mongoOk ? "ok" : "degraded";
+      res.status(mongoOk ? 200 : 503).json({
+        status,
         timestamp: new Date().toISOString(),
         uptime: process.uptime(),
+        mongo: mongoOk ? "connected" : "disconnected",
       });
     });
 
