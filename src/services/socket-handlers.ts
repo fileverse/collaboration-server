@@ -120,7 +120,7 @@ async function handleAuth(
       }
 
       if (!validateHexAddress(args.contractAddress, "contractAddress") ||
-          !validateHexAddress(args.ownerAddress, "ownerAddress")) {
+        !validateHexAddress(args.ownerAddress, "ownerAddress")) {
         return callback({
           status: false,
           statusCode: 400,
@@ -207,7 +207,7 @@ async function handleAuth(
       let ownerDid = null;
       if (args.ownerToken && args.ownerAddress && args.contractAddress) {
         if (!validateHexAddress(args.contractAddress, "contractAddress") ||
-            !validateHexAddress(args.ownerAddress, "ownerAddress")) {
+          !validateHexAddress(args.ownerAddress, "ownerAddress")) {
           return callback({
             status: false,
             statusCode: 400,
@@ -435,7 +435,7 @@ async function handleDocumentCommit(
     }
 
     if (!validateHexAddress(contractAddress, "contractAddress") ||
-        !validateHexAddress(ownerAddress, "ownerAddress")) {
+      !validateHexAddress(ownerAddress, "ownerAddress")) {
       return callback({
         status: false,
         statusCode: 400,
@@ -553,7 +553,7 @@ async function handleUpdateHistory(
 
     const filterParams = { documentId, sessionDid: socket.data.sessionDid };
     const [updates, total] = await Promise.all([
-      mongodbStore.getUpdatesByDocument(filterParams, { offset, limit, sort, committed: filters.committed }),
+      mongodbStore.getUpdatesByDocument(filterParams, { committed: filters.committed }),
       mongodbStore.countUpdatesByDocument(filterParams, { committed: filters.committed }),
     ]);
 
@@ -670,7 +670,7 @@ async function handleTerminateSession(
     }
 
     if (!validateHexAddress(contractAddress, "contractAddress") ||
-        !validateHexAddress(ownerAddress, "ownerAddress")) {
+      !validateHexAddress(ownerAddress, "ownerAddress")) {
       return callback({
         status: false,
         statusCode: 400,
