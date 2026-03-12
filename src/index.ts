@@ -1,6 +1,7 @@
 import express from "express";
 import mongoose from "mongoose";
 import { Server } from "socket.io";
+import { WebSocketServer } from "ws";
 import { createAdapter } from "@socket.io/redis-adapter";
 import { Redis } from "ioredis";
 import cors from "cors";
@@ -11,6 +12,8 @@ import { config } from "./config";
 import { authService } from "./services/auth";
 import { registerEventHandlers } from "./services/socket-handlers";
 import { authMiddleware } from "./services/auth-middleware";
+import { LegacyWebSocketHandler } from "./services/legacy-ws-handler";
+import { BroadcastBridge } from "./services/broadcast-bridge";
 import { databaseService } from "./database";
 import { createLightNode } from "@waku/sdk";
 import { sessionManager } from "./services/session-manager";
@@ -29,10 +32,14 @@ class CollaborationServer {
   private app: express.Application;
   private server: any;
   private io: AppServer | null = null;
+  private wss: WebSocketServer | null = null;
+  private legacyHandler: LegacyWebSocketHandler;
+  private bridge: BroadcastBridge | null = null;
   private waku: any;
 
   constructor() {
     this.app = express();
+    this.legacyHandler = new LegacyWebSocketHandler();
     this.setupMiddleware();
     this.setupRoutes();
   }
@@ -136,12 +143,37 @@ class CollaborationServer {
       // Socket.IO middlewares gets executed for every incoming connection.
       this.io.use(authMiddleware);
 
-      registerEventHandlers(this.io);
+      // Legacy WebSocket server (noServer mode — manual upgrade routing)
+      this.wss = new WebSocketServer({ noServer: true });
+
+      // Cross-protocol bridge
+      this.bridge = new BroadcastBridge(this.io, this.legacyHandler);
+      this.legacyHandler.setBridge(this.bridge);
+
+      // Wire up legacy connections
+      this.wss.on("connection", (ws) => this.legacyHandler.handleConnection(ws));
+
+      // Pass bridge to Socket.IO handlers
+      registerEventHandlers(this.io, this.bridge);
+
+      // Route HTTP upgrade events by path:
+      // Socket.IO (via Engine.IO) has its own upgrade listener for /socket.io/ paths.
+      // We handle all other paths (root /) for legacy raw WebSocket clients.
+      this.server.on("upgrade", (request: any, socket: any, head: any) => {
+        const pathname = new URL(request.url || "", `http://${request.headers.host}`).pathname;
+
+        if (!pathname.startsWith("/socket.io")) {
+          this.wss!.handleUpgrade(request, socket, head, (ws) => {
+            this.wss!.emit("connection", ws, request);
+          });
+        }
+      });
 
       // Start the server
       this.server.listen(config.port, config.host, () => {
         console.log(`Collaboration server running on ${config.host}:${config.port}`);
         console.log(`Socket.IO endpoint: http://${config.host}:${config.port}/socket.io/`);
+        console.log(`Legacy WS endpoint: ws://${config.host}:${config.port}/`);
         console.log(`Server DID: ${authService.getServerDid()}`);
         console.log(`CORS origins: ${config.corsOrigins.join(", ")}`);
       });
@@ -157,6 +189,14 @@ class CollaborationServer {
 
   private shutdown(signal: string) {
     console.log(`\n Received ${signal}. Shutting down gracefully...`);
+
+    // Close legacy WebSocket connections
+    this.legacyHandler.closeAll();
+    if (this.wss) {
+      this.wss.close(() => {
+        console.log("Legacy WebSocket server closed");
+      });
+    }
 
     if (this.io) {
       this.io.close(() => {

@@ -1,4 +1,44 @@
 import { Server, Socket } from "socket.io";
+import { WebSocket } from "ws";
+
+// ***************************************
+// Legacy WebSocket Types (backward compat)
+// ***************************************
+
+export interface WebSocketMessage {
+  cmd?: string;
+  event?: string;
+  args: Record<string, any>;
+  seqId: string;
+}
+
+export interface WebSocketResponse {
+  status: boolean;
+  statusCode: number;
+  seqId: string | null;
+  is_handshake_response: boolean;
+  data?: Record<string, any>;
+  error?: string;
+  err?: string;
+  err_detail?: Record<string, any> | null;
+}
+
+export interface WebSocketEvent {
+  type: string;
+  event_type: string;
+  event: {
+    data: any;
+    roomId: string;
+  };
+}
+
+export interface AuthenticatedWebSocket extends WebSocket {
+  documentId?: string;
+  sessionDid?: string;
+  role?: "owner" | "editor";
+  authenticated?: boolean;
+  clientId?: string;
+}
 
 // ***************************************
 // Domain Models (unchanged)

@@ -23,6 +23,9 @@ import { authService } from "./auth";
 import { mongodbStore } from "./mongodb-store";
 import { sessionManager } from "./session-manager";
 import { Hex, isAddress } from "viem";
+import type { BroadcastBridge } from "./broadcast-bridge";
+
+let bridge: BroadcastBridge | null = null;
 
 function validateHexAddress(address: string | undefined, fieldName: string): address is Hex {
   if (!address || !isAddress(address)) {
@@ -35,7 +38,10 @@ function getRoomName(documentId: string, sessionDid: string): string {
   return `session::${documentId}__${sessionDid}`;
 }
 
-export function registerEventHandlers(io: AppServer): void {
+export function registerEventHandlers(io: AppServer, broadcastBridge?: BroadcastBridge): void {
+  if (broadcastBridge) {
+    bridge = broadcastBridge;
+  }
   io.on("connection", (socket: AppSocket) => {
     console.log(`New Socket.IO connection: ${socket.id}`);
 
@@ -163,6 +169,12 @@ async function handleAuth(
           roomId: oldSession.documentId,
         });
 
+        // Bridge: notify legacy WS clients and disconnect them
+        if (bridge) {
+          bridge.broadcastFromSocketIO(oldSession.documentId, oldSession.sessionDid, "/session/terminated", { roomId: oldSession.documentId });
+          bridge.disconnectLegacyClientsInRoom(oldSession.documentId, oldSession.sessionDid);
+        }
+
         // Force-leave all sockets and reset auth
         const socketsInOldRoom = await io.in(oldRoomName).fetchSockets();
         for (const s of socketsInOldRoom) {
@@ -260,11 +272,17 @@ async function handleAuth(
     console.log(sessionType === "new" ? "SETUP DONE" : "JOINED SESSION", documentId, role);
 
     // Broadcast membership change to others in the room
-    socket.to(roomName).emit("/room/membership_change", {
-      action: "user_joined",
+    const membershipPayload = {
+      action: "user_joined" as const,
       user: { role },
       roomId: documentId,
-    });
+    };
+    socket.to(roomName).emit("/room/membership_change", membershipPayload);
+
+    // Bridge: notify legacy WS clients
+    if (bridge) {
+      bridge.broadcastFromSocketIO(documentId, sessionDid, "/room/membership_change", membershipPayload, socket.id);
+    }
 
     callback({
       status: true,
@@ -356,12 +374,18 @@ async function handleDocumentUpdate(
 
     // Broadcast to room, excluding sender
     const roomName = getRoomName(documentId, socket.data.sessionDid);
-    socket.to(roomName).emit("/document/content_update", {
+    const contentPayload = {
       id: update.id,
       data: update.data,
       createdAt: update.createdAt,
       roomId: documentId,
-    });
+    };
+    socket.to(roomName).emit("/document/content_update", contentPayload);
+
+    // Bridge: notify legacy WS clients
+    if (bridge) {
+      bridge.broadcastFromSocketIO(documentId, socket.data.sessionDid, "/document/content_update", contentPayload, socket.id);
+    }
 
     callback({
       status: true,
@@ -593,11 +617,16 @@ async function handlePeersList(
     }
 
     const documentId = args.documentId || socket.data.documentId;
-    const roomName = getRoomName(documentId, socket.data.sessionDid);
 
-    // Use Socket.IO's native room tracking for accurate peer list
-    const sockets = await io.in(roomName).fetchSockets();
-    const peers = sockets.map((s) => s.id);
+    // Use bridge for combined peer list (Socket.IO + legacy WS), fallback to Socket.IO only
+    let peers: string[];
+    if (bridge) {
+      peers = await bridge.getCombinedPeers(documentId, socket.data.sessionDid);
+    } else {
+      const roomName = getRoomName(documentId, socket.data.sessionDid);
+      const sockets = await io.in(roomName).fetchSockets();
+      peers = sockets.map((s) => s.id);
+    }
 
     callback({
       status: true,
@@ -630,10 +659,13 @@ async function handleAwareness(
 
     // Broadcast awareness update to room, excluding sender
     const roomName = getRoomName(documentId, socket.data.sessionDid);
-    socket.to(roomName).emit("/document/awareness_update", {
-      data,
-      roomId: documentId,
-    });
+    const awarenessPayload = { data, roomId: documentId };
+    socket.to(roomName).emit("/document/awareness_update", awarenessPayload);
+
+    // Bridge: notify legacy WS clients
+    if (bridge) {
+      bridge.broadcastFromSocketIO(documentId, socket.data.sessionDid, "/document/awareness_update", awarenessPayload, socket.id);
+    }
   } catch (error) {
     console.error("Error in awareness handler:", error);
   }
@@ -700,9 +732,14 @@ async function handleTerminateSession(
     const socketsInRoom = await io.in(roomName).fetchSockets();
 
     // 2. Broadcast termination to all in room (excluding sender)
-    socket.to(roomName).emit("/session/terminated", {
-      roomId: documentId,
-    });
+    const terminatePayload = { roomId: documentId };
+    socket.to(roomName).emit("/session/terminated", terminatePayload);
+
+    // Bridge: notify legacy WS clients and disconnect them
+    if (bridge) {
+      bridge.broadcastFromSocketIO(documentId, session.sessionDid, "/session/terminated", terminatePayload, socket.id);
+      bridge.disconnectLegacyClientsInRoom(documentId, session.sessionDid, socket.id);
+    }
 
     // 3. Deauth and force-leave all sockets (blocks new handlers)
     for (const s of socketsInRoom) {
@@ -744,11 +781,17 @@ async function handleDisconnecting(
 
     // Broadcast departure BEFORE leaving rooms
     // (socket is still in its rooms during "disconnecting" event)
-    socket.to(roomName).emit("/room/membership_change", {
-      action: "user_left",
+    const departurePayload = {
+      action: "user_left" as const,
       user: { role: socket.data.role },
       roomId: socket.data.documentId,
-    });
+    };
+    socket.to(roomName).emit("/room/membership_change", departurePayload);
+
+    // Bridge: notify legacy WS clients
+    if (bridge) {
+      bridge.broadcastFromSocketIO(socket.data.documentId, socket.data.sessionDid, "/room/membership_change", departurePayload, socket.id);
+    }
 
     // Remove from session tracking (handles deactivation if last client)
     await sessionManager.removeClientFromSession(
