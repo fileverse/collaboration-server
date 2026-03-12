@@ -28,6 +28,15 @@ export class SessionManager {
     return `${documentId}__${sessionDid}`;
   }
 
+  /**
+   * Returns the local client set for a session, or undefined if not in memory.
+   * Used by LegacyWebSocketHandler to iterate clients without accessing private internals.
+   */
+  getLocalClients(documentId: string, sessionDid: string): Set<string> | undefined {
+    const key = this.getSessionKey(documentId, sessionDid);
+    return this.inMemorySessions.get(key)?.clients;
+  }
+
   async createSession(sessionData: Omit<RuntimeSession, "clients">): Promise<RuntimeSession> {
     const runtimeSession: RuntimeSession = {
       ...sessionData,
