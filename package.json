@@ -18,6 +18,8 @@
     "clean": "rm -rf dist",
     "format": "prettier --write .",
     "lint": "eslint src/**/*.ts",
+    "test": "vitest",
+    "test:coverage": "vitest run --coverage",
     "postinstall": "npm run build",
     "heroku-postbuild": "npm run build"
   },
@@ -62,12 +64,14 @@
     "@types/uuid": "^10.0.0",
     "@typescript-eslint/eslint-plugin": "^8.6.0",
     "@typescript-eslint/parser": "^8.6.0",
+    "@vitest/coverage-v8": "^1.6.1",
     "eslint": "^9.11.0",
     "eslint-config-prettier": "^9.1.0",
     "prettier": "^3.3.3",
     "tsup": "^8.2.4",
     "tsx": "^4.7.1",
-    "typescript": "^5.5.4"
+    "typescript": "^5.5.4",
+    "vitest": "^1.6.0"
   },
   "overrides": {
     "uint8arrays": "^5.1.0"

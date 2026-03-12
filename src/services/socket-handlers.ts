@@ -23,6 +23,13 @@ import { authService } from "./auth";
 import { mongodbStore } from "./mongodb-store";
 import { sessionManager } from "./session-manager";
 import { Hex, isAddress } from "viem";
+import type { SocketHandlerDeps } from "./socket-handlers.deps";
+
+const defaultDeps: SocketHandlerDeps = {
+  authService,
+  sessionManager,
+  mongodbStore,
+};
 
 function validateHexAddress(address: string | undefined, fieldName: string): address is Hex {
   if (!address || !isAddress(address)) {
@@ -31,7 +38,7 @@ function validateHexAddress(address: string | undefined, fieldName: string): add
   return true;
 }
 
-function getRoomName(documentId: string, sessionDid: string): string {
+export function getRoomName(documentId: string, sessionDid: string): string {
   return `session::${documentId}__${sessionDid}`;
 }
 
@@ -46,17 +53,27 @@ export function registerEventHandlers(io: AppServer): void {
     });
 
     // Register event handlers
-    socket.on("/auth", (args, callback) => handleAuth(io, socket, args, callback));
-    socket.on("/documents/update", (args, callback) => handleDocumentUpdate(io, socket, args, callback));
-    socket.on("/documents/commit", (args, callback) => handleDocumentCommit(socket, args, callback));
-    socket.on("/documents/commit/history", (args, callback) => handleCommitHistory(socket, args, callback));
-    socket.on("/documents/update/history", (args, callback) => handleUpdateHistory(socket, args, callback));
+    socket.on("/auth", (args, callback) => handleAuth(defaultDeps, io, socket, args, callback));
+    socket.on("/documents/update", (args, callback) =>
+      handleDocumentUpdate(defaultDeps, io, socket, args, callback)
+    );
+    socket.on("/documents/commit", (args, callback) =>
+      handleDocumentCommit(defaultDeps, socket, args, callback)
+    );
+    socket.on("/documents/commit/history", (args, callback) =>
+      handleCommitHistory(defaultDeps, socket, args, callback)
+    );
+    socket.on("/documents/update/history", (args, callback) =>
+      handleUpdateHistory(defaultDeps, socket, args, callback)
+    );
     socket.on("/documents/peers/list", (args, callback) => handlePeersList(io, socket, args, callback));
     socket.on("/documents/awareness", (args) => handleAwareness(io, socket, args));
-    socket.on("/documents/terminate", (args, callback) => handleTerminateSession(io, socket, args, callback));
+    socket.on("/documents/terminate", (args, callback) =>
+      handleTerminateSession(defaultDeps, io, socket, args, callback)
+    );
 
     // Disconnection handling
-    socket.on("disconnecting", () => handleDisconnecting(socket));
+    socket.on("disconnecting", () => handleDisconnecting(defaultDeps, socket));
     socket.on("disconnect", (reason) => {
       console.log(`Socket disconnected: ${socket.id}, reason: ${reason}`);
     });
@@ -66,13 +83,15 @@ export function registerEventHandlers(io: AppServer): void {
   });
 }
 
-async function handleAuth(
+export async function handleAuth(
+  deps: SocketHandlerDeps,
   io: AppServer,
   socket: AppSocket,
   args: AuthArgs,
   callback: (response: AckResponse<AuthResponseData>) => void
 ): Promise<void> {
   try {
+    const { authService, sessionManager } = deps;
     const { documentId, collaborationToken, sessionDid } = args;
 
     if (!collaborationToken) {
@@ -109,8 +128,8 @@ async function handleAuth(
     let roomInfo: string | undefined;
 
     if (!existingSession && args.ownerToken) {
-      // - Setup new session (owner flow) -
-      if (!args.ownerToken || !sessionDid) {
+      // - Set up a new session (owner flow)
+      if (!args.ownerToken || !args.sessionDid) {
         return callback({
           status: false,
           statusCode: 400,
@@ -188,7 +207,7 @@ async function handleAuth(
       sessionType = "new";
       roomInfo = args.roomInfo;
     } else if (existingSession) {
-      // - Join existing session -
+      // Join an existing session
       const userDid = await authService.verifyCollaborationToken(
         collaborationToken,
         existingSession.sessionDid,
@@ -287,13 +306,15 @@ async function handleAuth(
   }
 }
 
-async function handleDocumentUpdate(
+export async function handleDocumentUpdate(
+  deps: SocketHandlerDeps,
   io: AppServer,
   socket: AppSocket,
   args: DocumentUpdateArgs,
   callback: (response: AckResponse<DocumentUpdateResponseData>) => void
 ): Promise<void> {
   try {
+    const { authService, sessionManager, mongodbStore } = deps;
     if (!requireAuth(socket)) {
       return callback({
         status: false,
@@ -386,12 +407,14 @@ async function handleDocumentUpdate(
   }
 }
 
-async function handleDocumentCommit(
+export async function handleDocumentCommit(
+  deps: SocketHandlerDeps,
   socket: AppSocket,
   args: DocumentCommitArgs,
   callback: (response: AckResponse<DocumentCommitResponseData>) => void
 ): Promise<void> {
   try {
+    const { authService, sessionManager, mongodbStore } = deps;
     if (!requireAuth(socket)) {
       return callback({
         status: false,
@@ -490,12 +513,14 @@ async function handleDocumentCommit(
   }
 }
 
-async function handleCommitHistory(
+export async function handleCommitHistory(
+  deps: SocketHandlerDeps,
   socket: AppSocket,
   args: CommitHistoryArgs,
   callback: (response: AckResponse<{ history: DocumentCommit[]; total: number }>) => void
 ): Promise<void> {
   try {
+    const { mongodbStore } = deps;
     if (!requireAuth(socket)) {
       return callback({
         status: false,
@@ -533,12 +558,14 @@ async function handleCommitHistory(
   }
 }
 
-async function handleUpdateHistory(
+export async function handleUpdateHistory(
+  deps: SocketHandlerDeps,
   socket: AppSocket,
   args: UpdateHistoryArgs,
   callback: (response: AckResponse<{ history: DocumentUpdate[]; total: number }>) => void
 ): Promise<void> {
   try {
+    const { mongodbStore } = deps;
     if (!requireAuth(socket)) {
       return callback({
         status: false,
@@ -576,7 +603,7 @@ async function handleUpdateHistory(
   }
 }
 
-async function handlePeersList(
+export async function handlePeersList(
   io: AppServer,
   socket: AppSocket,
   args: PeersListArgs,
@@ -615,7 +642,7 @@ async function handlePeersList(
   }
 }
 
-async function handleAwareness(
+export async function handleAwareness(
   io: AppServer,
   socket: AppSocket,
   args: AwarenessArgs,
@@ -639,13 +666,15 @@ async function handleAwareness(
   }
 }
 
-async function handleTerminateSession(
+export async function handleTerminateSession(
+  deps: SocketHandlerDeps,
   io: AppServer,
   socket: AppSocket,
   args: TerminateSessionArgs,
   callback: (response: AckResponse<{ message: string }>) => void
 ): Promise<void> {
   try {
+    const { authService, sessionManager } = deps;
     const { documentId, sessionDid, ownerToken, ownerAddress, contractAddress } = args;
 
     console.log("TERMINATING SESSION", documentId);
@@ -732,10 +761,12 @@ async function handleTerminateSession(
   }
 }
 
-async function handleDisconnecting(
+export async function handleDisconnecting(
+  deps: SocketHandlerDeps,
   socket: AppSocket
 ): Promise<void> {
   try {
+    const { sessionManager } = deps;
     if (!socket.data.authenticated || !socket.data.documentId || !socket.data.sessionDid) {
       return;
     }
