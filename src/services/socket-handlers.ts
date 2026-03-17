@@ -360,24 +360,15 @@ async function handleDocumentUpdate(
       });
     }
 
-    // Create update record
-    const update = await mongodbStore.createUpdate({
-      id: uuidv4(),
-      documentId,
-      data,
-      updateType: "yjs_update",
-      committed: false,
-      commitCid: null,
-      createdAt: Date.now(),
-      sessionDid,
-    });
+    const updateId = uuidv4();
+    const createdAt = Date.now();
 
-    // Broadcast to room, excluding sender
+    // Broadcast to peers immediately, before awaiting DB write
     const roomName = getRoomName(documentId, socket.data.sessionDid);
     const contentPayload = {
-      id: update.id,
-      data: update.data,
-      createdAt: update.createdAt,
+      id: updateId,
+      data,
+      createdAt,
       roomId: documentId,
     };
     socket.to(roomName).emit("/document/content_update", contentPayload);
@@ -386,6 +377,18 @@ async function handleDocumentUpdate(
     if (bridge) {
       bridge.broadcastFromSocketIO(documentId, socket.data.sessionDid, "/document/content_update", contentPayload, socket.id);
     }
+
+    // Persist to DB — sender's ACK waits for this
+    const update = await mongodbStore.createUpdate({
+      id: updateId,
+      documentId,
+      data,
+      updateType: "yjs_update",
+      committed: false,
+      commitCid: null,
+      createdAt,
+      sessionDid,
+    });
 
     callback({
       status: true,
