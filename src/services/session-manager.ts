@@ -111,6 +111,16 @@ export class SessionManager {
     if (!session) return false;
 
     session.clients.add(clientId);
+
+    try {
+      await SessionModel.findOneAndUpdate(
+        { documentId, sessionDid },
+        { state: "active" }
+      );
+    } catch (error) {
+      console.error("Error reactivating session in database:", error);
+    }
+
     return true;
   }
 
