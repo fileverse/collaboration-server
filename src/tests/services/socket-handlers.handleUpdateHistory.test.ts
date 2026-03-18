@@ -115,9 +115,6 @@ describe("updateHistory", () => {
         sessionDid: fakeSocket.data.sessionDid,
       },
       {
-        offset: 0,
-        limit: 100,
-        sort: "desc",
         committed: undefined,
       }
     );
@@ -176,9 +173,6 @@ describe("updateHistory", () => {
         sessionDid: fakeSocket.data.sessionDid,
       },
       {
-        offset: fakeArgs.offset,
-        limit: fakeArgs.limit,
-        sort: fakeArgs.sort,
         committed: fakeArgs.filters?.committed,
       }
     );
@@ -225,9 +219,6 @@ describe("updateHistory", () => {
         sessionDid: fakeSocket.data.sessionDid,
       },
       {
-        offset: 0,
-        limit: 1000,
-        sort: "desc",
         committed: false,
       }
     );
