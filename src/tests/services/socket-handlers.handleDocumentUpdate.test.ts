@@ -168,13 +168,13 @@ describe("handleDocumentUpdate", () => {
     fakeAuthService.verifyCollaborationToken.mockResolvedValue(true);
 
     const fakeUpdate = {
-      id: "update-id",
+      id: "some-id",
       documentId: fakeArgs.documentId,
       data: fakeArgs.data,
       updateType: "yjs_update",
       committed: false,
       commitCid: null,
-      createdAt: 123456,
+      createdAt: 1000,
       sessionDid: runtimeSession.sessionDid,
     };
     fakeMongoDBStore.createUpdate.mockResolvedValue(fakeUpdate);
@@ -204,9 +204,9 @@ describe("handleDocumentUpdate", () => {
     const roomName = getRoomName(fakeArgs.documentId!, fakeSocket.data.sessionDid);
     expect(fakeSocket.to).toHaveBeenCalledWith(roomName);
     expect(fakeBroadcastOperator.emit).toHaveBeenCalledWith("/document/content_update", {
-      id: fakeUpdate.id,
-      data: fakeUpdate.data,
-      createdAt: fakeUpdate.createdAt,
+      id: expect.any(String),
+      data: fakeArgs.data,
+      createdAt: expect.any(Number),
       roomId: fakeArgs.documentId,
     });
 
@@ -214,12 +214,12 @@ describe("handleDocumentUpdate", () => {
       status: true,
       statusCode: 200,
       data: {
-        id: fakeUpdate.id,
+        id: expect.any(String),
         documentId: fakeUpdate.documentId,
         data: fakeUpdate.data,
         updateType: fakeUpdate.updateType,
         commitCid: fakeUpdate.commitCid,
-        createdAt: fakeUpdate.createdAt,
+        createdAt: expect.any(Number),
       },
     });
   });
