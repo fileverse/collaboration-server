@@ -124,6 +124,11 @@ class CollaborationServer {
         pingInterval: config.socketio.pingInterval,
         pingTimeout: config.socketio.pingTimeout,
         maxHttpBufferSize: config.socketio.maxHttpBufferSize,
+        connectionStateRecovery: {
+          // Buffer missed events for up to 2 minutes while client is disconnected.
+          // Requires a persistent adapter (e.g. Redis) to survive full server restarts.
+          maxDisconnectionDuration: 2 * 60 * 1000,
+        },
       };
       this.io = new Server<
         ClientToServerEvents,
@@ -190,46 +195,8 @@ class CollaborationServer {
   private shutdown(signal: string) {
     console.log(`\n Received ${signal}. Shutting down gracefully...`);
 
-    // Close legacy WebSocket connections
-    this.legacyHandler.closeAll();
-    if (this.wss) {
-      this.wss.close(() => {
-        console.log("Legacy WebSocket server closed");
-      });
-    }
-
-    if (this.io) {
-      this.io.close(() => {
-        console.log("Socket.IO server closed");
-      });
-    }
-
-    if (this.server) {
-      this.server.close(async () => {
-        console.log("HTTP server closed");
-
-        // Cleanup session manager
-        try {
-          sessionManager.destroy();
-          console.log("Session manager cleaned up");
-        } catch (error) {
-          console.error("Error cleaning up session manager:", error);
-        }
-
-        // Disconnect from database
-        try {
-          await databaseService.disconnect();
-          console.log("Database connection closed");
-        } catch (error) {
-          console.error("Error closing database connection:", error);
-        }
-
-        process.exit(0);
-      });
-    }
-
-    // Force exit after 10 seconds
-    setTimeout(async () => {
+    // Force exit after 10 seconds if graceful shutdown stalls (Heroku allows 30s)
+    const forceExitTimer = setTimeout(async () => {
       console.log("Force closing server");
       try {
         sessionManager.destroy();
@@ -239,6 +206,71 @@ class CollaborationServer {
       }
       process.exit(1);
     }, 10000);
+    // Don't let this timer prevent the event loop from exiting naturally
+    forceExitTimer.unref();
+
+    this.shutdownSequence().then(() => {
+      clearTimeout(forceExitTimer);
+      process.exit(0);
+    }).catch((error) => {
+      console.error("Error during graceful shutdown:", error);
+      process.exit(1);
+    });
+  }
+
+  private async shutdownSequence() {
+    // Close legacy WebSocket connections first
+    this.legacyHandler.closeAll();
+    await new Promise<void>((resolve) => {
+      if (this.wss) {
+        this.wss.close(() => {
+          console.log("Legacy WebSocket server closed");
+          resolve();
+        });
+      } else {
+        resolve();
+      }
+    });
+
+    // Close Socket.IO server (disconnects all clients)
+    await new Promise<void>((resolve) => {
+      if (this.io) {
+        this.io.close(() => {
+          console.log("Socket.IO server closed");
+          resolve();
+        });
+      } else {
+        resolve();
+      }
+    });
+
+    // Close HTTP server (stops accepting new connections)
+    await new Promise<void>((resolve) => {
+      if (this.server) {
+        this.server.close(() => {
+          console.log("HTTP server closed");
+          resolve();
+        });
+      } else {
+        resolve();
+      }
+    });
+
+    // Cleanup session manager
+    try {
+      sessionManager.destroy();
+      console.log("Session manager cleaned up");
+    } catch (error) {
+      console.error("Error cleaning up session manager:", error);
+    }
+
+    // Disconnect from database
+    try {
+      await databaseService.disconnect();
+      console.log("Database connection closed");
+    } catch (error) {
+      console.error("Error closing database connection:", error);
+    }
   }
 
   async setupWaku() {
