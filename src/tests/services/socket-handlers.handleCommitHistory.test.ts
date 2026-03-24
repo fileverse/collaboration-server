@@ -2,6 +2,7 @@ import { describe, vi, it, expect, beforeEach } from "vitest";
 import { handleCommitHistory } from "../../services/socket-handlers";
 import type { SocketHandlerDeps } from "../../services/socket-handlers.deps";
 import type { AppSocket, DocumentCommit, CommitHistoryArgs } from "../../types";
+import { ErrorCode } from "../../types";
 
 function createFakeSocket(
   broadcastOperator?: { emit: ReturnType<typeof vi.fn> },
@@ -57,7 +58,7 @@ describe("commitHistory", () => {
       status: false,
       statusCode: 401,
       error: "Not authenticated",
-      errorCode: "NOT_AUTHENTICATED",
+      errorCode: ErrorCode.NOT_AUTHENTICATED,
     });
   });
 
@@ -72,7 +73,7 @@ describe("commitHistory", () => {
       status: false,
       statusCode: 401,
       error: "Not authenticated",
-      errorCode: "NOT_AUTHENTICATED",
+      errorCode: ErrorCode.NOT_AUTHENTICATED,
     });
   });
 
@@ -89,7 +90,7 @@ describe("commitHistory", () => {
       status: false,
       statusCode: 401,
       error: "Not authenticated",
-      errorCode: "NOT_AUTHENTICATED",
+      errorCode: ErrorCode.NOT_AUTHENTICATED,
     });
   });
 
@@ -192,7 +193,7 @@ describe("commitHistory", () => {
       status: false,
       statusCode: 500,
       error: "Internal server error",
-      errorCode: "INTERNAL_ERROR",
+      errorCode: ErrorCode.INTERNAL_ERROR,
     });
   });
 });

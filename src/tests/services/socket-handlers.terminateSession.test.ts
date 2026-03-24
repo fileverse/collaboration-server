@@ -2,6 +2,7 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 import { handleTerminateSession } from "../../services/socket-handlers";
 import type { AppServer, AppSocket } from "../../types";
 import type { SocketHandlerDeps } from "../../services/socket-handlers.deps";
+import { ErrorCode } from "../../types";
 
 function createFakeIO(fetchSocketsResponse: any[] = []): AppServer {
   const fetchSocketsMock = vi.fn().mockResolvedValue(fetchSocketsResponse);
@@ -68,7 +69,7 @@ describe("handleTerminateSession", () => {
       status: false,
       statusCode: 400,
       error: "Session DID is required",
-      errorCode: "SESSION_DID_MISSING",
+      errorCode: ErrorCode.SESSION_DID_MISSING,
     };
     await handleTerminateSession(deps, fakeIO, fakeSocket, fakeArgs, callback);
     expect(callback).toHaveBeenCalledWith(callbackResponse);
@@ -100,7 +101,7 @@ describe("handleTerminateSession", () => {
       status: false,
       statusCode: 400,
       error: "Invalid contract address or owner address format",
-      errorCode: "INVALID_ADDRESS",
+      errorCode: ErrorCode.INVALID_ADDRESS,
     });
     expect(fakeAuthService.verifyOwnerToken).not.toHaveBeenCalled();
   });
@@ -124,7 +125,7 @@ describe("handleTerminateSession", () => {
       status: false,
       statusCode: 404,
       error: "Session not found",
-      errorCode: "SESSION_NOT_FOUND",
+      errorCode: ErrorCode.SESSION_NOT_FOUND,
     };
     expect(fakeSessionManager.getSession).toHaveBeenCalledWith(
       fakeArgs.documentId,
@@ -167,7 +168,7 @@ describe("handleTerminateSession", () => {
       status: false,
       statusCode: 401,
       error: "Unauthorized",
-      errorCode: "AUTH_TOKEN_INVALID",
+      errorCode: ErrorCode.AUTH_TOKEN_INVALID,
     };
     expect(callback).toHaveBeenCalledWith(callbackResponse);
   });
@@ -275,7 +276,7 @@ describe("handleTerminateSession", () => {
       status: false,
       statusCode: 500,
       error: "Internal server error",
-      errorCode: "INTERNAL_ERROR",
+      errorCode: ErrorCode.INTERNAL_ERROR,
     });
   });
 });

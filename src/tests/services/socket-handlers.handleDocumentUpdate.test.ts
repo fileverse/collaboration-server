@@ -70,7 +70,7 @@ describe("handleDocumentUpdate", () => {
       status: false,
       statusCode: 401,
       error: "Not authenticated or session not found",
-      errorCode: "NOT_AUTHENTICATED",
+      errorCode: ErrorCode.NOT_AUTHENTICATED,
     });
   });
 
@@ -90,7 +90,7 @@ describe("handleDocumentUpdate", () => {
       status: false,
       statusCode: 400,
       error: "Update data is required",
-      errorCode: "UPDATE_DATA_MISSING",
+      errorCode: ErrorCode.UPDATE_DATA_MISSING,
     });
   });
 
@@ -116,7 +116,7 @@ describe("handleDocumentUpdate", () => {
       status: false,
       statusCode: 404,
       error: "Session not found",
-      errorCode: "SESSION_NOT_FOUND",
+      errorCode: ErrorCode.SESSION_NOT_FOUND,
     });
   });
 
@@ -148,7 +148,7 @@ describe("handleDocumentUpdate", () => {
       status: false,
       statusCode: 401,
       error: "Authentication failed",
-      errorCode: "AUTH_TOKEN_INVALID",
+      errorCode: ErrorCode.AUTH_TOKEN_INVALID,
     });
   });
 
