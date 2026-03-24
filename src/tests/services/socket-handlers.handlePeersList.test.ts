@@ -2,6 +2,7 @@ import { describe, expect, it, vi, beforeEach } from "vitest";
 import { handlePeersList, getRoomName } from "../../services/socket-handlers";
 // import { PeersListArgs } from "../../types";
 import type { AppServer, AppSocket, PeersListArgs } from "../../types";
+import { ErrorCode } from "../../types";
 
 function createFakeIO(fetchSocketsResponse: any[] = []): AppServer {
   const fetchSocketsMock = vi.fn().mockResolvedValue(fetchSocketsResponse);
@@ -56,7 +57,7 @@ describe("tests peers list handler", () => {
       status: false,
       statusCode: 401,
       error: "Not authenticated or session not found",
-      errorCode: "NOT_AUTHENTICATED",
+      errorCode: ErrorCode.NOT_AUTHENTICATED,
     });
   });
 
@@ -73,7 +74,7 @@ describe("tests peers list handler", () => {
       status: false,
       statusCode: 401,
       error: "Not authenticated or session not found",
-      errorCode: "NOT_AUTHENTICATED",
+      errorCode: ErrorCode.NOT_AUTHENTICATED,
     });
   });
 
@@ -90,7 +91,7 @@ describe("tests peers list handler", () => {
       status: false,
       statusCode: 401,
       error: "Not authenticated or session not found",
-      errorCode: "NOT_AUTHENTICATED",
+      errorCode: ErrorCode.NOT_AUTHENTICATED,
     });
   });
 
@@ -111,7 +112,7 @@ describe("tests peers list handler", () => {
       status: false,
       statusCode: 500,
       error: "Internal server error",
-      errorCode: "INTERNAL_ERROR",
+      errorCode: ErrorCode.INTERNAL_ERROR,
     });
   });
 
