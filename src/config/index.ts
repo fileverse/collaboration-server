@@ -17,8 +17,8 @@ export const config: ServerConfig = {
   },
 
   socketio: {
-    pingInterval: parseInt(process.env.SOCKETIO_PING_INTERVAL || "25000"),
-    pingTimeout: parseInt(process.env.SOCKETIO_PING_TIMEOUT || "20000"),
+    pingInterval: parseInt(process.env.SOCKETIO_PING_INTERVAL || "20000"),
+    pingTimeout: parseInt(process.env.SOCKETIO_PING_TIMEOUT || "10000"),
     maxHttpBufferSize: parseInt(process.env.SOCKETIO_MAX_BUFFER || "10485760"), // 10MB
   },
 
