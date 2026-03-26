@@ -4,7 +4,6 @@
   "description": "WebSocket-based collaboration server for real-time document synchronization",
   "type": "module",
   "main": "./dist/index.js",
-  "types": "./dist/index.d.ts",
   "engines": {
     "node": "23.x"
   },
@@ -14,7 +13,6 @@
     "debug:watch": "tsx --inspect watch src/index.ts",
     "build": "tsup",
     "start": "node dist/index.js",
-    "start:prod": "node --loader tsx/esm src/index.ts",
     "clean": "rm -rf dist",
     "format": "prettier --write .",
     "lint": "eslint src/**/*.ts",
