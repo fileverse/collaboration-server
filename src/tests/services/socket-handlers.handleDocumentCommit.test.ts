@@ -275,6 +275,39 @@ describe("handleDocumentCommit", () => {
     });
   });
 
+  it("stamps the connection's appType onto the persisted commit", async () => {
+    const fakeSocket = createFakeSocket();
+    fakeSocket.data.appType = "dsheet";
+    const fakeArgs: DocumentCommitArgs = {
+      documentId: "doc-1",
+      updates: ["u1", "u2"],
+      cid: "cid-1",
+      ownerToken: "owner-token",
+      ownerAddress: "0x0000000000000000000000000000000000000001",
+      contractAddress: "0x0000000000000000000000000000000000000002",
+    };
+    const callback = vi.fn();
+
+    const runtimeSession = { sessionDid: fakeSocket.data.sessionDid };
+    fakeSessionManager.getRuntimeSession.mockResolvedValue(runtimeSession);
+    fakeAuthService.verifyOwnerToken.mockResolvedValue(true);
+    fakeMongoDBStore.createCommit.mockResolvedValue({
+      id: "commit-id",
+      documentId: fakeArgs.documentId,
+      cid: fakeArgs.cid,
+      updates: fakeArgs.updates,
+      createdAt: 1,
+      sessionDid: runtimeSession.sessionDid,
+      appType: "dsheet",
+    });
+
+    await handleDocumentCommit(deps, fakeSocket, fakeArgs, callback);
+
+    expect(fakeMongoDBStore.createCommit).toHaveBeenCalledWith(
+      expect.objectContaining({ appType: "dsheet" })
+    );
+  });
+
   it("returns 500 when an unexpected error occurs in document commit handler", async () => {
     const fakeSocket = createFakeSocket();
     const fakeArgs: DocumentCommitArgs = {

@@ -16,6 +16,7 @@ import {
   DocumentUpdate,
   AppServer,
   AppSocket,
+  AppType,
   ErrorCode,
 } from "../types/index";
 import { requireAuth } from "./auth-middleware";
@@ -43,6 +44,15 @@ function validateHexAddress(address: string | undefined, fieldName: string): add
 
 export function getRoomName(documentId: string, sessionDid: string): string {
   return `session::${documentId}__${sessionDid}`;
+}
+
+/**
+ * Coerce an untrusted appType into a known AppType. Anything that is not exactly
+ * "dsheet" becomes "ddoc" (the legacy default), so missing or invalid values
+ * never fail enum validation and never widen access during the isolation check.
+ */
+function normalizeAppType(value: unknown): AppType {
+  return value === "dsheet" ? "dsheet" : "ddoc";
 }
 
 export function registerEventHandlers(io: AppServer, broadcastBridge?: BroadcastBridge): void {
@@ -100,6 +110,7 @@ export async function handleAuth(
   try {
     const { authService, sessionManager } = deps;
     const { documentId, collaborationToken, sessionDid } = args;
+    const claimedAppType = normalizeAppType(args.appType);
 
     if (!collaborationToken) {
       return callback({
@@ -133,6 +144,7 @@ export async function handleAuth(
     let role: "owner" | "editor";
     let sessionType: "new" | "existing";
     let roomInfo: string | undefined;
+    let resolvedAppType: AppType;
 
     if (!existingSession && args.ownerToken) {
       // - Set up a new session (owner flow)
@@ -214,11 +226,13 @@ export async function handleAuth(
         sessionDid,
         ownerDid,
         roomInfo: args.roomInfo,
+        appType: claimedAppType,
       });
 
       role = "owner";
       sessionType = "new";
       roomInfo = args.roomInfo;
+      resolvedAppType = claimedAppType;
     } else if (existingSession) {
       // Join an existing session
       const userDid = await authService.verifyCollaborationToken(
@@ -233,6 +247,19 @@ export async function handleAuth(
           statusCode: 401,
           error: "Authentication failed",
           errorCode: ErrorCode.AUTH_TOKEN_INVALID,
+        });
+      }
+
+      // Isolation guard: a document belongs to exactly one app. Reject a client
+      // whose declared app (missing ⇒ "ddoc") differs from the document's stored
+      // app (missing ⇒ "ddoc"), so ddoc and dsheet can never join the same room.
+      const storedAppType = normalizeAppType(existingSession.appType);
+      if (claimedAppType !== storedAppType) {
+        return callback({
+          status: false,
+          statusCode: 403,
+          error: "App type mismatch for this document",
+          errorCode: ErrorCode.APP_MISMATCH,
         });
       }
 
@@ -267,6 +294,7 @@ export async function handleAuth(
 
       sessionType = "existing";
       roomInfo = existingSession.roomInfo;
+      resolvedAppType = storedAppType;
     } else {
       return callback({
         status: false,
@@ -281,6 +309,7 @@ export async function handleAuth(
     socket.data.documentId = documentId;
     socket.data.sessionDid = sessionDid;
     socket.data.role = role;
+    socket.data.appType = resolvedAppType;
 
     // Join the Socket.IO room
     const roomName = getRoomName(documentId, sessionDid);
@@ -410,6 +439,7 @@ export async function handleDocumentUpdate(
       commitCid: null,
       createdAt,
       sessionDid,
+      appType: socket.data.appType,
     });
 
     callback({
@@ -518,6 +548,7 @@ export async function handleDocumentCommit(
       updates,
       createdAt: Date.now(),
       sessionDid,
+      appType: socket.data.appType,
     });
 
     callback({

@@ -6,6 +6,7 @@ export function authMiddleware(socket: AppSocket, next: (err?: Error) => void): 
   socket.data.documentId = "";
   socket.data.sessionDid = "";
   socket.data.role = "editor";
+  socket.data.appType = "ddoc";
 
   next();
 }

@@ -238,4 +238,62 @@ describe("SessionManager", () => {
 
     expect(clients).toBeUndefined();
   });
+
+  // appType
+
+  it("persists the provided appType and exposes it on the in-memory session", async () => {
+    const freshManager = new SessionManager();
+
+    await freshManager.createSession({
+      documentId: "doc-2",
+      sessionDid: "session-2",
+      ownerDid: "owner-did",
+      appType: "dsheet",
+    });
+
+    expect(SessionModel.findOneAndUpdate).toHaveBeenCalledWith(
+      { documentId: "doc-2", sessionDid: "session-2", ownerDid: "owner-did" },
+      expect.objectContaining({ appType: "dsheet" }),
+      { upsert: true, new: true }
+    );
+    const session = await freshManager.getSession("doc-2", "session-2");
+    expect(session?.appType).toBe("dsheet");
+
+    await freshManager.destroy();
+  });
+
+  it("defaults appType to ddoc when none is provided", async () => {
+    const freshManager = new SessionManager();
+
+    await freshManager.createSession({
+      documentId: "doc-3",
+      sessionDid: "session-3",
+      ownerDid: "owner-did",
+    });
+
+    expect(SessionModel.findOneAndUpdate).toHaveBeenCalledWith(
+      { documentId: "doc-3", sessionDid: "session-3", ownerDid: "owner-did" },
+      expect.objectContaining({ appType: "ddoc" }),
+      { upsert: true, new: true }
+    );
+
+    await freshManager.destroy();
+  });
+
+  it("hydrates appType from the database on fallback", async () => {
+    const freshManager = new SessionManager();
+    vi.mocked(SessionModel.findOne).mockResolvedValue({
+      documentId: "doc-1",
+      sessionDid: "session-1",
+      ownerDid: "owner-did",
+      roomInfo: "room-info",
+      appType: "dsheet",
+    } as any);
+
+    const session = await freshManager.getSession("doc-1", "session-1");
+
+    expect(session?.appType).toBe("dsheet");
+
+    await freshManager.destroy();
+  });
 });
