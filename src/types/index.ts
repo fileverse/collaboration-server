@@ -44,6 +44,13 @@ export interface AuthenticatedWebSocket extends WebSocket {
 // Domain Models (unchanged)
 // ***************************************
 
+/**
+ * Identifies which Fileverse app a document/session/update belongs to.
+ * The collaboration server is shared between ddoc and dsheet.
+ * Absent ⇒ "ddoc" (legacy: all data predating this field is ddoc).
+ */
+export type AppType = "ddoc" | "dsheet";
+
 export interface DocumentUpdate {
   id: string;
   documentId: string;
@@ -53,6 +60,7 @@ export interface DocumentUpdate {
   commitCid: string | null;
   createdAt: number;
   sessionDid: string;
+  appType?: AppType;
 }
 
 export interface DocumentCommit {
@@ -62,6 +70,7 @@ export interface DocumentCommit {
   updates: string[]; // list of update IDs included in this commit
   createdAt: number;
   sessionDid: string;
+  appType?: AppType;
 }
 
 export interface IPFSUploadResponse {
@@ -104,6 +113,7 @@ export enum ErrorCode {
   COMMIT_MISSING_DATA = "COMMIT_MISSING_DATA",
   INVALID_ADDRESS = "INVALID_ADDRESS",
   NOT_AUTHENTICATED = "NOT_AUTHENTICATED",
+  APP_MISMATCH = "APP_MISMATCH",
   DB_ERROR = "DB_ERROR",
   INTERNAL_ERROR = "INTERNAL_ERROR",
 }
@@ -132,6 +142,7 @@ export interface AuthArgs {
   ownerAddress?: string;
   contractAddress?: string;
   roomInfo?: string;
+  appType?: AppType;
 }
 
 export interface AuthResponseData {
@@ -298,6 +309,7 @@ export interface SocketData {
   sessionDid: string;
   role: "owner" | "editor";
   authenticated: boolean;
+  appType: AppType;
 }
 
 // ***************************************

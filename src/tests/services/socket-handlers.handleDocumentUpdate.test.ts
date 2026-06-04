@@ -224,6 +224,39 @@ describe("handleDocumentUpdate", () => {
     });
   });
 
+  it("stamps the connection's appType onto the persisted update", async () => {
+    const fakeIO = createFakeIO();
+    const fakeSocket = createFakeSocket({ emit: vi.fn() });
+    fakeSocket.data.appType = "dsheet";
+    const fakeArgs: DocumentUpdateArgs = {
+      documentId: "doc-1",
+      data: "update-data",
+      collaborationToken: "token",
+    };
+    const callback = vi.fn();
+
+    const runtimeSession = { sessionDid: fakeSocket.data.sessionDid };
+    fakeSessionManager.getRuntimeSession.mockResolvedValue(runtimeSession);
+    fakeAuthService.verifyCollaborationToken.mockResolvedValue(true);
+    fakeMongoDBStore.createUpdate.mockResolvedValue({
+      id: "u1",
+      documentId: fakeArgs.documentId,
+      data: fakeArgs.data,
+      updateType: "yjs_update",
+      committed: false,
+      commitCid: null,
+      createdAt: 1,
+      sessionDid: runtimeSession.sessionDid,
+      appType: "dsheet",
+    });
+
+    await handleDocumentUpdate(deps, fakeIO, fakeSocket, fakeArgs, callback);
+
+    expect(fakeMongoDBStore.createUpdate).toHaveBeenCalledWith(
+      expect.objectContaining({ appType: "dsheet" })
+    );
+  });
+
   it("returns 500 when an unexpected error occurs in document update handler", async () => {
     const fakeIO = createFakeIO();
     const fakeSocket = createFakeSocket();

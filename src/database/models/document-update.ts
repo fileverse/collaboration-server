@@ -9,6 +9,7 @@ interface IDocumentUpdate extends MongooseDocument {
   commitCid: string | null;
   createdAt: number;
   sessionDid: string;
+  appType: "ddoc" | "dsheet";
 }
 
 const DocumentUpdateSchema = new Schema<IDocumentUpdate>({
@@ -20,6 +21,8 @@ const DocumentUpdateSchema = new Schema<IDocumentUpdate>({
   commitCid: { type: String, default: null },
   createdAt: { type: Number, required: true, index: true },
   sessionDid: { type: String, required: true },
+  // Which Fileverse app produced this update. Absent ⇒ "ddoc" (legacy).
+  appType: { type: String, enum: ["ddoc", "dsheet"], default: "ddoc" },
 });
 
 DocumentUpdateSchema.index({ documentId: 1, committed: 1, createdAt: 1 }, { background: true });
@@ -33,6 +36,9 @@ DocumentUpdateSchema.index(
 );
 
 DocumentUpdateSchema.index({ documentId: 1, sessionDid: 1 }, { background: true });
+
+// Supports per-app lifecycle/analytics queries (e.g. "all dsheet updates").
+DocumentUpdateSchema.index({ appType: 1, createdAt: 1 }, { background: true });
 
 export const DocumentUpdateModel = mongoose.model<IDocumentUpdate>(
   "DocumentUpdate",

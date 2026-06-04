@@ -8,6 +8,7 @@ const defaultSocketData: SocketData = {
   sessionDid: "test-session-did",
   role: "owner",
   authenticated: true,
+  appType: "ddoc",
 };
 
 function createFakeIO(): AppServer {

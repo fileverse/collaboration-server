@@ -15,6 +15,7 @@ export class MongoDBStore {
         commitCid: update.commitCid,
         createdAt: update.createdAt,
         sessionDid: update.sessionDid,
+        appType: update.appType,
       });
 
       await mongoUpdate.save();
@@ -119,6 +120,7 @@ export class MongoDBStore {
         updates: commit.updates,
         createdAt: commit.createdAt,
         sessionDid: commit.sessionDid,
+        appType: commit.appType,
       });
 
       await mongoCommit.save();

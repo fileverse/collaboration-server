@@ -7,6 +7,7 @@ export interface ISession extends MongooseDocument {
   createdAt: Date;
   state: "active" | "inactive" | "terminated";
   roomInfo: string;
+  appType: "ddoc" | "dsheet";
 }
 
 const SessionSchema = new Schema({
@@ -16,6 +17,8 @@ const SessionSchema = new Schema({
   createdAt: { type: Date, default: Date.now },
   state: { type: String, enum: ["active", "inactive", "terminated"], default: "active" },
   roomInfo: { type: String, default: null },
+  // Which Fileverse app owns this session. Absent ⇒ "ddoc" (legacy).
+  appType: { type: String, enum: ["ddoc", "dsheet"], default: "ddoc" },
 });
 
 SessionSchema.index({ documentId: 1, createdAt: 1, sessionDid: 1 });

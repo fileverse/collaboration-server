@@ -170,7 +170,10 @@ describe("handleAuth", () => {
       sessionDid: fakeArgs.sessionDid,
       ownerDid: "owner-did",
       roomInfo: fakeArgs.roomInfo,
+      appType: "ddoc",
     });
+
+    expect(fakeSocket.data.appType).toBe("ddoc");
 
     expect(fakeSocket.data.authenticated).toBe(true);
     expect(fakeSocket.data.documentId).toBe(fakeArgs.documentId);
@@ -649,6 +652,180 @@ describe("handleAuth", () => {
       statusCode: 500,
       error: "Internal server error",
       errorCode: ErrorCode.INTERNAL_ERROR,
+    });
+  });
+
+  it("stores appType from auth args when creating a new owner session", async () => {
+    const fakeIO = createFakeIO();
+    const fakeSocket = createFakeSocket({ emit: vi.fn() });
+    const fakeArgs: AuthArgs = {
+      documentId: "doc-1",
+      sessionDid: "session-1",
+      collaborationToken: "collab-token",
+      ownerToken: "owner-token",
+      ownerAddress: "0x0000000000000000000000000000000000000001",
+      contractAddress: "0x0000000000000000000000000000000000000002",
+      roomInfo: "room-info",
+      appType: "dsheet",
+    };
+    const callback = vi.fn();
+
+    fakeSessionManager.getSession.mockResolvedValue(undefined);
+    fakeAuthService.verifyOwnerToken.mockResolvedValue("owner-did");
+    fakeSessionManager.getOtherActiveSessions.mockResolvedValue([]);
+    fakeSessionManager.createSession.mockResolvedValue(undefined);
+    fakeSessionManager.addClientToSession.mockResolvedValue(undefined);
+
+    await handleAuth(deps, fakeIO, fakeSocket, fakeArgs, callback);
+
+    expect(fakeSessionManager.createSession).toHaveBeenCalledWith({
+      documentId: fakeArgs.documentId,
+      sessionDid: fakeArgs.sessionDid,
+      ownerDid: "owner-did",
+      roomInfo: fakeArgs.roomInfo,
+      appType: "dsheet",
+    });
+    expect(fakeSocket.data.appType).toBe("dsheet");
+  });
+
+  it("joins an existing dsheet session when client declares the matching appType", async () => {
+    const fakeIO = createFakeIO();
+    const fakeBroadcastOperator = { emit: vi.fn() };
+    const fakeSocket = createFakeSocket(fakeBroadcastOperator);
+    const fakeArgs: AuthArgs = {
+      documentId: "doc-1",
+      sessionDid: "session-1",
+      collaborationToken: "collab-token",
+      appType: "dsheet",
+    };
+    const callback = vi.fn();
+
+    const existingSession = {
+      sessionDid: fakeArgs.sessionDid,
+      ownerDid: "owner-did",
+      roomInfo: "existing-room-info",
+      appType: "dsheet",
+    };
+
+    fakeSessionManager.getSession.mockResolvedValue(existingSession);
+    fakeAuthService.verifyCollaborationToken.mockResolvedValue("user-did");
+    fakeSessionManager.addClientToSession.mockResolvedValue(undefined);
+
+    await handleAuth(deps, fakeIO, fakeSocket, fakeArgs, callback);
+
+    const roomName = getRoomName(fakeArgs.documentId, fakeArgs.sessionDid);
+    expect(fakeSocket.join).toHaveBeenCalledWith(roomName);
+    expect(fakeSocket.data.appType).toBe("dsheet");
+    expect(callback).toHaveBeenCalledWith({
+      status: true,
+      statusCode: 200,
+      data: {
+        message: "Authentication successful",
+        role: "editor",
+        sessionType: "existing",
+        roomInfo: existingSession.roomInfo,
+      },
+    });
+  });
+
+  it("rejects with APP_MISMATCH when the client appType differs from the document's app", async () => {
+    const fakeIO = createFakeIO();
+    const fakeSocket = createFakeSocket({ emit: vi.fn() });
+    const fakeArgs: AuthArgs = {
+      documentId: "doc-1",
+      sessionDid: "session-1",
+      collaborationToken: "collab-token",
+      appType: "dsheet",
+    };
+    const callback = vi.fn();
+
+    const existingSession = {
+      sessionDid: fakeArgs.sessionDid,
+      ownerDid: "owner-did",
+      roomInfo: "existing-room-info",
+      appType: "ddoc",
+    };
+
+    fakeSessionManager.getSession.mockResolvedValue(existingSession);
+    fakeAuthService.verifyCollaborationToken.mockResolvedValue("user-did");
+
+    await handleAuth(deps, fakeIO, fakeSocket, fakeArgs, callback);
+
+    expect(callback).toHaveBeenCalledWith({
+      status: false,
+      statusCode: 403,
+      error: "App type mismatch for this document",
+      errorCode: ErrorCode.APP_MISMATCH,
+    });
+    expect(fakeSocket.join).not.toHaveBeenCalled();
+  });
+
+  it("rejects with APP_MISMATCH when a non-declaring (ddoc) client joins a dsheet document", async () => {
+    const fakeIO = createFakeIO();
+    const fakeSocket = createFakeSocket({ emit: vi.fn() });
+    const fakeArgs: AuthArgs = {
+      documentId: "doc-1",
+      sessionDid: "session-1",
+      collaborationToken: "collab-token",
+      // no appType → treated as "ddoc"
+    };
+    const callback = vi.fn();
+
+    const existingSession = {
+      sessionDid: fakeArgs.sessionDid,
+      ownerDid: "owner-did",
+      roomInfo: "existing-room-info",
+      appType: "dsheet",
+    };
+
+    fakeSessionManager.getSession.mockResolvedValue(existingSession);
+    fakeAuthService.verifyCollaborationToken.mockResolvedValue("user-did");
+
+    await handleAuth(deps, fakeIO, fakeSocket, fakeArgs, callback);
+
+    expect(callback).toHaveBeenCalledWith({
+      status: false,
+      statusCode: 403,
+      error: "App type mismatch for this document",
+      errorCode: ErrorCode.APP_MISMATCH,
+    });
+    expect(fakeSocket.join).not.toHaveBeenCalled();
+  });
+
+  it("treats a legacy session (no appType) as ddoc and admits a non-declaring client", async () => {
+    const fakeIO = createFakeIO();
+    const fakeBroadcastOperator = { emit: vi.fn() };
+    const fakeSocket = createFakeSocket(fakeBroadcastOperator);
+    const fakeArgs: AuthArgs = {
+      documentId: "doc-1",
+      sessionDid: "session-1",
+      collaborationToken: "collab-token",
+    };
+    const callback = vi.fn();
+
+    const existingSession = {
+      sessionDid: fakeArgs.sessionDid,
+      ownerDid: "owner-did",
+      roomInfo: "existing-room-info",
+      // no appType (legacy row) → resolves to "ddoc"
+    };
+
+    fakeSessionManager.getSession.mockResolvedValue(existingSession);
+    fakeAuthService.verifyCollaborationToken.mockResolvedValue("user-did");
+    fakeSessionManager.addClientToSession.mockResolvedValue(undefined);
+
+    await handleAuth(deps, fakeIO, fakeSocket, fakeArgs, callback);
+
+    expect(fakeSocket.data.appType).toBe("ddoc");
+    expect(callback).toHaveBeenCalledWith({
+      status: true,
+      statusCode: 200,
+      data: {
+        message: "Authentication successful",
+        role: "editor",
+        sessionType: "existing",
+        roomInfo: existingSession.roomInfo,
+      },
     });
   });
 });

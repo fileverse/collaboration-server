@@ -6,6 +6,7 @@ interface RuntimeSession {
   ownerDid: string;
   clients: Set<string>;
   roomInfo?: string;
+  appType?: "ddoc" | "dsheet";
 }
 
 export class SessionManager {
@@ -55,7 +56,11 @@ export class SessionManager {
           sessionDid: sessionData.sessionDid,
           ownerDid: sessionData.ownerDid,
         },
-        { state: "active", roomInfo: sessionData.roomInfo },
+        {
+          state: "active",
+          roomInfo: sessionData.roomInfo,
+          appType: sessionData.appType ?? "ddoc",
+        },
         { upsert: true, new: true }
       );
     } catch (error) {
@@ -87,6 +92,7 @@ export class SessionManager {
       ownerDid: dbSession.ownerDid,
       clients: new Set<string>(),
       roomInfo: dbSession.roomInfo,
+      appType: dbSession.appType,
     };
 
     // Store in memory
