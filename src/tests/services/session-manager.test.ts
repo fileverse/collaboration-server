@@ -189,26 +189,49 @@ describe("SessionManager", () => {
     });
   });
 
-  // getOtherActiveSessions
+  // getOtherNonTerminatedSessions
 
-  it("returns other active sessions from the database excluding the given sessionDid", async () => {
+  it("returns other non-terminated sessions (incl. inactive) excluding the given sessionDid", async () => {
     vi.mocked(SessionModel.find).mockResolvedValue([
       { documentId: "doc-1", sessionDid: "other-session-1", appType: "ddoc" },
       { documentId: "doc-1", sessionDid: "other-session-2", appType: "dsheet" },
     ] as any);
 
-    const sessions = await sessionManager.getOtherActiveSessions("doc-1", "owner-did", "session-1");
+    const sessions = await sessionManager.getOtherNonTerminatedSessions(
+      "doc-1",
+      "owner-did",
+      "session-1"
+    );
 
     expect(SessionModel.find).toHaveBeenCalledWith({
       documentId: "doc-1",
       ownerDid: "owner-did",
-      state: "active",
+      state: { $ne: "terminated" },
       sessionDid: { $ne: "session-1" },
     });
     expect(sessions).toEqual([
       { documentId: "doc-1", sessionDid: "other-session-1", appType: "ddoc" },
       { documentId: "doc-1", sessionDid: "other-session-2", appType: "dsheet" },
     ]);
+  });
+
+  // getNonTerminatedSessionsForDocument
+
+  it("returns every non-terminated sessionDid for a document regardless of owner", async () => {
+    vi.mocked(SessionModel.find).mockReturnValue({
+      lean: vi.fn().mockResolvedValue([
+        { sessionDid: "s-1" },
+        { sessionDid: "s-2" },
+      ]),
+    } as any);
+
+    const sessions = await sessionManager.getNonTerminatedSessionsForDocument("doc-1");
+
+    expect(SessionModel.find).toHaveBeenCalledWith(
+      { documentId: "doc-1", state: { $ne: "terminated" } },
+      { sessionDid: 1 }
+    );
+    expect(sessions).toEqual([{ sessionDid: "s-1" }, { sessionDid: "s-2" }]);
   });
 
   // getActiveSessionsCount

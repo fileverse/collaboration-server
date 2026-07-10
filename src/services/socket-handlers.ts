@@ -183,8 +183,34 @@ export async function handleAuth(
         });
       }
 
+      // R3 owner binding (ddoc-only): the identity that becomes the room's root of
+      // trust must be cryptographically proven, not client-asserted. Verify the identity
+      // UCAN against the on-chain signingDid and bind THAT. Dsheets keep the legacy path
+      // (no durable recovery / owner-op surface) — mirrors the ddoc-only join gate so a
+      // dsheet owner is never rejected here.
+      let boundOwnerIdentityDid = args.ownerIdentityDid;
+      if (claimedAppType === "ddoc") {
+        const provenSigningDid =
+          args.identityToken && args.identityContractAddress
+            ? await authService.verifyIdentityToken(
+                args.identityToken,
+                args.identityContractAddress as Hex,
+                documentId
+              )
+            : null;
+        if (!provenSigningDid) {
+          return callback({
+            status: false,
+            statusCode: 401,
+            error: "Valid identity proof required to create a durable session",
+            errorCode: ErrorCode.AUTH_TOKEN_INVALID,
+          });
+        }
+        boundOwnerIdentityDid = provenSigningDid;
+      }
+
       // Terminate other sessions with socket notification
-      const otherSessions = await sessionManager.getOtherActiveSessions(
+      const otherSessions = await sessionManager.getOtherNonTerminatedSessions(
         documentId,
         ownerDid,
         sessionDid
@@ -224,7 +250,7 @@ export async function handleAuth(
         documentId,
         sessionDid,
         ownerDid,
-        ownerIdentityDid: args.ownerIdentityDid,
+        ownerIdentityDid: boundOwnerIdentityDid,
         portalAddress: args.contractAddress,
         collabJoinEnabled: false,
         roomInfo: args.roomInfo,
@@ -284,6 +310,31 @@ export async function handleAuth(
       }
 
       role = ownerDid === existingSession.ownerDid ? "owner" : "editor";
+
+      // R3 heal (ddoc-only): a session bound before identity proof was required (or
+      // bound empty) is filled — once, atomically — by a proven owner, so the pre-fix
+      // corpus becomes recoverable on the owner's next open. Never overwrites a real bind.
+      if (
+        storedAppType === "ddoc" &&
+        role === "owner" &&
+        !existingSession.ownerIdentityDid &&
+        args.identityToken &&
+        args.identityContractAddress
+      ) {
+        const provenSigningDid = await authService.verifyIdentityToken(
+          args.identityToken,
+          args.identityContractAddress as Hex,
+          documentId
+        );
+        if (provenSigningDid) {
+          await sessionManager.fillOwnerIdentityDidIfAbsent(
+            documentId,
+            existingSession.sessionDid,
+            provenSigningDid
+          );
+          existingSession.ownerIdentityDid = provenSigningDid;
+        }
+      }
 
       // collabJoinEnabled gate (R5-b): ddoc-ONLY (dsheet must never break; new dsheet rooms also get
       // collabJoinEnabled:false from createSession, so an unscoped gate would kill all dsheet collaboration).
@@ -427,17 +478,8 @@ export async function handleDocumentUpdate(
     const updateId = uuidv4();
     const createdAt = Date.now();
 
-    // Broadcast to peers immediately, before awaiting DB write
-    const roomName = getRoomName(documentId, socket.data.sessionDid);
-    const contentPayload = {
-      id: updateId,
-      data,
-      createdAt,
-      roomId: documentId,
-    };
-    socket.to(roomName).emit("/document/content_update", contentPayload);
-
-    // Persist to DB — sender's ACK waits for this
+    // Persist before broadcasting: a peer must never hold an update that is absent from
+    // the durable seq stream. On write failure this fails safe — nothing is fanned out.
     const update = await mongodbStore.createUpdate({
       id: updateId,
       documentId,
@@ -448,6 +490,14 @@ export async function handleDocumentUpdate(
       createdAt,
       sessionDid,
       appType: socket.data.appType,
+    });
+
+    const roomName = getRoomName(documentId, socket.data.sessionDid);
+    socket.to(roomName).emit("/document/content_update", {
+      id: updateId,
+      data,
+      createdAt,
+      roomId: documentId,
     });
 
     callback({

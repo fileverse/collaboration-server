@@ -257,6 +257,34 @@ describe("handleDocumentUpdate", () => {
     );
   });
 
+  it("does NOT broadcast to peers when the durable persist fails (persist-before-broadcast)", async () => {
+    const fakeIO = createFakeIO();
+    const fakeBroadcastOperator = { emit: vi.fn() };
+    const fakeSocket = createFakeSocket(fakeBroadcastOperator);
+    const fakeArgs: DocumentUpdateArgs = {
+      documentId: "doc-1",
+      data: "update-data",
+      collaborationToken: "token",
+    };
+    const callback = vi.fn();
+
+    const runtimeSession = { sessionDid: fakeSocket.data.sessionDid };
+    fakeSessionManager.getRuntimeSession.mockResolvedValue(runtimeSession);
+    fakeAuthService.verifyCollaborationToken.mockResolvedValue(true);
+    fakeMongoDBStore.createUpdate.mockRejectedValue(new Error("db write failed"));
+
+    await handleDocumentUpdate(deps, fakeIO, fakeSocket, fakeArgs, callback);
+
+    // A peer must never hold an update absent from the durable seq stream.
+    expect(fakeBroadcastOperator.emit).not.toHaveBeenCalled();
+    expect(callback).toHaveBeenCalledWith({
+      status: false,
+      statusCode: 500,
+      error: "Internal server error",
+      errorCode: ErrorCode.INTERNAL_ERROR,
+    });
+  });
+
   it("returns 500 when an unexpected error occurs in document update handler", async () => {
     const fakeIO = createFakeIO();
     const fakeSocket = createFakeSocket();

@@ -4,8 +4,13 @@ import { PORTAL_CONTRACT_ABI } from "../abi/portal-contract-abi";
 import { IDENTITY_MODULE_ABI } from "../abi/identity-module-abi";
 import MemberCreds from "node-cache";
 import { config } from "../config";
+// On-chain owner/identity DID cache. Kept short so a rotated or revoked signing key
+// (or a removed collaborator) stops being trusted within minutes rather than a full
+// day. Too short amplifies RPC reads — a rate-limited node returns null and would lock
+// the real owner out — so this is a deliberate floor, env-overridable per deploy.
+const IDENTITY_CACHE_TTL_SECONDS = Number(process.env.IDENTITY_CACHE_TTL_SECONDS) || 300;
 const cache = new MemberCreds({
-  stdTTL: 60 * 60 * 24, // 24 hours
+  stdTTL: IDENTITY_CACHE_TTL_SECONDS,
 });
 
 export const publicClient = createPublicClient({

@@ -14,7 +14,11 @@ describe("POST collab-join-enabled", () => {
     vi.clearAllMocks();
     deps = {
       authService: { verifyOwnerOp: vi.fn() },
-      sessionManager: { getSession: vi.fn(), setCollabJoinEnabled: vi.fn() },
+      sessionManager: {
+        getSession: vi.fn(),
+        setCollabJoinEnabled: vi.fn(),
+        getNonTerminatedSessionsForDocument: vi.fn().mockResolvedValue([]),
+      },
     };
     io = { in: vi.fn(() => ({ fetchSockets: vi.fn().mockResolvedValue([]) })) };
   });
@@ -45,6 +49,30 @@ describe("POST collab-join-enabled", () => {
     expect(deps.sessionManager.setCollabJoinEnabled).toHaveBeenCalledWith("doc-1", "s", false);
     expect(editorSock.disconnect).toHaveBeenCalledWith(true);
     expect(ownerSock.disconnect).not.toHaveBeenCalled();
+    expect(r.status).toHaveBeenCalledWith(200);
+  });
+
+  it("closes the flag + drops sockets across ALL non-terminated sessions, not just the client's", async () => {
+    deps.sessionManager.getSession.mockResolvedValue({ sessionDid: "s-stale", ownerDid: "od", ownerIdentityDid: "oid" });
+    deps.authService.verifyOwnerOp.mockResolvedValue(true);
+    deps.sessionManager.getNonTerminatedSessionsForDocument.mockResolvedValue([
+      { sessionDid: "s-cur" },
+      { sessionDid: "s-old" },
+    ]);
+    const editorSock: any = { data: { role: "editor" }, disconnect: vi.fn() };
+    io.in = vi.fn(() => ({ fetchSockets: vi.fn().mockResolvedValue([editorSock]) }));
+    const r = res();
+
+    await createCollabJoinEnabledHandler(deps, io)(
+      { params: { documentId: "doc-1" }, body: { sessionDid: "s-stale", enabled: false } } as any, r
+    );
+
+    // Every session — the current one, the old one, and the caller's own stale one — is closed.
+    for (const sd of ["s-cur", "s-old", "s-stale"]) {
+      expect(deps.sessionManager.setCollabJoinEnabled).toHaveBeenCalledWith("doc-1", sd, false);
+      expect(io.in).toHaveBeenCalledWith(`session::doc-1__${sd}`);
+    }
+    expect(editorSock.disconnect).toHaveBeenCalledTimes(3);
     expect(r.status).toHaveBeenCalledWith(200);
   });
 });

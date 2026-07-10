@@ -111,6 +111,8 @@ export interface AuthArgs {
   roomInfo?: string;
   appType?: AppType;
   ownerIdentityDid?: string;
+  identityToken?: string;
+  identityContractAddress?: string;
 }
 
 export interface AuthResponseData {

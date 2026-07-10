@@ -77,6 +77,35 @@ export class SessionManager {
     return runtimeSession;
   }
 
+  // R3 heal: fill a session's ownerIdentityDid only when it is currently absent/empty.
+  // The conditional filter makes this atomic and immutable-preserving — it never
+  // overwrites a real binding, so concurrent callers race to a single first-proven fill.
+  async fillOwnerIdentityDidIfAbsent(
+    documentId: string,
+    sessionDid: string,
+    ownerIdentityDid: string
+  ): Promise<void> {
+    try {
+      await SessionModel.updateOne(
+        {
+          documentId,
+          sessionDid,
+          $or: [
+            { ownerIdentityDid: { $exists: false } },
+            { ownerIdentityDid: null },
+            { ownerIdentityDid: "" },
+          ],
+        },
+        { $set: { ownerIdentityDid } }
+      );
+      const sessionKey = this.getSessionKey(documentId, sessionDid);
+      const mem = this.inMemorySessions.get(sessionKey);
+      if (mem && !mem.ownerIdentityDid) mem.ownerIdentityDid = ownerIdentityDid;
+    } catch (error) {
+      console.error("Error filling ownerIdentityDid:", error);
+    }
+  }
+
   async getSession(documentId: string, sessionDid: string): Promise<RuntimeSession | undefined> {
     // Check in-memory first for active sessions
     const sessionKey = this.getSessionKey(documentId, sessionDid);
@@ -211,13 +240,17 @@ export class SessionManager {
     }
   }
 
-  async getOtherActiveSessions(
+  // All non-terminated sessions for this owner's document except the caller's own. The
+  // rotation path terminates these when a new session supersedes them; including INACTIVE
+  // (not only active) sessions closes a forward-secrecy hole where an idled-out old-roomKey
+  // session lingered `/auth`-able forever and was never GC'd.
+  async getOtherNonTerminatedSessions(
     documentId: string,
     ownerDid: string,
     excludeSessionDid?: string
   ): Promise<Array<{ documentId: string; sessionDid: string; appType?: "ddoc" | "dsheet" }>> {
     try {
-      const query: Record<string, any> = { documentId, ownerDid, state: "active" };
+      const query: Record<string, any> = { documentId, ownerDid, state: { $ne: "terminated" } };
       if (excludeSessionDid) {
         query.sessionDid = { $ne: excludeSessionDid };
       }
@@ -228,7 +261,25 @@ export class SessionManager {
         appType: s.appType,
       }));
     } catch (error) {
-      console.error("Error getting other active sessions:", error);
+      console.error("Error getting other non-terminated sessions:", error);
+      return [];
+    }
+  }
+
+  // Every non-terminated session for a document, regardless of owner. Stop-share uses this
+  // to close the collab-join flag and drop live non-owner sockets across ALL of a doc's
+  // rooms — a stale client-supplied sessionDid must not leave the current room open.
+  async getNonTerminatedSessionsForDocument(
+    documentId: string
+  ): Promise<Array<{ sessionDid: string }>> {
+    try {
+      const sessions = await SessionModel.find(
+        { documentId, state: { $ne: "terminated" } },
+        { sessionDid: 1 }
+      ).lean();
+      return sessions.map((s: any) => ({ sessionDid: s.sessionDid }));
+    } catch (error) {
+      console.error("Error getting non-terminated sessions for document:", error);
       return [];
     }
   }

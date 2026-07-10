@@ -46,16 +46,18 @@ describe("handleAuth", () => {
   const fakeAuthService = {
     verifyOwnerToken: vi.fn(),
     verifyCollaborationToken: vi.fn(),
+    verifyIdentityToken: vi.fn(),
     getServerDid: vi.fn(),
   };
   const fakeSessionManager = {
     getSession: vi.fn(),
-    getOtherActiveSessions: vi.fn(),
+    getOtherNonTerminatedSessions: vi.fn(),
     terminateSession: vi.fn(),
     createSession: vi.fn(),
     updateRoomInfo: vi.fn(),
     addClientToSession: vi.fn(),
     getCollabJoinEnabled: vi.fn(),
+    fillOwnerIdentityDidIfAbsent: vi.fn(),
   };
   const fakeMongoDBStore = {} as any;
 
@@ -140,13 +142,16 @@ describe("handleAuth", () => {
       ownerToken: "owner-token",
       ownerAddress: "0x0000000000000000000000000000000000000001",
       contractAddress: "0x0000000000000000000000000000000000000002",
+      identityToken: "identity-token",
+      identityContractAddress: "0x0000000000000000000000000000000000000003",
       roomInfo: "room-info",
     };
     const callback = vi.fn();
 
     fakeSessionManager.getSession.mockResolvedValue(undefined);
     fakeAuthService.verifyOwnerToken.mockResolvedValue("owner-did");
-    fakeSessionManager.getOtherActiveSessions.mockResolvedValue([]);
+    fakeAuthService.verifyIdentityToken.mockResolvedValue("owner-identity-did");
+    fakeSessionManager.getOtherNonTerminatedSessions.mockResolvedValue([]);
     fakeSessionManager.createSession.mockResolvedValue(undefined);
     fakeSessionManager.addClientToSession.mockResolvedValue(undefined);
 
@@ -161,7 +166,7 @@ describe("handleAuth", () => {
       fakeArgs.contractAddress,
       fakeArgs.ownerAddress
     );
-    expect(fakeSessionManager.getOtherActiveSessions).toHaveBeenCalledWith(
+    expect(fakeSessionManager.getOtherNonTerminatedSessions).toHaveBeenCalledWith(
       fakeArgs.documentId,
       "owner-did",
       fakeArgs.sessionDid,
@@ -170,7 +175,7 @@ describe("handleAuth", () => {
       documentId: fakeArgs.documentId,
       sessionDid: fakeArgs.sessionDid,
       ownerDid: "owner-did",
-      ownerIdentityDid: undefined,
+      ownerIdentityDid: "owner-identity-did",
       portalAddress: fakeArgs.contractAddress,
       collabJoinEnabled: false,
       roomInfo: fakeArgs.roomInfo,
@@ -224,6 +229,8 @@ describe("handleAuth", () => {
       ownerToken: "owner-token",
       ownerAddress: "0x0000000000000000000000000000000000000001",
       contractAddress: "0x0000000000000000000000000000000000000002",
+      identityToken: "identity-token",
+      identityContractAddress: "0x0000000000000000000000000000000000000003",
       roomInfo: "room-info",
     };
     const callback = vi.fn();
@@ -246,7 +253,8 @@ describe("handleAuth", () => {
 
     fakeSessionManager.getSession.mockResolvedValue(undefined);
     fakeAuthService.verifyOwnerToken.mockResolvedValue("owner-did");
-    fakeSessionManager.getOtherActiveSessions.mockResolvedValue(otherSessions);
+    fakeAuthService.verifyIdentityToken.mockResolvedValue("owner-identity-did");
+    fakeSessionManager.getOtherNonTerminatedSessions.mockResolvedValue(otherSessions);
     fakeSessionManager.terminateSession.mockResolvedValue(undefined);
     fakeSessionManager.createSession.mockResolvedValue(undefined);
     fakeSessionManager.addClientToSession.mockResolvedValue(undefined);
@@ -263,7 +271,7 @@ describe("handleAuth", () => {
       fakeArgs.contractAddress,
       fakeArgs.ownerAddress
     );
-    expect(fakeSessionManager.getOtherActiveSessions).toHaveBeenCalledWith(
+    expect(fakeSessionManager.getOtherNonTerminatedSessions).toHaveBeenCalledWith(
       fakeArgs.documentId,
       "owner-did",
       fakeArgs.sessionDid,
@@ -373,7 +381,8 @@ describe("handleAuth", () => {
 
     fakeSessionManager.getSession.mockResolvedValue(undefined);
     fakeAuthService.verifyOwnerToken.mockResolvedValue("owner-did");
-    fakeSessionManager.getOtherActiveSessions.mockResolvedValue([otherSession]);
+    fakeAuthService.verifyIdentityToken.mockResolvedValue("owner-identity-did");
+    fakeSessionManager.getOtherNonTerminatedSessions.mockResolvedValue([otherSession]);
     fakeSessionManager.terminateSession.mockResolvedValue(undefined);
     fakeSessionManager.createSession.mockResolvedValue(undefined);
     fakeSessionManager.addClientToSession.mockResolvedValue(undefined);
@@ -643,6 +652,7 @@ describe("handleAuth", () => {
     fakeSessionManager.getSession.mockResolvedValue(existingSession);
     fakeAuthService.verifyCollaborationToken.mockResolvedValue("user-did");
     fakeAuthService.verifyOwnerToken.mockResolvedValue("owner-did");
+    fakeAuthService.verifyIdentityToken.mockResolvedValue("owner-identity-did");
     fakeSessionManager.updateRoomInfo.mockResolvedValue(undefined);
     fakeSessionManager.addClientToSession.mockResolvedValue(undefined);
 
@@ -721,7 +731,8 @@ describe("handleAuth", () => {
 
     fakeSessionManager.getSession.mockResolvedValue(undefined);
     fakeAuthService.verifyOwnerToken.mockResolvedValue("owner-did");
-    fakeSessionManager.getOtherActiveSessions.mockResolvedValue([]);
+    fakeAuthService.verifyIdentityToken.mockResolvedValue("owner-identity-did");
+    fakeSessionManager.getOtherNonTerminatedSessions.mockResolvedValue([]);
     fakeSessionManager.createSession.mockResolvedValue(undefined);
     fakeSessionManager.addClientToSession.mockResolvedValue(undefined);
 
@@ -925,6 +936,115 @@ describe("handleAuth", () => {
     await handleAuth(deps, fakeIO, fakeSocket, fakeArgs, callback);
 
     expect(fakeSocket.join).toHaveBeenCalled();
+  });
+
+  it("rejects a new ddoc owner session when the identity proof is missing", async () => {
+    const fakeIO = createFakeIO();
+    const fakeSocket = createFakeSocket({ emit: vi.fn() });
+    const fakeArgs: AuthArgs = {
+      documentId: "doc-1",
+      sessionDid: "session-1",
+      collaborationToken: "collab-token",
+      ownerToken: "owner-token",
+      ownerAddress: "0x0000000000000000000000000000000000000001",
+      contractAddress: "0x0000000000000000000000000000000000000002",
+      // no identityToken / identityContractAddress
+    };
+    const callback = vi.fn();
+
+    fakeSessionManager.getSession.mockResolvedValue(undefined);
+    fakeAuthService.verifyOwnerToken.mockResolvedValue("owner-did");
+
+    await handleAuth(deps, fakeIO, fakeSocket, fakeArgs, callback);
+
+    expect(fakeAuthService.verifyIdentityToken).not.toHaveBeenCalled();
+    expect(fakeSessionManager.createSession).not.toHaveBeenCalled();
+    expect(callback).toHaveBeenCalledWith({
+      status: false,
+      statusCode: 401,
+      error: "Valid identity proof required to create a durable session",
+      errorCode: ErrorCode.AUTH_TOKEN_INVALID,
+    });
+  });
+
+  it("rejects a new ddoc owner session when the identity proof is invalid", async () => {
+    const fakeIO = createFakeIO();
+    const fakeSocket = createFakeSocket({ emit: vi.fn() });
+    const fakeArgs: AuthArgs = {
+      documentId: "doc-1",
+      sessionDid: "session-1",
+      collaborationToken: "collab-token",
+      ownerToken: "owner-token",
+      ownerAddress: "0x0000000000000000000000000000000000000001",
+      contractAddress: "0x0000000000000000000000000000000000000002",
+      identityToken: "bad-identity-token",
+      identityContractAddress: "0x0000000000000000000000000000000000000003",
+    };
+    const callback = vi.fn();
+
+    fakeSessionManager.getSession.mockResolvedValue(undefined);
+    fakeAuthService.verifyOwnerToken.mockResolvedValue("owner-did");
+    fakeAuthService.verifyIdentityToken.mockResolvedValue(null);
+
+    await handleAuth(deps, fakeIO, fakeSocket, fakeArgs, callback);
+
+    expect(fakeAuthService.verifyIdentityToken).toHaveBeenCalledWith(
+      "bad-identity-token",
+      "0x0000000000000000000000000000000000000003",
+      "doc-1"
+    );
+    expect(fakeSessionManager.createSession).not.toHaveBeenCalled();
+    expect(callback).toHaveBeenCalledWith({
+      status: false,
+      statusCode: 401,
+      error: "Valid identity proof required to create a durable session",
+      errorCode: ErrorCode.AUTH_TOKEN_INVALID,
+    });
+  });
+
+  it("fills an absent ownerIdentityDid on an existing ddoc session for a proven owner", async () => {
+    const fakeIO = createFakeIO();
+    const fakeSocket = createFakeSocket({ emit: vi.fn() });
+    const fakeArgs: AuthArgs = {
+      documentId: "doc-1",
+      sessionDid: "session-1",
+      collaborationToken: "collab-token",
+      ownerToken: "owner-token",
+      ownerAddress: "0x0000000000000000000000000000000000000001",
+      contractAddress: "0x0000000000000000000000000000000000000002",
+      identityToken: "identity-token",
+      identityContractAddress: "0x0000000000000000000000000000000000000003",
+    };
+    const callback = vi.fn();
+
+    const existingSession = {
+      sessionDid: fakeArgs.sessionDid,
+      ownerDid: "owner-did",
+      roomInfo: "existing-room-info",
+      appType: "ddoc",
+      // no ownerIdentityDid (pre-fix / empty bind)
+    };
+
+    fakeSessionManager.getSession.mockResolvedValue(existingSession);
+    fakeAuthService.verifyCollaborationToken.mockResolvedValue("user-did");
+    fakeAuthService.verifyOwnerToken.mockResolvedValue("owner-did");
+    fakeAuthService.verifyIdentityToken.mockResolvedValue("proven-identity-did");
+    fakeSessionManager.fillOwnerIdentityDidIfAbsent.mockResolvedValue(undefined);
+    fakeSessionManager.addClientToSession.mockResolvedValue(undefined);
+
+    await handleAuth(deps, fakeIO, fakeSocket, fakeArgs, callback);
+
+    expect(fakeAuthService.verifyIdentityToken).toHaveBeenCalledWith(
+      "identity-token",
+      "0x0000000000000000000000000000000000000003",
+      "doc-1"
+    );
+    expect(fakeSessionManager.fillOwnerIdentityDidIfAbsent).toHaveBeenCalledWith(
+      "doc-1",
+      "session-1",
+      "proven-identity-did"
+    );
+    expect(fakeSocket.data.role).toBe("owner");
   });
 });
 
