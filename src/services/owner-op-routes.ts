@@ -8,7 +8,10 @@ import { Hex } from "viem";
 
 export interface OwnerOpDeps {
   authService: Pick<AuthService, "verifyOwnerOp">;
-  sessionManager: Pick<SessionManager, "getSession" | "setCollabJoinEnabled">;
+  sessionManager: Pick<
+    SessionManager,
+    "getSession" | "setCollabJoinEnabled" | "getNonTerminatedSessionsForDocument"
+  >;
 }
 
 export function createCollabJoinEnabledHandler(deps: OwnerOpDeps, io: AppServer) {
@@ -34,17 +37,28 @@ export function createCollabJoinEnabledHandler(deps: OwnerOpDeps, io: AppServer)
       return;
     }
 
-    await deps.sessionManager.setCollabJoinEnabled(documentId, sessionDid, !!enabled);
+    // Apply to EVERY non-terminated session of the doc, not just the client-supplied
+    // sessionDid: a joiner derives the current session from its own roomKey and reads that
+    // session's flag on `/auth`, so a flag left on a stale session is a silent re-join hole.
+    // Safe doc-wide: this op only drops non-owner sockets and the flag is a reversible
+    // join-gate, so any proven owner may close the whole doc without harming a co-owner.
+    const targets = await deps.sessionManager.getNonTerminatedSessionsForDocument(documentId);
+    const sessionDids = new Set<string>(targets.map((t) => t.sessionDid));
+    sessionDids.add(sessionDid);
+    for (const sd of sessionDids) {
+      await deps.sessionManager.setCollabJoinEnabled(documentId, sd, !!enabled);
+    }
 
     if (enabled === false) {
-      // Force-drop live non-owner sockets in the room (stop-share teeth). `io` is the app's
-      // Socket.IO server; `fetchSockets()` reaches every socket in the room (across instances too
-      // when the Redis adapter is enabled), so `.disconnect(true)` drops it wherever it lives. The
-      // returned `.data` is a read-only snapshot — we disconnect rather than mutate it.
-      const roomName = getRoomName(documentId, sessionDid);
-      const sockets = await io.in(roomName).fetchSockets();
-      for (const s of sockets) {
-        if (s.data.role !== "owner") s.disconnect(true);
+      // Force-drop live non-owner sockets across ALL of the doc's rooms (stop-share teeth).
+      // `fetchSockets()` reaches every socket in a room (across instances when the Redis
+      // adapter is on), so `.disconnect(true)` drops it wherever it lives.
+      for (const sd of sessionDids) {
+        const roomName = getRoomName(documentId, sd);
+        const sockets = await io.in(roomName).fetchSockets();
+        for (const s of sockets) {
+          if (s.data.role !== "owner") s.disconnect(true);
+        }
       }
     }
 
