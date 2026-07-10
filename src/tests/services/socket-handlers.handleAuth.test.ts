@@ -55,6 +55,7 @@ describe("handleAuth", () => {
     createSession: vi.fn(),
     updateRoomInfo: vi.fn(),
     addClientToSession: vi.fn(),
+    getCollabJoinEnabled: vi.fn(),
   };
   const fakeMongoDBStore = {} as any;
 
@@ -169,6 +170,9 @@ describe("handleAuth", () => {
       documentId: fakeArgs.documentId,
       sessionDid: fakeArgs.sessionDid,
       ownerDid: "owner-did",
+      ownerIdentityDid: undefined,
+      portalAddress: fakeArgs.contractAddress,
+      collabJoinEnabled: false,
       roomInfo: fakeArgs.roomInfo,
       appType: "ddoc",
     });
@@ -225,8 +229,8 @@ describe("handleAuth", () => {
     const callback = vi.fn();
 
     const otherSessions = [
-      { documentId: fakeArgs.documentId, sessionDid: "old-session-1" },
-      { documentId: fakeArgs.documentId, sessionDid: "old-session-2" },
+      { documentId: fakeArgs.documentId, sessionDid: "old-session-1", appType: "ddoc" as const },
+      { documentId: fakeArgs.documentId, sessionDid: "old-session-2", appType: "ddoc" as const },
     ];
 
     const oldRoomName1 = getRoomName(fakeArgs.documentId, otherSessions[0].sessionDid);
@@ -282,7 +286,8 @@ describe("handleAuth", () => {
     expect(oldSocket1.leave).toHaveBeenCalledWith(oldRoomName1);
     expect(fakeSessionManager.terminateSession).toHaveBeenCalledWith(
       otherSessions[0].documentId,
-      otherSessions[0].sessionDid
+      otherSessions[0].sessionDid,
+      "ddoc"
     );
 
     // Second other session (old-session-2)
@@ -302,7 +307,8 @@ describe("handleAuth", () => {
     expect(oldSocket2.leave).toHaveBeenCalledWith(oldRoomName2);
     expect(fakeSessionManager.terminateSession).toHaveBeenCalledWith(
       otherSessions[1].documentId,
-      otherSessions[1].sessionDid
+      otherSessions[1].sessionDid,
+      "ddoc"
     );
 
     // Aggregate call-count assertions after verifying per-iteration sequence
@@ -339,6 +345,49 @@ describe("handleAuth", () => {
         roomInfo: fakeArgs.roomInfo,
       },
     });
+  });
+
+  it("terminates other sessions using their OWN appType, not the new connection's claimed appType", async () => {
+    const fakeIO = createFakeIO();
+    const fakeBroadcastOperator = { emit: vi.fn() };
+    const fakeSocket = createFakeSocket(fakeBroadcastOperator);
+    const fakeArgs: AuthArgs = {
+      documentId: "doc-1",
+      sessionDid: "session-1",
+      collaborationToken: "collab-token",
+      ownerToken: "owner-token",
+      ownerAddress: "0x0000000000000000000000000000000000000001",
+      contractAddress: "0x0000000000000000000000000000000000000002",
+      roomInfo: "room-info",
+      // The new connection claims "dsheet" for this document...
+      appType: "dsheet",
+    };
+    const callback = vi.fn();
+
+    // ...but the session being terminated is actually a "ddoc" session.
+    const otherSession = {
+      documentId: fakeArgs.documentId,
+      sessionDid: "old-session-1",
+      appType: "ddoc" as const,
+    };
+
+    fakeSessionManager.getSession.mockResolvedValue(undefined);
+    fakeAuthService.verifyOwnerToken.mockResolvedValue("owner-did");
+    fakeSessionManager.getOtherActiveSessions.mockResolvedValue([otherSession]);
+    fakeSessionManager.terminateSession.mockResolvedValue(undefined);
+    fakeSessionManager.createSession.mockResolvedValue(undefined);
+    fakeSessionManager.addClientToSession.mockResolvedValue(undefined);
+
+    await handleAuth(deps, fakeIO, fakeSocket, fakeArgs, callback);
+
+    // terminateSession must use the terminated session's own appType ("ddoc"), never
+    // the claimed appType of the new connection ("dsheet") — otherwise a dsheet
+    // re-auth would cascade-delete a ddoc's durable rows.
+    expect(fakeSessionManager.terminateSession).toHaveBeenCalledWith(
+      otherSession.documentId,
+      otherSession.sessionDid,
+      "ddoc"
+    );
   });
 
   it("joins an existing session as editor when collaboration token is valid", async () => {
@@ -682,6 +731,9 @@ describe("handleAuth", () => {
       documentId: fakeArgs.documentId,
       sessionDid: fakeArgs.sessionDid,
       ownerDid: "owner-did",
+      ownerIdentityDid: undefined,
+      portalAddress: fakeArgs.contractAddress,
+      collabJoinEnabled: false,
       roomInfo: fakeArgs.roomInfo,
       appType: "dsheet",
     });
@@ -827,6 +879,52 @@ describe("handleAuth", () => {
         roomInfo: existingSession.roomInfo,
       },
     });
+  });
+
+  it("rejects a non-owner join when collabJoinEnabled is explicitly false", async () => {
+    const fakeIO = createFakeIO();
+    const fakeSocket = createFakeSocket({ emit: vi.fn() });
+    const fakeArgs: AuthArgs = { documentId: "doc-1", sessionDid: "session-1", collaborationToken: "collab-token" };
+    const callback = vi.fn();
+    fakeSessionManager.getSession.mockResolvedValue({ sessionDid: "session-1", ownerDid: "owner-did", roomInfo: "r" });
+    fakeSessionManager.getCollabJoinEnabled.mockResolvedValue(false); // fresh Mongo read
+    fakeAuthService.verifyCollaborationToken.mockResolvedValue("user-did");
+
+    await handleAuth(deps, fakeIO, fakeSocket, fakeArgs, callback);
+
+    expect(callback).toHaveBeenCalledWith({ status: false, statusCode: 403, error: "Link sharing is disabled for this document", errorCode: ErrorCode.JOIN_DISABLED });
+    expect(fakeSocket.join).not.toHaveBeenCalled();
+    expect(fakeSessionManager.addClientToSession).not.toHaveBeenCalled();
+  });
+
+  it("admits a non-owner join when collabJoinEnabled is true", async () => {
+    const fakeIO = createFakeIO();
+    const fakeSocket = createFakeSocket({ emit: vi.fn() });
+    const fakeArgs: AuthArgs = { documentId: "doc-1", sessionDid: "session-1", collaborationToken: "collab-token" };
+    const callback = vi.fn();
+    fakeSessionManager.getSession.mockResolvedValue({ sessionDid: "session-1", ownerDid: "owner-did", roomInfo: "r" });
+    fakeSessionManager.getCollabJoinEnabled.mockResolvedValue(true); // fresh Mongo read
+    fakeAuthService.verifyCollaborationToken.mockResolvedValue("user-did");
+    fakeSessionManager.addClientToSession.mockResolvedValue(undefined);
+
+    await handleAuth(deps, fakeIO, fakeSocket, fakeArgs, callback);
+
+    expect(fakeSocket.join).toHaveBeenCalled();
+  });
+
+  // Invariant #3 — the gate must NOT fire for dsheet, even with collabJoinEnabled:false.
+  it("admits a dsheet editor even when collabJoinEnabled is false (ddoc-only gate)", async () => {
+    const fakeIO = createFakeIO();
+    const fakeSocket = createFakeSocket({ emit: vi.fn() });
+    const fakeArgs: AuthArgs = { documentId: "doc-1", sessionDid: "session-1", collaborationToken: "collab-token", appType: "dsheet" };
+    const callback = vi.fn();
+    fakeSessionManager.getSession.mockResolvedValue({ sessionDid: "session-1", ownerDid: "owner-did", roomInfo: "r", appType: "dsheet", collabJoinEnabled: false });
+    fakeAuthService.verifyCollaborationToken.mockResolvedValue("user-did");
+    fakeSessionManager.addClientToSession.mockResolvedValue(undefined);
+
+    await handleAuth(deps, fakeIO, fakeSocket, fakeArgs, callback);
+
+    expect(fakeSocket.join).toHaveBeenCalled();
   });
 });
 

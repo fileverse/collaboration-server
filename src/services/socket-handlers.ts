@@ -9,11 +9,13 @@ import {
   DocumentCommitResponseData,
   CommitHistoryArgs,
   UpdateHistoryArgs,
+  UpdateHistoryResponseData,
+  SnapshotArgs,
+  DocumentMetaArgs,
   PeersListArgs,
   AwarenessArgs,
   TerminateSessionArgs,
   DocumentCommit,
-  DocumentUpdate,
   AppServer,
   AppSocket,
   AppType,
@@ -24,7 +26,6 @@ import { authService } from "./auth";
 import { mongodbStore } from "./mongodb-store";
 import { sessionManager } from "./session-manager";
 import { Hex, isAddress } from "viem";
-import type { BroadcastBridge } from "./broadcast-bridge";
 import type { SocketHandlerDeps } from "./socket-handlers.deps";
 
 const defaultDeps: SocketHandlerDeps = {
@@ -32,8 +33,6 @@ const defaultDeps: SocketHandlerDeps = {
   sessionManager,
   mongodbStore,
 };
-
-let bridge: BroadcastBridge | null = null;
 
 function validateHexAddress(address: string | undefined, fieldName: string): address is Hex {
   if (!address || !isAddress(address)) {
@@ -55,11 +54,7 @@ function normalizeAppType(value: unknown): AppType {
   return value === "dsheet" ? "dsheet" : "ddoc";
 }
 
-export function registerEventHandlers(io: AppServer, broadcastBridge?: BroadcastBridge): void {
-  if (broadcastBridge) {
-    bridge = broadcastBridge;
-  }
-  
+export function registerEventHandlers(io: AppServer): void {
   io.on("connection", (socket: AppSocket) => {
     console.log(`New Socket.IO connection: ${socket.id}`);
 
@@ -82,6 +77,12 @@ export function registerEventHandlers(io: AppServer, broadcastBridge?: Broadcast
     );
     socket.on("/documents/update/history", (args, callback) =>
       handleUpdateHistory(defaultDeps, socket, args, callback)
+    );
+    socket.on("/documents/snapshot", (args, callback) =>
+      handleSnapshot(defaultDeps, socket, args, callback)
+    );
+    socket.on("/documents/meta", (args, callback) =>
+      handleSetDocumentMeta(defaultDeps, socket, args, callback)
     );
     socket.on("/documents/peers/list", (args, callback) => handlePeersList(io, socket, args, callback));
     socket.on("/documents/awareness", (args) => handleAwareness(io, socket, args));
@@ -201,12 +202,6 @@ export async function handleAuth(
           roomId: oldSession.documentId,
         });
 
-        // Bridge: notify legacy WS clients and disconnect them
-        if (bridge) {
-          bridge.broadcastFromSocketIO(oldSession.documentId, oldSession.sessionDid, "/session/terminated", { roomId: oldSession.documentId });
-          bridge.disconnectLegacyClientsInRoom(oldSession.documentId, oldSession.sessionDid);
-        }
-
         // Force-leave all sockets and reset auth
         const socketsInOldRoom = await io.in(oldRoomName).fetchSockets();
         for (const s of socketsInOldRoom) {
@@ -214,8 +209,12 @@ export async function handleAuth(
           s.leave(oldRoomName);
         }
 
-        // Now clean up DB
-        await sessionManager.terminateSession(oldSession.documentId, oldSession.sessionDid);
+        // Now clean up DB — use the terminated session's own appType, not the new connection's claimed one
+        await sessionManager.terminateSession(
+          oldSession.documentId,
+          oldSession.sessionDid,
+          oldSession.appType ?? "ddoc"
+        );
         console.log(
           `[Auth] Terminated old session: ${oldSession.sessionDid} for document: ${documentId}`
         );
@@ -225,6 +224,9 @@ export async function handleAuth(
         documentId,
         sessionDid,
         ownerDid,
+        ownerIdentityDid: args.ownerIdentityDid,
+        portalAddress: args.contractAddress,
+        collabJoinEnabled: false,
         roomInfo: args.roomInfo,
         appType: claimedAppType,
       });
@@ -283,6 +285,22 @@ export async function handleAuth(
 
       role = ownerDid === existingSession.ownerDid ? "owner" : "editor";
 
+      // collabJoinEnabled gate (R5-b): ddoc-ONLY (dsheet must never break; new dsheet rooms also get
+      // collabJoinEnabled:false from createSession, so an unscoped gate would kill all dsheet collaboration).
+      // Read the flag FRESH FROM MONGO (HTTP process flips it in Task 13; in-memory copy can be stale).
+      // Only an explicit `false` closes a ddoc room to non-owners; undefined (legacy) stays open; owners bypass.
+      if (storedAppType === "ddoc" && role === "editor") {
+        const joinEnabled = await sessionManager.getCollabJoinEnabled(documentId, existingSession.sessionDid);
+        if (joinEnabled === false) {
+          return callback({
+            status: false,
+            statusCode: 403,
+            error: "Link sharing is disabled for this document",
+            errorCode: ErrorCode.JOIN_DISABLED,
+          });
+        }
+      }
+
       if (role === "owner" && args.roomInfo) {
         await sessionManager.updateRoomInfo(
           documentId,
@@ -327,11 +345,6 @@ export async function handleAuth(
       roomId: documentId,
     };
     socket.to(roomName).emit("/room/membership_change", membershipPayload);
-
-    // Bridge: notify legacy WS clients
-    if (bridge) {
-      bridge.broadcastFromSocketIO(documentId, sessionDid, "/room/membership_change", membershipPayload, socket.id);
-    }
 
     callback({
       status: true,
@@ -423,11 +436,6 @@ export async function handleDocumentUpdate(
       roomId: documentId,
     };
     socket.to(roomName).emit("/document/content_update", contentPayload);
-
-    // Bridge: notify legacy WS clients
-    if (bridge) {
-      bridge.broadcastFromSocketIO(documentId, socket.data.sessionDid, "/document/content_update", contentPayload, socket.id);
-    }
 
     // Persist to DB — sender's ACK waits for this
     const update = await mongodbStore.createUpdate({
@@ -621,7 +629,7 @@ export async function handleUpdateHistory(
   deps: SocketHandlerDeps,
   socket: AppSocket,
   args: UpdateHistoryArgs,
-  callback: (response: AckResponse<{ history: DocumentUpdate[]; total: number }>) => void
+  callback: (response: AckResponse<UpdateHistoryResponseData>) => void
 ): Promise<void> {
   try {
     const { mongodbStore } = deps;
@@ -635,24 +643,191 @@ export async function handleUpdateHistory(
     }
 
     const documentId = args.documentId || socket.data.documentId;
-    const { offset = 0, limit = 100, sort = "desc", filters = {} } = args;
-
-    const filterParams = { documentId, sessionDid: socket.data.sessionDid };
-    const [updates, total] = await Promise.all([
-      mongodbStore.getUpdatesByDocument(filterParams, { committed: filters.committed }),
-      mongodbStore.countUpdatesByDocument(filterParams, { committed: filters.committed }),
-    ]);
+    const { snapshot, updates, nextSeq, hasMore } = await mongodbStore.getHydrationRange(
+      documentId,
+      socket.data.sessionDid,
+      { sinceSeq: args.sinceSeq }
+    );
+    const history = snapshot ? [snapshot, ...updates] : updates;
 
     callback({
       status: true,
       statusCode: 200,
-      data: {
-        history: updates,
-        total,
-      },
+      data: { history, total: history.length, snapshot, nextSeq, hasMore },
     });
   } catch (error) {
     console.error("Error in update history handler:", error);
+    callback({
+      status: false,
+      statusCode: 500,
+      error: "Internal server error",
+      errorCode: ErrorCode.INTERNAL_ERROR,
+    });
+  }
+}
+
+export async function handleSnapshot(
+  deps: SocketHandlerDeps,
+  socket: AppSocket,
+  args: SnapshotArgs,
+  callback: (response: AckResponse<{ id: string; seq: number }>) => void
+): Promise<void> {
+  try {
+    const { authService, sessionManager, mongodbStore } = deps;
+    if (!requireAuth(socket)) {
+      return callback({
+        status: false,
+        statusCode: 401,
+        error: "Not authenticated",
+        errorCode: ErrorCode.NOT_AUTHENTICATED,
+      });
+    }
+
+    if (socket.data.role !== "owner") {
+      return callback({
+        status: false,
+        statusCode: 403,
+        error: "Only owners can write snapshots",
+        errorCode: ErrorCode.COMMIT_UNAUTHORIZED,
+      });
+    }
+
+    const { data, collaborationToken, publishedMarker, floorSeq } = args;
+    const documentId = args.documentId || socket.data.documentId;
+
+    if (!data) {
+      return callback({
+        status: false,
+        statusCode: 400,
+        error: "Snapshot data is required",
+        errorCode: ErrorCode.UPDATE_DATA_MISSING,
+      });
+    }
+
+    // floorSeq is load-bearing for gapless hydration (§3.7): the tail is served as
+    // seq > floorSeq. A snapshot without a proven floor would let the server serve
+    // seq > snapshot.seq and silently orphan a concurrent writer's update, so reject it.
+    if (typeof floorSeq !== "number" || !Number.isInteger(floorSeq) || floorSeq < 0) {
+      return callback({
+        status: false,
+        statusCode: 400,
+        error: "Snapshot floorSeq (non-negative integer) is required",
+        errorCode: ErrorCode.UPDATE_DATA_MISSING,
+      });
+    }
+
+    const session = await sessionManager.getRuntimeSession(documentId, socket.data.sessionDid);
+    const sessionDid = session?.sessionDid;
+
+    if (!sessionDid) {
+      return callback({
+        status: false,
+        statusCode: 404,
+        error: "Session not found",
+        errorCode: ErrorCode.SESSION_NOT_FOUND,
+      });
+    }
+
+    const isVerified = await authService.verifyCollaborationToken(
+      collaborationToken,
+      sessionDid,
+      documentId
+    );
+
+    if (!isVerified) {
+      return callback({
+        status: false,
+        statusCode: 401,
+        error: "Authentication failed",
+        errorCode: ErrorCode.AUTH_TOKEN_INVALID,
+      });
+    }
+
+    const snapshot = await mongodbStore.createSnapshot({
+      id: uuidv4(),
+      documentId,
+      data,
+      updateType: "snapshot",
+      committed: false,
+      commitCid: null,
+      createdAt: Date.now(),
+      sessionDid,
+      appType: socket.data.appType,
+      publishedMarker: publishedMarker ?? null,
+      floorSeq,
+    });
+
+    callback({
+      status: true,
+      statusCode: 200,
+      data: { id: snapshot.id, seq: snapshot.seq! },
+    });
+  } catch (error) {
+    console.error("Error in snapshot handler:", error);
+    callback({
+      status: false,
+      statusCode: 500,
+      error: "Internal server error",
+      errorCode: ErrorCode.INTERNAL_ERROR,
+    });
+  }
+}
+
+export async function handleSetDocumentMeta(
+  deps: SocketHandlerDeps,
+  socket: AppSocket,
+  args: DocumentMetaArgs,
+  callback: (response: AckResponse<{ ok: true }>) => void
+): Promise<void> {
+  try {
+    const { sessionManager, mongodbStore } = deps;
+    if (!requireAuth(socket)) {
+      return callback({
+        status: false,
+        statusCode: 401,
+        error: "Not authenticated",
+        errorCode: ErrorCode.NOT_AUTHENTICATED,
+      });
+    }
+
+    if (socket.data.role !== "owner") {
+      return callback({
+        status: false,
+        statusCode: 403,
+        error: "Only owners can write document metadata",
+        errorCode: ErrorCode.COMMIT_UNAUTHORIZED,
+      });
+    }
+
+    const documentId = args.documentId || socket.data.documentId;
+    const session = await sessionManager.getRuntimeSession(documentId, socket.data.sessionDid);
+
+    if (!session) {
+      return callback({
+        status: false,
+        statusCode: 404,
+        error: "Session not found",
+        errorCode: ErrorCode.SESSION_NOT_FOUND,
+      });
+    }
+
+    await mongodbStore.upsertDocumentMeta({
+      documentId,
+      sessionDid: session.sessionDid,
+      ownerDid: session.ownerDid ?? null,
+      ownerIdentityDid: session.ownerIdentityDid ?? null,
+      portalAddress: session.portalAddress ?? null,
+      editLock: args.editLock,
+      title: args.title,
+    });
+
+    callback({
+      status: true,
+      statusCode: 200,
+      data: { ok: true },
+    });
+  } catch (error) {
+    console.error("Error in set-document-meta handler:", error);
     callback({
       status: false,
       statusCode: 500,
@@ -680,15 +855,9 @@ export async function handlePeersList(
 
     const documentId = args.documentId || socket.data.documentId;
 
-    // Use bridge for combined peer list (Socket.IO + legacy WS), fallback to Socket.IO only
-    let peers: string[];
-    if (bridge) {
-      peers = await bridge.getCombinedPeers(documentId, socket.data.sessionDid);
-    } else {
-      const roomName = getRoomName(documentId, socket.data.sessionDid);
-      const sockets = await io.in(roomName).fetchSockets();
-      peers = sockets.map((s) => s.id);
-    }
+    const roomName = getRoomName(documentId, socket.data.sessionDid);
+    const sockets = await io.in(roomName).fetchSockets();
+    const peers = sockets.map((s) => s.id);
 
     callback({
       status: true,
@@ -723,11 +892,6 @@ export async function handleAwareness(
     const roomName = getRoomName(documentId, socket.data.sessionDid);
     const awarenessPayload = { data, roomId: documentId };
     socket.to(roomName).emit("/document/awareness_update", awarenessPayload);
-
-    // Bridge: notify legacy WS clients
-    if (bridge) {
-      bridge.broadcastFromSocketIO(documentId, socket.data.sessionDid, "/document/awareness_update", awarenessPayload, socket.id);
-    }
   } catch (error) {
     console.error("Error in awareness handler:", error);
   }
@@ -799,12 +963,6 @@ export async function handleTerminateSession(
     const terminatePayload = { roomId: documentId };
     socket.to(roomName).emit("/session/terminated", terminatePayload);
 
-    // Bridge: notify legacy WS clients and disconnect them
-    if (bridge) {
-      bridge.broadcastFromSocketIO(documentId, session.sessionDid, "/session/terminated", terminatePayload, socket.id);
-      bridge.disconnectLegacyClientsInRoom(documentId, session.sessionDid, socket.id);
-    }
-
     // 3. Deauth and force-leave all sockets (blocks new handlers)
     for (const s of socketsInRoom) {
       s.data.authenticated = false;
@@ -815,7 +973,7 @@ export async function handleTerminateSession(
     await sessionManager.deactivateSession(documentId, session.sessionDid);
 
     // 5. Clean up DB
-    await sessionManager.terminateSession(documentId, session.sessionDid);
+    await sessionManager.terminateSession(documentId, session.sessionDid, session.appType ?? "ddoc");
 
     callback({
       status: true,
@@ -853,11 +1011,6 @@ export async function handleDisconnecting(
       roomId: socket.data.documentId,
     };
     socket.to(roomName).emit("/room/membership_change", departurePayload);
-
-    // Bridge: notify legacy WS clients
-    if (bridge) {
-      bridge.broadcastFromSocketIO(socket.data.documentId, socket.data.sessionDid, "/room/membership_change", departurePayload, socket.id);
-    }
 
     // Remove from session tracking (handles deactivation if last client)
     await sessionManager.removeClientFromSession(

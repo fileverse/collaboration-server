@@ -28,6 +28,7 @@ function createFakeSocket(broadcastOperator?: { emit: ReturnType<typeof vi.fn> }
       documentId: "doc-1",
       sessionDid: "session-1",
       role: "owner" as const,
+      appType: "ddoc" as const,
     },
     to: vi.fn(() => toReturn),
   } as unknown as AppSocket;
@@ -210,6 +211,7 @@ describe("handleTerminateSession", () => {
     const fakeSessionResponse = {
       sessionDid: fakeArgs.sessionDid,
       ownerDid: "match-owner-did",
+      appType: "ddoc" as const,
     };
     const ownerDidResponse = "match-owner-did";
 
@@ -245,7 +247,8 @@ describe("handleTerminateSession", () => {
     expect(fetchSocketsResponse[0].data.authenticated).toBe(false);
     expect(fakeSessionManager.terminateSession).toHaveBeenCalledWith(
       fakeArgs.documentId,
-      fakeSessionResponse.sessionDid
+      fakeSessionResponse.sessionDid,
+      "ddoc"
     );
 
     const callbackResponse = {
@@ -254,6 +257,55 @@ describe("handleTerminateSession", () => {
       data: { message: "Session terminated" },
     };
     expect(callback).toHaveBeenCalledWith(callbackResponse);
+  });
+
+  it("uses the TARGET session's appType, not the calling socket's appType, when terminating cross-appType", async () => {
+    // Regression test: a socket last-authenticated to a "dsheet" session must not be able to
+    // use its own socket.data.appType when terminating a DIFFERENT target session/document
+    // that is actually a "ddoc". The cascade delete must be scoped to the target session's
+    // own stored appType, not whatever the calling socket happens to be.
+    const fetchSocketsResponse = [
+      {
+        id: "peer-1",
+        data: { authenticated: true },
+        leave: vi.fn(),
+      },
+    ];
+    const fakeIO = createFakeIO(fetchSocketsResponse);
+
+    const fakeBroadcastOperator = { emit: vi.fn() };
+    const fakeSocket = createFakeSocket(fakeBroadcastOperator);
+    // Calling socket is authenticated as a "dsheet" session.
+    (fakeSocket.data as { appType: "ddoc" | "dsheet" }).appType = "dsheet";
+
+    const fakeArgs = {
+      documentId: "test-document-id",
+      sessionDid: "test-session-did",
+      ownerToken: "test-owner-token",
+      ownerAddress: "0x0000000000000000000000000000000000000001",
+      contractAddress: "0x0000000000000000000000000000000000000002",
+    };
+    const callback = vi.fn();
+
+    // Target session (the one actually being terminated) is a "ddoc" session.
+    const fakeSessionResponse = {
+      sessionDid: fakeArgs.sessionDid,
+      ownerDid: "match-owner-did",
+      appType: "ddoc" as const,
+    };
+    const ownerDidResponse = "match-owner-did";
+
+    fakeSessionManager.getSession.mockResolvedValue(fakeSessionResponse);
+    fakeAuthService.verifyOwnerToken.mockResolvedValue(ownerDidResponse);
+    fakeSessionManager.terminateSession.mockResolvedValue(undefined);
+
+    await handleTerminateSession(deps, fakeIO, fakeSocket, fakeArgs, callback);
+
+    expect(fakeSessionManager.terminateSession).toHaveBeenCalledWith(
+      fakeArgs.documentId,
+      fakeSessionResponse.sessionDid,
+      "ddoc"
+    );
   });
 
   it("returns 500 when an unexpected error occurs in terminate session handler", async () => {

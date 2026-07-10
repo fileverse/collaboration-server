@@ -1,14 +1,29 @@
 import { DocumentUpdate, DocumentCommit } from "../types/index";
-import { DocumentUpdateModel, DocumentCommitModel } from "../database/models";
+import { DocumentUpdateModel, DocumentCommitModel, CounterModel, SessionModel, DocumentMetaModel } from "../database/models";
 
 export class MongoDBStore {
   // Update management
   async createUpdate(update: DocumentUpdate): Promise<DocumentUpdate> {
     try {
+      const session: any = await SessionModel.findOne({
+        documentId: update.documentId,
+        sessionDid: update.sessionDid,
+      });
+      if (!session || session.state === "terminated") {
+        return update; // ephemeral relay — no durable row, no seq burned
+      }
+
+      const counter = await CounterModel.findOneAndUpdate(
+        { _id: update.documentId },
+        { $inc: { seq: 1 } },
+        { new: true, upsert: true }
+      );
+      const seq = counter!.seq;
+
       const mongoUpdate = new DocumentUpdateModel({
         _id: update.id,
         documentId: update.documentId,
-
+        seq,
         data: update.data,
         updateType: update.updateType,
         committed: update.committed,
@@ -19,7 +34,7 @@ export class MongoDBStore {
       });
 
       await mongoUpdate.save();
-      return update;
+      return { ...update, seq };
     } catch (error) {
       console.error("Error creating update:", error);
       throw error;
@@ -40,6 +55,7 @@ export class MongoDBStore {
         commitCid: update.commitCid,
         createdAt: update.createdAt,
         sessionDid: update.sessionDid,
+        seq: update.seq,
       };
     } catch (error) {
       console.error("Error getting update:", error);
@@ -87,6 +103,7 @@ export class MongoDBStore {
         commitCid: update.commitCid,
         createdAt: update.createdAt,
         sessionDid: update.sessionDid,
+        seq: update.seq,
       }));
     } catch (error) {
       console.error("Error getting updates by document:", error);
@@ -94,10 +111,10 @@ export class MongoDBStore {
     }
   }
 
-  async markUpdatesAsCommitted(updateIds: string[], commitId: string) {
+  async markUpdatesAsCommitted(updateIds: string[], commitId: string, documentId: string) {
     try {
       await DocumentUpdateModel.updateMany(
-        { _id: { $in: updateIds } },
+        { _id: { $in: updateIds }, documentId },
         {
           committed: true,
           commitCid: commitId,
@@ -107,6 +124,151 @@ export class MongoDBStore {
       console.error("Error marking updates as committed:", error);
       throw error;
     }
+  }
+
+  async createSnapshot(snapshot: DocumentUpdate): Promise<DocumentUpdate> {
+    const counter = await CounterModel.findOneAndUpdate(
+      { _id: snapshot.documentId },
+      { $inc: { seq: 1 } },
+      { new: true, upsert: true }
+    );
+    const seq = counter!.seq;
+
+    const doc = new DocumentUpdateModel({
+      _id: snapshot.id,
+      documentId: snapshot.documentId,
+      seq,
+      data: snapshot.data,
+      updateType: "snapshot",
+      publishedMarker: snapshot.publishedMarker ?? null,
+      floorSeq: snapshot.floorSeq ?? null,
+      committed: false,
+      commitCid: null,
+      createdAt: snapshot.createdAt,
+      sessionDid: snapshot.sessionDid,
+      appType: snapshot.appType,
+    });
+    await doc.save({ w: "majority", j: true });
+
+    // Keep-latest: a superseded snapshot is unconditionally safe to drop.
+    await DocumentUpdateModel.deleteMany({
+      documentId: snapshot.documentId,
+      sessionDid: snapshot.sessionDid,
+      updateType: "snapshot",
+      seq: { $lt: seq },
+    });
+
+    return { ...snapshot, seq, updateType: "snapshot" };
+  }
+
+  async getHydrationRange(
+    documentId: string,
+    sessionDid: string,
+    options: { sinceSeq?: number; maxBytes?: number } = {}
+  ): Promise<{ snapshot: DocumentUpdate | null; updates: DocumentUpdate[]; nextSeq: number | null; hasMore: boolean }> {
+    const maxBytes = options.maxBytes ?? 9 * 1024 * 1024; // headroom under the 10MB socket buffer
+
+    const snapshotDoc: any = await DocumentUpdateModel.findOne({
+      documentId, sessionDid, updateType: "snapshot",
+    }).sort({ seq: -1 }).lean();
+
+    // Cut the tail at the snapshot's authorship FLOOR, not its own seq: the snapshot is
+    // only provably complete up to floorSeq, so seq > floorSeq re-serves any update the
+    // author never applied (persist-before-fanout race) instead of orphaning it below the
+    // snapshot's seq. Legacy floor-less snapshots fall back to seq (pre-fix behavior).
+    const baseSeq = snapshotDoc ? (snapshotDoc.floorSeq ?? snapshotDoc.seq) : 0;
+    const includeSnapshot = !(options.sinceSeq !== undefined && options.sinceSeq >= baseSeq);
+    const fromSeq = includeSnapshot ? baseSeq : options.sinceSeq!;
+
+    const rows: any[] = await DocumentUpdateModel.find({
+      documentId, sessionDid, updateType: { $ne: "snapshot" }, seq: { $gt: fromSeq },
+    }).sort({ seq: 1 }).lean();
+
+    const updates: DocumentUpdate[] = [];
+    let bytes = includeSnapshot && snapshotDoc ? (snapshotDoc.data?.length ?? 0) : 0;
+    let hasMore = false;
+    let nextSeq: number | null = null;
+    for (const r of rows) {
+      bytes += r.data?.length ?? 0;
+      if (updates.length > 0 && bytes > maxBytes) { hasMore = true; nextSeq = updates[updates.length - 1].seq!; break; }
+      updates.push({ id: r._id, documentId: r.documentId, seq: r.seq, data: r.data, updateType: r.updateType, committed: r.committed, commitCid: r.commitCid, createdAt: r.createdAt, sessionDid: r.sessionDid, publishedMarker: r.publishedMarker });
+    }
+
+    const snapshot: DocumentUpdate | null = includeSnapshot && snapshotDoc
+      ? { id: snapshotDoc._id, documentId: snapshotDoc.documentId, seq: snapshotDoc.seq, data: snapshotDoc.data, updateType: "snapshot", committed: false, commitCid: null, createdAt: snapshotDoc.createdAt, sessionDid: snapshotDoc.sessionDid, publishedMarker: snapshotDoc.publishedMarker, floorSeq: snapshotDoc.floorSeq ?? null }
+      : null;
+
+    return { snapshot, updates, nextSeq, hasMore };
+  }
+
+  // Document metadata (pre-publish recovery: owner-authored editLock + title)
+  async upsertDocumentMeta(meta: {
+    documentId: string;
+    sessionDid: string;
+    ownerDid: string | null;
+    ownerIdentityDid: string | null;
+    portalAddress: string | null;
+    editLock: string | null;
+    title: string | null;
+  }): Promise<void> {
+    await DocumentMetaModel.findOneAndUpdate(
+      { _id: meta.documentId },
+      {
+        $set: {
+          sessionDid: meta.sessionDid,
+          ownerDid: meta.ownerDid,
+          ownerIdentityDid: meta.ownerIdentityDid,
+          portalAddress: meta.portalAddress,
+          editLock: meta.editLock,
+          title: meta.title,
+          updatedAt: Date.now(),
+        },
+      },
+      { upsert: true, new: true, writeConcern: { w: "majority", j: true } }
+    );
+  }
+
+  // Discovery: docs bound to the proven owner (identity DID or portal owner DID) — recovery for a wiped device.
+  async listDocumentsForOwner(
+    by: { ownerIdentityDid?: string; ownerDid?: string }
+  ): Promise<Array<{ documentId: string; editLock: string | null; title: string | null }>> {
+    const filter: Record<string, any> = {};
+    if (by.ownerIdentityDid) filter.ownerIdentityDid = by.ownerIdentityDid;
+    else if (by.ownerDid) filter.ownerDid = by.ownerDid;
+    else return [];
+    // Published docs are discovered via the indexer; the collab server only lists
+    // unpublished durable docs (the publish reconciler flips this flag).
+    filter.isPublished = { $ne: true };
+
+    const metas: any[] = await DocumentMetaModel.find(filter).select("editLock title").lean();
+    return metas.map((m) => ({
+      documentId: m._id,
+      editLock: m.editLock ?? null,
+      title: m.title ?? null,
+    }));
+  }
+
+  // Publish-reconciler candidate set: unpublished durable docs that have a portal to
+  // resolve on-chain. Rows without a portalAddress can't be checked, so they are skipped.
+  async listUnpublishedMetaRefs(
+    limit: number
+  ): Promise<Array<{ documentId: string; portalAddress: string }>> {
+    const rows: any[] = await DocumentMetaModel.find({
+      isPublished: { $ne: true },
+      portalAddress: { $ne: null },
+    })
+      .select("portalAddress")
+      .limit(limit)
+      .lean();
+    return rows.map((r) => ({ documentId: r._id, portalAddress: r.portalAddress }));
+  }
+
+  async markDocumentsPublished(documentIds: string[]): Promise<void> {
+    if (documentIds.length === 0) return;
+    await DocumentMetaModel.updateMany(
+      { _id: { $in: documentIds } },
+      { $set: { isPublished: true } }
+    );
   }
 
   // Commit management
@@ -126,7 +288,7 @@ export class MongoDBStore {
       await mongoCommit.save();
 
       // Mark associated updates as committed
-      await this.markUpdatesAsCommitted(commit.updates, commit.cid);
+      await this.markUpdatesAsCommitted(commit.updates, commit.cid, commit.documentId);
 
       return commit;
     } catch (error) {
@@ -239,6 +401,39 @@ export class MongoDBStore {
         commits: 0,
       };
     }
+  }
+
+  // Owner-only permanent delete: wipes every collection scoped to this document.
+  async purgeDocument(documentId: string): Promise<void> {
+    await Promise.all([
+      DocumentUpdateModel.deleteMany({ documentId }),
+      DocumentCommitModel.deleteMany({ documentId }),
+      DocumentMetaModel.deleteOne({ _id: documentId }),
+      SessionModel.deleteMany({ documentId }),
+      CounterModel.deleteOne({ _id: documentId }),
+    ]);
+  }
+
+  // Conservative orphan GC: terminated ddoc streams with no editLock and no snapshot row.
+  // A real draft always has an editLock or a snapshot, so it is never swept.
+  async collectOrphans(graceMs: number): Promise<number> {
+    const cutoff = new Date(Date.now() - graceMs);
+    const terminated: any[] = await SessionModel.find({
+      appType: "ddoc", state: "terminated", createdAt: { $lt: cutoff },
+    }).lean();
+
+    let purged = 0;
+    for (const s of terminated) {
+      const meta: any = await DocumentMetaModel.findById(s.documentId).lean();
+      if (meta?.editLock) continue; // real draft — never sweep
+      const snap: any = await DocumentUpdateModel.findOne({ documentId: s.documentId, updateType: "snapshot" }).sort({ seq: -1 }).lean();
+      if (snap) continue; // has a hydration base — never sweep
+      await DocumentUpdateModel.deleteMany({ documentId: s.documentId });
+      await SessionModel.deleteMany({ documentId: s.documentId });
+      await CounterModel.deleteOne({ _id: s.documentId });
+      purged++;
+    }
+    return purged;
   }
 
   // Clear all data (useful for testing)

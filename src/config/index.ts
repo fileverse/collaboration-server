@@ -33,4 +33,11 @@ export const config: ServerConfig = {
   rpcURL: process.env.RPC_URL || "https://rpc.ankr.com/eth",
   wsURL: process.env.WS_URL || "wss://0.0.0.0:5001",
   nodeEnv: process.env.NODE_ENV || "development",
+  publishReconcile: {
+    interval: process.env.PUBLISH_RECONCILE_INTERVAL || "15 minutes",
+    batchSize: parseInt(process.env.PUBLISH_RECONCILE_BATCH || "500"),
+  },
+  agenda: {
+    concurrency: parseInt(process.env.AGENDA_DEFAULT_CONCURRENCY || "1"),
+  },
 };

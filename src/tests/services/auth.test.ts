@@ -1,0 +1,117 @@
+import { describe, it, expect, vi, beforeEach } from "vitest";
+import * as ucans from "@ucans/ucans";
+import { AuthService } from "../../services/auth";
+import { getIdentitySigningDid, getOwnerDid } from "../../utils/contract";
+
+vi.mock("@ucans/ucans", () => ({ verify: vi.fn() }));
+vi.mock("../../utils/contract", () => ({
+  getIdentitySigningDid: vi.fn(),
+  getOwnerDid: vi.fn(),
+}));
+
+describe("verifyCollaborationToken cache (R4a)", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it("does NOT serve a cache hit across a different (sessionDid, documentId)", async () => {
+    (ucans.verify as any).mockResolvedValue({ ok: true });
+    const auth = new AuthService("did:server");
+
+    await auth.verifyCollaborationToken("tok", "sessionA", "docA");
+    await auth.verifyCollaborationToken("tok", "sessionB", "docB"); // same bearer token, different scope
+
+    expect(ucans.verify).toHaveBeenCalledTimes(2);
+  });
+
+  it("serves a cache hit for the identical (token, sessionDid, documentId)", async () => {
+    (ucans.verify as any).mockResolvedValue({ ok: true });
+    const auth = new AuthService("did:server");
+
+    await auth.verifyCollaborationToken("tok", "sessionA", "docA");
+    await auth.verifyCollaborationToken("tok", "sessionA", "docA");
+
+    expect(ucans.verify).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("verifyIdentityToken", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it("verifies the UCAN with rootIssuer = on-chain signingDid and a ddocId-bound capability", async () => {
+    (getIdentitySigningDid as any).mockResolvedValue("did:key:zOwner");
+    (ucans.verify as any).mockResolvedValue({ ok: true });
+    const auth = new AuthService("did:server");
+
+    const did = await auth.verifyIdentityToken("tok", "0xIdentity" as any, "ddoc-A");
+
+    expect(ucans.verify).toHaveBeenCalledWith("tok", expect.objectContaining({
+      audience: "did:server",
+      requiredCapabilities: [expect.objectContaining({
+        capability: expect.objectContaining({
+          with: { scheme: "storage", hierPart: "ddoc-A" },
+          can: { namespace: "collaboration", segments: ["OWN"] },
+        }),
+        rootIssuer: "did:key:zOwner",
+      })],
+    }));
+    expect(did).toBe("did:key:zOwner");
+  });
+
+  it("returns null when the on-chain DID cannot be resolved", async () => {
+    (getIdentitySigningDid as any).mockResolvedValue(null);
+    const auth = new AuthService("did:server");
+    expect(await auth.verifyIdentityToken("tok", "0xIdentity" as any, "ddoc-A")).toBeNull();
+  });
+});
+
+describe("verifyOwnerOp (OR of two bound proofs)", () => {
+  let auth: AuthService;
+  beforeEach(() => {
+    vi.clearAllMocks();
+    auth = new AuthService("did:server");
+  });
+
+  it("authorizes via the identity path when signingDid == bound ownerIdentityDid", async () => {
+    vi.spyOn(auth, "verifyIdentityToken").mockResolvedValue("did:key:zOwner");
+    const ok = await auth.verifyOwnerOp({
+      ddocId: "ddoc-A", boundOwnerIdentityDid: "did:key:zOwner", boundOwnerDid: "did:portal:owner",
+      identityToken: "it", identityContractAddress: "0xIdentity" as any,
+    });
+    expect(ok).toBe(true);
+  });
+
+  // v1: the portal path is DEFERRED (member-forgeable for teams). A valid portal token alone must NOT authorize.
+  it("does NOT authorize via the portal path in v1 (deferred — collaboratorKeys is member-forgeable)", async () => {
+    vi.spyOn(auth, "verifyIdentityToken").mockResolvedValue(null);
+    const ownerTokenSpy = vi.spyOn(auth, "verifyOwnerToken").mockResolvedValue("did:portal:owner");
+    const ok = await auth.verifyOwnerOp({
+      ddocId: "ddoc-A", boundOwnerIdentityDid: "did:key:zOwner", boundOwnerDid: "did:portal:owner",
+      ownerToken: "ot", ownerAddress: "0xOwner" as any, portalAddress: "0xPortal" as any,
+    });
+    expect(ok).toBe(false);
+    expect(ownerTokenSpy).not.toHaveBeenCalled();
+  });
+
+  // ATTACK 1: a valid identity UCAN from an identity that is NOT the bound owner must be rejected.
+  it("REJECTS a valid identity UCAN whose signingDid != bound ownerIdentityDid (attacker's own contract)", async () => {
+    vi.spyOn(auth, "verifyIdentityToken").mockResolvedValue("did:key:zAttacker"); // validly signed, wrong identity
+    const ok = await auth.verifyOwnerOp({
+      ddocId: "ddoc-A", boundOwnerIdentityDid: "did:key:zOwner", boundOwnerDid: "did:portal:owner",
+      identityToken: "it", identityContractAddress: "0xAttacker" as any,
+    });
+    expect(ok).toBe(false);
+  });
+
+  // ATTACK 2: doc-scoping — verifyIdentityToken is called with THIS ddocId; a token minted for doc B fails.
+  it("passes the caller's ddocId into verifyIdentityToken so a doc-B token can't authorize doc-A", async () => {
+    const spy = vi.spyOn(auth, "verifyIdentityToken").mockResolvedValue(null);
+    await auth.verifyOwnerOp({
+      ddocId: "ddoc-A", boundOwnerIdentityDid: "did:key:zOwner", boundOwnerDid: "did:portal:owner",
+      identityToken: "it", identityContractAddress: "0xIdentity" as any,
+    });
+    expect(spy).toHaveBeenCalledWith("it", "0xIdentity", "ddoc-A");
+  });
+});
