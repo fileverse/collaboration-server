@@ -1,9 +1,6 @@
 import express from "express";
 import mongoose from "mongoose";
 import { Server } from "socket.io";
-import { WebSocketServer } from "ws";
-import { createAdapter } from "@socket.io/redis-adapter";
-import { Redis } from "ioredis";
 import cors from "cors";
 import helmet from "helmet";
 import compression from "compression";
@@ -12,11 +9,17 @@ import { config } from "./config";
 import { authService } from "./services/auth";
 import { registerEventHandlers } from "./services/socket-handlers";
 import { authMiddleware } from "./services/auth-middleware";
-import { LegacyWebSocketHandler } from "./services/legacy-ws-handler";
-import { BroadcastBridge } from "./services/broadcast-bridge";
-import { databaseService } from "./database";
-import { createLightNode } from "@waku/sdk";
 import { sessionManager } from "./services/session-manager";
+import { mongodbStore } from "./services/mongodb-store";
+import { createRedisAdapter } from "./redis";
+import { databaseService } from "./database";
+import {
+  createCollabJoinEnabledHandler,
+  createListMyDocumentsHandler,
+  createDeleteDocumentHandler,
+} from "./services/owner-op-routes";
+import { createFlushHandler } from "./services/flush-route";
+import { createLightNode } from "@waku/sdk";
 import protobuf from "protobufjs";
 import { generateKeyPairFromSeed } from "@libp2p/crypto/keys";
 import crypto from "crypto";
@@ -28,20 +31,19 @@ import {
   AppServer,
 } from "./types/index";
 
+const ORPHAN_GRACE_MS = 7 * 24 * 60 * 60 * 1000; // 7 days
+const ORPHAN_GC_INTERVAL_MS = 6 * 60 * 60 * 1000; // every 6h
+
 class CollaborationServer {
   private app: express.Application;
   private server: any;
   private io: AppServer | null = null;
-  private wss: WebSocketServer | null = null;
-  private legacyHandler: LegacyWebSocketHandler;
-  private bridge: BroadcastBridge | null = null;
   private waku: any;
+  private orphanGcInterval: ReturnType<typeof setInterval> | null = null;
 
   constructor() {
     this.app = express();
-    this.legacyHandler = new LegacyWebSocketHandler();
     this.setupMiddleware();
-    this.setupRoutes();
   }
 
   private setupMiddleware() {
@@ -75,6 +77,8 @@ class CollaborationServer {
   }
 
   private setupRoutes() {
+    if (!this.io) throw new Error("io must be created before routes are mounted");
+
     // Health check with MongoDB connectivity
     this.app.get("/health", async (req, res) => {
       const mongoOk = mongoose.connection.readyState === 1;
@@ -86,6 +90,17 @@ class CollaborationServer {
         mongo: mongoOk ? "connected" : "disconnected",
       });
     });
+
+    this.app.post(
+      "/documents/:documentId/collab-join-enabled",
+      createCollabJoinEnabledHandler({ authService, sessionManager }, this.io)
+    );
+    this.app.post("/flush", createFlushHandler({ authService, mongodbStore }));
+    this.app.post("/list-my-documents", createListMyDocumentsHandler({ authService, mongodbStore }));
+    this.app.delete(
+      "/documents/:documentId",
+      createDeleteDocumentHandler({ authService, sessionManager, mongodbStore })
+    );
 
     // 404 handler
     this.app.use("*", (req, res) => {
@@ -132,48 +147,28 @@ class CollaborationServer {
         SocketData
       >(this.server, socketIOOptions);
 
-      // Redis adapter (prepared but disabled by default)
+      // Redis adapter is only needed to scale beyond a single instance.
       if (config.redis.enabled) {
-        const pubClient = new Redis(config.redis.url);
-        const subClient = pubClient.duplicate();
-        this.io.adapter(createAdapter(pubClient, subClient));
-        console.log("Redis adapter enabled for cross-instance communication");
+        this.io.adapter(createRedisAdapter());
       }
 
       // Socket.IO middlewares gets executed for every incoming connection.
       this.io.use(authMiddleware);
 
-      // Legacy WebSocket server (noServer mode — manual upgrade routing)
-      this.wss = new WebSocketServer({ noServer: true });
+      registerEventHandlers(this.io);
 
-      // Cross-protocol bridge
-      this.bridge = new BroadcastBridge(this.io, this.legacyHandler);
-      this.legacyHandler.setBridge(this.bridge);
+      this.setupRoutes();
 
-      // Wire up legacy connections
-      this.wss.on("connection", (ws) => this.legacyHandler.handleConnection(ws));
-
-      // Pass bridge to Socket.IO handlers
-      registerEventHandlers(this.io, this.bridge);
-
-      // Route HTTP upgrade events by path:
-      // Socket.IO (via Engine.IO) has its own upgrade listener for /socket.io/ paths.
-      // We handle all other paths (root /) for legacy raw WebSocket clients.
-      this.server.on("upgrade", (request: any, socket: any, head: any) => {
-        const pathname = new URL(request.url || "", `http://${request.headers.host}`).pathname;
-
-        if (!pathname.startsWith("/socket.io")) {
-          this.wss!.handleUpgrade(request, socket, head, (ws) => {
-            this.wss!.emit("connection", ws, request);
-          });
-        }
-      });
+      // Orphan GC sweep
+      this.orphanGcInterval = setInterval(
+        () => mongodbStore.collectOrphans(ORPHAN_GRACE_MS).catch((e) => console.error("orphan-GC error:", e)),
+        ORPHAN_GC_INTERVAL_MS
+      );
 
       // Start the server
       this.server.listen(config.port, config.host, () => {
         console.log(`Collaboration server running on ${config.host}:${config.port}`);
         console.log(`Socket.IO endpoint: http://${config.host}:${config.port}/socket.io/`);
-        console.log(`Legacy WS endpoint: ws://${config.host}:${config.port}/`);
         console.log(`Server DID: ${authService.getServerDid()}`);
         console.log(`CORS origins: ${config.corsOrigins.join(", ")}`);
       });
@@ -190,12 +185,8 @@ class CollaborationServer {
   private shutdown(signal: string) {
     console.log(`\n Received ${signal}. Shutting down gracefully...`);
 
-    // Close legacy WebSocket connections
-    this.legacyHandler.closeAll();
-    if (this.wss) {
-      this.wss.close(() => {
-        console.log("Legacy WebSocket server closed");
-      });
+    if (this.orphanGcInterval) {
+      clearInterval(this.orphanGcInterval);
     }
 
     if (this.io) {
@@ -305,7 +296,7 @@ class CollaborationServer {
   }
 }
 
-// Start the server
+// Start the collaboration server
 const server = new CollaborationServer();
 server
   .start()

@@ -148,7 +148,7 @@ describe("SessionManager", () => {
   // terminateSession
 
   it("removes the session from memory and cleans up all related data in the database", async () => {
-    await sessionManager.terminateSession("doc-1", "session-1");
+    await sessionManager.terminateSession("doc-1", "session-1", "dsheet");
 
     expect(sessionManager.getLocalClients("doc-1", "session-1")).toBeUndefined();
     expect(SessionModel.findOneAndUpdate).toHaveBeenCalledWith(
@@ -165,12 +165,36 @@ describe("SessionManager", () => {
     });
   });
 
+  it("ddoc terminate marks the session terminated but keeps updates + commits", async () => {
+    await sessionManager.terminateSession("doc-1", "session-1", "ddoc");
+
+    expect(SessionModel.findOneAndUpdate).toHaveBeenCalledWith(
+      { documentId: "doc-1", sessionDid: "session-1" },
+      { state: "terminated", roomInfo: null }
+    );
+    expect(DocumentUpdateModel.deleteMany).not.toHaveBeenCalled();
+    expect(DocumentCommitModel.deleteMany).not.toHaveBeenCalled();
+  });
+
+  it("dsheet terminate keeps the cascade delete", async () => {
+    await sessionManager.terminateSession("doc-1", "session-1", "dsheet");
+
+    expect(DocumentUpdateModel.deleteMany).toHaveBeenCalledWith({
+      documentId: "doc-1",
+      sessionDid: "session-1",
+    });
+    expect(DocumentCommitModel.deleteMany).toHaveBeenCalledWith({
+      documentId: "doc-1",
+      sessionDid: "session-1",
+    });
+  });
+
   // getOtherActiveSessions
 
   it("returns other active sessions from the database excluding the given sessionDid", async () => {
     vi.mocked(SessionModel.find).mockResolvedValue([
-      { documentId: "doc-1", sessionDid: "other-session-1" },
-      { documentId: "doc-1", sessionDid: "other-session-2" },
+      { documentId: "doc-1", sessionDid: "other-session-1", appType: "ddoc" },
+      { documentId: "doc-1", sessionDid: "other-session-2", appType: "dsheet" },
     ] as any);
 
     const sessions = await sessionManager.getOtherActiveSessions("doc-1", "owner-did", "session-1");
@@ -182,8 +206,8 @@ describe("SessionManager", () => {
       sessionDid: { $ne: "session-1" },
     });
     expect(sessions).toEqual([
-      { documentId: "doc-1", sessionDid: "other-session-1" },
-      { documentId: "doc-1", sessionDid: "other-session-2" },
+      { documentId: "doc-1", sessionDid: "other-session-1", appType: "ddoc" },
+      { documentId: "doc-1", sessionDid: "other-session-2", appType: "dsheet" },
     ]);
   });
 
@@ -252,8 +276,8 @@ describe("SessionManager", () => {
     });
 
     expect(SessionModel.findOneAndUpdate).toHaveBeenCalledWith(
-      { documentId: "doc-2", sessionDid: "session-2", ownerDid: "owner-did" },
-      expect.objectContaining({ appType: "dsheet" }),
+      { documentId: "doc-2", sessionDid: "session-2" },
+      expect.objectContaining({ $set: expect.objectContaining({ appType: "dsheet" }) }),
       { upsert: true, new: true }
     );
     const session = await freshManager.getSession("doc-2", "session-2");
@@ -272,12 +296,53 @@ describe("SessionManager", () => {
     });
 
     expect(SessionModel.findOneAndUpdate).toHaveBeenCalledWith(
-      { documentId: "doc-3", sessionDid: "session-3", ownerDid: "owner-did" },
-      expect.objectContaining({ appType: "ddoc" }),
+      { documentId: "doc-3", sessionDid: "session-3" },
+      expect.objectContaining({ $set: expect.objectContaining({ appType: "ddoc" }) }),
       { upsert: true, new: true }
     );
 
     await freshManager.destroy();
+  });
+
+  // R3 owner-identity binding
+
+  it("binds ownerIdentityDid + portalAddress via $setOnInsert (immutable) and mutable fields via $set", async () => {
+    const freshManager = new SessionManager();
+
+    await freshManager.createSession({
+      documentId: "doc-bind", sessionDid: "sess-bind", ownerDid: "owner-did",
+      ownerIdentityDid: "did:identity:owner", portalAddress: "0xPortal",
+      roomInfo: "room", appType: "ddoc", collabJoinEnabled: false,
+    });
+
+    // Asserts the correct PRIMITIVE ($setOnInsert). First-writer-immutability itself is DB-provided.
+    expect(SessionModel.findOneAndUpdate).toHaveBeenCalledWith(
+      { documentId: "doc-bind", sessionDid: "sess-bind" },
+      {
+        $setOnInsert: {
+          ownerDid: "owner-did",
+          ownerIdentityDid: "did:identity:owner",
+          portalAddress: "0xPortal",
+          collabJoinEnabled: false,
+        },
+        $set: { state: "active", roomInfo: "room", appType: "ddoc" },
+      },
+      { upsert: true, new: true }
+    );
+
+    await freshManager.destroy();
+  });
+
+  // setCollabJoinEnabled
+
+  it("setCollabJoinEnabled updates the DB and the in-memory session", async () => {
+    await sessionManager.setCollabJoinEnabled("doc-1", "session-1", true);
+    expect(SessionModel.findOneAndUpdate).toHaveBeenCalledWith(
+      { documentId: "doc-1", sessionDid: "session-1" },
+      { collabJoinEnabled: true }
+    );
+    const session = await sessionManager.getSession("doc-1", "session-1");
+    expect(session?.collabJoinEnabled).toBe(true);
   });
 
   it("hydrates appType from the database on fallback", async () => {

@@ -1,44 +1,4 @@
 import { Server, Socket } from "socket.io";
-import { WebSocket } from "ws";
-
-// ***************************************
-// Legacy WebSocket Types (backward compat)
-// ***************************************
-
-export interface WebSocketMessage {
-  cmd?: string;
-  event?: string;
-  args: Record<string, any>;
-  seqId: string;
-}
-
-export interface WebSocketResponse {
-  status: boolean;
-  statusCode: number;
-  seqId: string | null;
-  is_handshake_response: boolean;
-  data?: Record<string, any>;
-  error?: string;
-  err?: string;
-  err_detail?: Record<string, any> | null;
-}
-
-export interface WebSocketEvent {
-  type: string;
-  event_type: string;
-  event: {
-    data: any;
-    roomId: string;
-  };
-}
-
-export interface AuthenticatedWebSocket extends WebSocket {
-  documentId?: string;
-  sessionDid?: string;
-  role?: "owner" | "editor";
-  authenticated?: boolean;
-  clientId?: string;
-}
 
 // ***************************************
 // Domain Models (unchanged)
@@ -61,6 +21,12 @@ export interface DocumentUpdate {
   createdAt: number;
   sessionDid: string;
   appType?: AppType;
+  seq?: number;
+  publishedMarker?: string | null;
+  // Snapshot rows only: the author's contiguous range-read floor. Hydration serves
+  // seq > floorSeq (NOT > the snapshot's own seq) so a concurrent writer's update that
+  // the snapshot author never applied is still re-served instead of orphaned.
+  floorSeq?: number | null;
 }
 
 export interface DocumentCommit {
@@ -114,6 +80,7 @@ export enum ErrorCode {
   INVALID_ADDRESS = "INVALID_ADDRESS",
   NOT_AUTHENTICATED = "NOT_AUTHENTICATED",
   APP_MISMATCH = "APP_MISMATCH",
+  JOIN_DISABLED = "JOIN_DISABLED",
   DB_ERROR = "DB_ERROR",
   INTERNAL_ERROR = "INTERNAL_ERROR",
 }
@@ -143,6 +110,7 @@ export interface AuthArgs {
   contractAddress?: string;
   roomInfo?: string;
   appType?: AppType;
+  ownerIdentityDid?: string;
 }
 
 export interface AuthResponseData {
@@ -165,6 +133,22 @@ export interface DocumentUpdateResponseData {
   updateType: string;
   commitCid: string | null;
   createdAt: number;
+}
+
+export interface SnapshotArgs {
+  documentId?: string;
+  data: string;
+  collaborationToken: string;
+  publishedMarker?: string | null;
+  // The author's contiguous range-read floor at authorship time — the seq up to which
+  // this full-state snapshot is provably complete. Hydration cuts the tail here.
+  floorSeq: number;
+}
+
+export interface DocumentMetaArgs {
+  documentId?: string;
+  editLock: string | null;
+  title: string | null;
 }
 
 export interface DocumentCommitArgs {
@@ -196,6 +180,7 @@ export interface UpdateHistoryArgs {
   limit?: number;
   sort?: "asc" | "desc";
   filters?: { committed?: boolean };
+  sinceSeq?: number;
 }
 
 export interface PeersListArgs {
@@ -224,6 +209,9 @@ export interface CommitHistoryResponseData {
 export interface UpdateHistoryResponseData {
   history: DocumentUpdate[];
   total: number;
+  snapshot: DocumentUpdate | null;
+  nextSeq: number | null;
+  hasMore: boolean;
 }
 
 export interface PeersListResponseData {
@@ -286,6 +274,8 @@ export interface ClientToServerEvents {
   "/documents/commit": ClientEventHandler<DocumentCommitArgs, DocumentCommitResponseData>;
   "/documents/commit/history": ClientEventHandler<CommitHistoryArgs, CommitHistoryResponseData>;
   "/documents/update/history": ClientEventHandler<UpdateHistoryArgs, UpdateHistoryResponseData>;
+  "/documents/snapshot": ClientEventHandler<SnapshotArgs, { id: string; seq: number }>;
+  "/documents/meta": ClientEventHandler<DocumentMetaArgs, { ok: true }>;
   "/documents/peers/list": ClientEventHandler<PeersListArgs, PeersListResponseData>;
   "/documents/awareness": ClientEventHandler<AwarenessArgs, MessageResponseData>;
   "/documents/terminate": ClientEventHandler<TerminateSessionArgs, MessageResponseData>;
@@ -367,4 +357,11 @@ export interface ServerConfig {
   rpcURL: string;
   wsURL: string;
   nodeEnv: string;
+  publishReconcile: {
+    interval: string;
+    batchSize: number;
+  };
+  agenda: {
+    concurrency: number;
+  };
 }

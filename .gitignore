@@ -57,3 +57,13 @@ CLAUDE.md
 
 # docs
 docs/
+
+# graphify knowledge-graph build output (regenerable; rebuilt by the post-commit hook)
+graphify-out/
+
+# SDD progress ledger (scratch)
+.superpowers/
+
+
+# Claude
+.claude/

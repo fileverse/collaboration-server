@@ -7,6 +7,9 @@ interface RuntimeSession {
   clients: Set<string>;
   roomInfo?: string;
   appType?: "ddoc" | "dsheet";
+  ownerIdentityDid?: string;
+  portalAddress?: string;
+  collabJoinEnabled?: boolean;
 }
 
 export class SessionManager {
@@ -31,7 +34,6 @@ export class SessionManager {
 
   /**
    * Returns the local client set for a session, or undefined if not in memory.
-   * Used by LegacyWebSocketHandler to iterate clients without accessing private internals.
    */
   getLocalClients(documentId: string, sessionDid: string): Set<string> | undefined {
     const key = this.getSessionKey(documentId, sessionDid);
@@ -48,18 +50,23 @@ export class SessionManager {
     const sessionKey = this.getSessionKey(sessionData.documentId, sessionData.sessionDid);
     this.inMemorySessions.set(sessionKey, runtimeSession);
 
-    // Persist in MongoDB for durability
+    // Persist in MongoDB for durability. Identity binding is first-writer-immutable:
+    // written once via $setOnInsert and never overwritten by later calls.
     try {
       await SessionModel.findOneAndUpdate(
+        { documentId: sessionData.documentId, sessionDid: sessionData.sessionDid },
         {
-          documentId: sessionData.documentId,
-          sessionDid: sessionData.sessionDid,
-          ownerDid: sessionData.ownerDid,
-        },
-        {
-          state: "active",
-          roomInfo: sessionData.roomInfo,
-          appType: sessionData.appType ?? "ddoc",
+          $setOnInsert: {
+            ownerDid: sessionData.ownerDid,
+            ownerIdentityDid: sessionData.ownerIdentityDid ?? null,
+            portalAddress: sessionData.portalAddress ?? null,
+            collabJoinEnabled: sessionData.collabJoinEnabled ?? false,
+          },
+          $set: {
+            state: "active",
+            roomInfo: sessionData.roomInfo,
+            appType: sessionData.appType ?? "ddoc",
+          },
         },
         { upsert: true, new: true }
       );
@@ -93,12 +100,31 @@ export class SessionManager {
       clients: new Set<string>(),
       roomInfo: dbSession.roomInfo,
       appType: dbSession.appType,
+      ownerIdentityDid: dbSession.ownerIdentityDid ?? undefined,
+      portalAddress: dbSession.portalAddress ?? undefined,
+      collabJoinEnabled: dbSession.collabJoinEnabled,
     };
 
     // Store in memory
     this.inMemorySessions.set(sessionKey, runtimeSession);
 
     return runtimeSession;
+  }
+
+  async getCollabJoinEnabled(documentId: string, sessionDid: string): Promise<boolean | undefined> {
+    const doc = await SessionModel.findOne({ documentId, sessionDid }, { collabJoinEnabled: 1 }).lean();
+    return (doc as any)?.collabJoinEnabled;
+  }
+
+  async setCollabJoinEnabled(documentId: string, sessionDid: string, enabled: boolean): Promise<void> {
+    const sessionKey = this.getSessionKey(documentId, sessionDid);
+    const session = this.inMemorySessions.get(sessionKey);
+    if (session) session.collabJoinEnabled = enabled;
+    try {
+      await SessionModel.findOneAndUpdate({ documentId, sessionDid }, { collabJoinEnabled: enabled });
+    } catch (error) {
+      console.error("Error setting collabJoinEnabled:", error);
+    }
   }
 
   async getRuntimeSession(
@@ -162,7 +188,11 @@ export class SessionManager {
     }
   }
 
-  async terminateSession(documentId: string, sessionDid: string): Promise<void> {
+  async terminateSession(
+    documentId: string,
+    sessionDid: string,
+    appType: "ddoc" | "dsheet" = "ddoc"
+  ): Promise<void> {
     const sessionKey = this.getSessionKey(documentId, sessionDid);
     this.inMemorySessions.delete(sessionKey);
 
@@ -172,8 +202,10 @@ export class SessionManager {
         { state: "terminated", roomInfo: null }
       );
 
-      await DocumentUpdateModel.deleteMany({ documentId, sessionDid });
-      await DocumentCommitModel.deleteMany({ documentId, sessionDid });
+      if (appType === "dsheet") {
+        await DocumentUpdateModel.deleteMany({ documentId, sessionDid });
+        await DocumentCommitModel.deleteMany({ documentId, sessionDid });
+      }
     } catch (error) {
       console.error("Error terminating session in database:", error);
     }
@@ -183,14 +215,18 @@ export class SessionManager {
     documentId: string,
     ownerDid: string,
     excludeSessionDid?: string
-  ): Promise<Array<{ documentId: string; sessionDid: string }>> {
+  ): Promise<Array<{ documentId: string; sessionDid: string; appType?: "ddoc" | "dsheet" }>> {
     try {
       const query: Record<string, any> = { documentId, ownerDid, state: "active" };
       if (excludeSessionDid) {
         query.sessionDid = { $ne: excludeSessionDid };
       }
       const sessions = await SessionModel.find(query);
-      return sessions.map((s) => ({ documentId: s.documentId, sessionDid: s.sessionDid }));
+      return sessions.map((s) => ({
+        documentId: s.documentId,
+        sessionDid: s.sessionDid,
+        appType: s.appType,
+      }));
     } catch (error) {
       console.error("Error getting other active sessions:", error);
       return [];

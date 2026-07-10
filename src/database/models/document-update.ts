@@ -10,6 +10,9 @@ interface IDocumentUpdate extends MongooseDocument {
   createdAt: number;
   sessionDid: string;
   appType: "ddoc" | "dsheet";
+  seq: number;
+  publishedMarker: string | null;
+  floorSeq: number | null;
 }
 
 const DocumentUpdateSchema = new Schema<IDocumentUpdate>({
@@ -23,7 +26,18 @@ const DocumentUpdateSchema = new Schema<IDocumentUpdate>({
   sessionDid: { type: String, required: true },
   // Which Fileverse app produced this update. Absent ⇒ "ddoc" (legacy).
   appType: { type: String, enum: ["ddoc", "dsheet"], default: "ddoc" },
+  seq: { type: Number, required: true },
+  publishedMarker: { type: String, default: null },
+  // Snapshot rows only: the author's contiguous floor this snapshot is complete up to.
+  floorSeq: { type: Number, default: null },
 });
+
+// Unique only on seq-bearing rows: legacy rows predate seq, so excluding them lets
+// this index build on a populated collection instead of colliding on (documentId, null).
+DocumentUpdateSchema.index(
+  { documentId: 1, seq: 1 },
+  { unique: true, background: true, partialFilterExpression: { seq: { $exists: true } } }
+);
 
 DocumentUpdateSchema.index({ documentId: 1, committed: 1, createdAt: 1 }, { background: true });
 
