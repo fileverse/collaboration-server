@@ -47,6 +47,7 @@ describe("handleAuth", () => {
     verifyOwnerToken: vi.fn(),
     verifyCollaborationToken: vi.fn(),
     verifyIdentityToken: vi.fn(),
+    verifyEditUcan: vi.fn(),
     getServerDid: vi.fn(),
   };
   const fakeSessionManager = {
@@ -57,14 +58,20 @@ describe("handleAuth", () => {
     updateRoomInfo: vi.fn(),
     addClientToSession: vi.fn(),
     getCollabJoinEnabled: vi.fn(),
+    getWorkspaceEditEnabled: vi.fn(),
     fillOwnerIdentityDidIfAbsent: vi.fn(),
   };
   const fakeMongoDBStore = {} as any;
+  const fakeGateEpochCache = {
+    getEditGrantEpoch: vi.fn(),
+    refreshEditGrantEpoch: vi.fn(),
+  };
 
   const deps: SocketHandlerDeps = {
     authService: fakeAuthService as any,
     sessionManager: fakeSessionManager as any,
     mongodbStore: fakeMongoDBStore,
+    gateEpochCache: fakeGateEpochCache as any,
   };
 
   beforeEach(() => {
@@ -419,6 +426,7 @@ describe("handleAuth", () => {
     fakeSessionManager.getSession.mockResolvedValue(existingSession);
     fakeAuthService.verifyCollaborationToken.mockResolvedValue("user-did");
     fakeSessionManager.addClientToSession.mockResolvedValue(undefined);
+    fakeSessionManager.getCollabJoinEnabled.mockResolvedValue(true);
 
     await handleAuth(deps, fakeIO, fakeSocket, fakeArgs, callback);
 
@@ -876,6 +884,7 @@ describe("handleAuth", () => {
     fakeSessionManager.getSession.mockResolvedValue(existingSession);
     fakeAuthService.verifyCollaborationToken.mockResolvedValue("user-did");
     fakeSessionManager.addClientToSession.mockResolvedValue(undefined);
+    fakeSessionManager.getCollabJoinEnabled.mockResolvedValue(true);
 
     await handleAuth(deps, fakeIO, fakeSocket, fakeArgs, callback);
 
@@ -1045,6 +1054,150 @@ describe("handleAuth", () => {
       "proven-identity-did"
     );
     expect(fakeSocket.data.role).toBe("owner");
+  });
+});
+
+describe("handleAuth — edit-claim admission (existing session, non-owner)", () => {
+  const fakeAuthService = {
+    verifyOwnerToken: vi.fn(),
+    verifyCollaborationToken: vi.fn(),
+    verifyIdentityToken: vi.fn(),
+    verifyEditUcan: vi.fn(),
+    getServerDid: vi.fn(),
+  };
+  const fakeSessionManager = {
+    getSession: vi.fn(),
+    getOtherNonTerminatedSessions: vi.fn(),
+    terminateSession: vi.fn(),
+    createSession: vi.fn(),
+    updateRoomInfo: vi.fn(),
+    addClientToSession: vi.fn(),
+    getCollabJoinEnabled: vi.fn(),
+    getWorkspaceEditEnabled: vi.fn(),
+    fillOwnerIdentityDidIfAbsent: vi.fn(),
+  };
+  const fakeMongoDBStore = {} as any;
+  const fakeGateEpochCache = {
+    getEditGrantEpoch: vi.fn(),
+    refreshEditGrantEpoch: vi.fn(),
+  };
+
+  const deps: SocketHandlerDeps = {
+    authService: fakeAuthService as any,
+    sessionManager: fakeSessionManager as any,
+    mongodbStore: fakeMongoDBStore,
+    gateEpochCache: fakeGateEpochCache as any,
+  };
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  const baseArgs = (over: Partial<AuthArgs> = {}): AuthArgs => ({
+    documentId: "doc-1",
+    sessionDid: "sess-1",
+    collaborationToken: "ct",
+    appType: "ddoc",
+    ...over,
+  });
+
+  function existingSessionSetup() {
+    fakeSessionManager.getSession.mockResolvedValue({
+      sessionDid: "sess-1",
+      ownerDid: "owner-did",
+      appType: "ddoc",
+    });
+    fakeAuthService.verifyCollaborationToken.mockResolvedValue("user-did");
+    fakeSessionManager.addClientToSession.mockResolvedValue(true);
+  }
+
+  it("admits a GP editor with a valid, fresh editUcan and records rail+epoch+actor", async () => {
+    existingSessionSetup();
+    fakeAuthService.verifyEditUcan.mockResolvedValue({ editGrantEpoch: 5, nullifier: "null-1" });
+    (deps as any).gateEpochCache.getEditGrantEpoch.mockResolvedValue(5);
+    const socket = createFakeSocket();
+    const cb = vi.fn();
+    await handleAuth(deps, createFakeIO(), socket, baseArgs({ editUcan: "gate-ucan" }), cb);
+    expect(cb).toHaveBeenCalledWith(expect.objectContaining({ status: true, statusCode: 200 }));
+    expect(socket.data.rail).toBe("gp");
+    expect(socket.data.admittedEditGrantEpoch).toBe(5);
+    expect(socket.data.actorHandle).toBe("null-1");
+  });
+
+  it("REJECTS a stale-epoch GP editUcan — no fall-through to public even when join is enabled", async () => {
+    existingSessionSetup();
+    fakeAuthService.verifyEditUcan.mockResolvedValue({ editGrantEpoch: 2, nullifier: "null-1" });
+    (deps as any).gateEpochCache.getEditGrantEpoch.mockResolvedValue(5); // advanced past 2
+    fakeSessionManager.getCollabJoinEnabled.mockResolvedValue(true); // public IS on — must NOT rescue a stale GP grant
+    const socket = createFakeSocket();
+    const cb = vi.fn();
+    await handleAuth(deps, createFakeIO(), socket, baseArgs({ editUcan: "stale" }), cb);
+    expect(cb).toHaveBeenCalledWith(expect.objectContaining({ status: false, errorCode: ErrorCode.JOIN_DISABLED }));
+    expect(socket.data.rail).toBeUndefined(); // did not fall through to rail=public
+  });
+
+  it("admits a valid GP editUcan when the gate epoch is unreachable (getEditGrantEpoch → null) — transient fail-open", async () => {
+    existingSessionSetup();
+    fakeAuthService.verifyEditUcan.mockResolvedValue({ editGrantEpoch: 3, nullifier: "null-1" });
+    (deps as any).gateEpochCache.getEditGrantEpoch.mockResolvedValue(null); // gate transiently down
+    const socket = createFakeSocket();
+    const cb = vi.fn();
+    await handleAuth(deps, createFakeIO(), socket, baseArgs({ editUcan: "gate-ucan" }), cb);
+    expect(cb).toHaveBeenCalledWith(expect.objectContaining({ status: true, statusCode: 200 }));
+    expect(socket.data.rail).toBe("gp");
+    expect(socket.data.admittedEditGrantEpoch).toBe(3);
+  });
+
+  it("REJECTS an invalid editUcan (verifyEditUcan → null) without falling through", async () => {
+    existingSessionSetup();
+    fakeAuthService.verifyEditUcan.mockResolvedValue(null);
+    fakeSessionManager.getCollabJoinEnabled.mockResolvedValue(true);
+    const socket = createFakeSocket();
+    const cb = vi.fn();
+    await handleAuth(deps, createFakeIO(), socket, baseArgs({ editUcan: "forged" }), cb);
+    expect(cb).toHaveBeenCalledWith(expect.objectContaining({ status: false, errorCode: ErrorCode.JOIN_DISABLED }));
+    expect(socket.data.rail).toBeUndefined();
+  });
+
+  it("admits a workspace editor (member proof + tier enabled) with rail=workspace", async () => {
+    existingSessionSetup();
+    fakeAuthService.verifyOwnerToken.mockResolvedValue("member-did"); // != session ownerDid ⇒ editor
+    fakeSessionManager.getWorkspaceEditEnabled.mockResolvedValue(true);
+    const socket = createFakeSocket();
+    const cb = vi.fn();
+    await handleAuth(
+      deps,
+      createFakeIO(),
+      socket,
+      baseArgs({
+        ownerToken: "ot",
+        ownerAddress: "0x1111111111111111111111111111111111111111",
+        contractAddress: "0x2222222222222222222222222222222222222222",
+      }),
+      cb
+    );
+    expect(cb).toHaveBeenCalledWith(expect.objectContaining({ status: true }));
+    expect(socket.data.rail).toBe("workspace");
+  });
+
+  it("public bearer is admitted as rail=public ONLY on collabJoinEnabled === true", async () => {
+    existingSessionSetup();
+    fakeSessionManager.getCollabJoinEnabled.mockResolvedValue(true);
+    const socket = createFakeSocket();
+    const cb = vi.fn();
+    await handleAuth(deps, createFakeIO(), socket, baseArgs(), cb);
+    expect(cb).toHaveBeenCalledWith(expect.objectContaining({ status: true }));
+    expect(socket.data.rail).toBe("public");
+  });
+
+  it("REJECTS a public bearer when collabJoinEnabled === undefined (legacy hardening — was open)", async () => {
+    existingSessionSetup();
+    fakeSessionManager.getCollabJoinEnabled.mockResolvedValue(undefined);
+    const socket = createFakeSocket();
+    const cb = vi.fn();
+    await handleAuth(deps, createFakeIO(), socket, baseArgs(), cb);
+    expect(cb).toHaveBeenCalledWith(expect.objectContaining({ status: false, errorCode: ErrorCode.JOIN_DISABLED }));
+    expect(socket.data.rail).toBeUndefined();
   });
 });
 

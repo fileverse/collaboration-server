@@ -10,6 +10,7 @@ interface RuntimeSession {
   ownerIdentityDid?: string;
   portalAddress?: string;
   collabJoinEnabled?: boolean;
+  workspaceEditEnabled?: boolean;
 }
 
 export class SessionManager {
@@ -132,6 +133,7 @@ export class SessionManager {
       ownerIdentityDid: dbSession.ownerIdentityDid ?? undefined,
       portalAddress: dbSession.portalAddress ?? undefined,
       collabJoinEnabled: dbSession.collabJoinEnabled,
+      workspaceEditEnabled: dbSession.workspaceEditEnabled,
     };
 
     // Store in memory
@@ -145,14 +147,32 @@ export class SessionManager {
     return (doc as any)?.collabJoinEnabled;
   }
 
-  async setCollabJoinEnabled(documentId: string, sessionDid: string, enabled: boolean): Promise<void> {
+  async setCollabJoinEnabled(documentId: string, sessionDid: string, enabled: boolean): Promise<boolean> {
     const sessionKey = this.getSessionKey(documentId, sessionDid);
     const session = this.inMemorySessions.get(sessionKey);
     if (session) session.collabJoinEnabled = enabled;
     try {
-      await SessionModel.findOneAndUpdate({ documentId, sessionDid }, { collabJoinEnabled: enabled });
+      const res = await SessionModel.findOneAndUpdate({ documentId, sessionDid }, { collabJoinEnabled: enabled });
+      return res !== null || session !== undefined;
     } catch (error) {
       console.error("Error setting collabJoinEnabled:", error);
+      return false;
+    }
+  }
+
+  async getWorkspaceEditEnabled(documentId: string, sessionDid: string): Promise<boolean | undefined> {
+    const doc = await SessionModel.findOne({ documentId, sessionDid }, { workspaceEditEnabled: 1 }).lean();
+    return (doc as any)?.workspaceEditEnabled;
+  }
+
+  async setWorkspaceEditEnabled(documentId: string, sessionDid: string, enabled: boolean): Promise<void> {
+    const sessionKey = this.getSessionKey(documentId, sessionDid);
+    const session = this.inMemorySessions.get(sessionKey);
+    if (session) session.workspaceEditEnabled = enabled;
+    try {
+      await SessionModel.findOneAndUpdate({ documentId, sessionDid }, { workspaceEditEnabled: enabled });
+    } catch (error) {
+      console.error("Error setting workspaceEditEnabled:", error);
     }
   }
 

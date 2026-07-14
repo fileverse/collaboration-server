@@ -39,6 +39,8 @@ describe("handleDocumentUpdate", () => {
   };
   const fakeSessionManager = {
     getRuntimeSession: vi.fn(),
+    getWorkspaceEditEnabled: vi.fn(),
+    getCollabJoinEnabled: vi.fn(),
   };
   const fakeMongoDBStore = {
     createUpdate: vi.fn(),
@@ -48,6 +50,7 @@ describe("handleDocumentUpdate", () => {
     authService: fakeAuthService as any,
     sessionManager: fakeSessionManager as any,
     mongodbStore: fakeMongoDBStore as any,
+    gateEpochCache: { getEditGrantEpoch: vi.fn() } as any,
   };
 
   beforeEach(() => {
@@ -304,6 +307,87 @@ describe("handleDocumentUpdate", () => {
       statusCode: 500,
       error: "Internal server error",
       errorCode: ErrorCode.INTERNAL_ERROR,
+    });
+  });
+
+  describe("handleDocumentUpdate — rail write-guard", () => {
+    function makeEditor(
+      railData: { rail: "gp" | "workspace" | "public"; admittedEditGrantEpoch?: number },
+      broadcast?: { emit: ReturnType<typeof vi.fn> }
+    ) {
+      const socket = createFakeSocket(broadcast ?? { emit: vi.fn() }, { role: "editor" });
+      socket.data.rail = railData.rail;
+      if (railData.admittedEditGrantEpoch !== undefined) {
+        socket.data.admittedEditGrantEpoch = railData.admittedEditGrantEpoch;
+      }
+      fakeSessionManager.getRuntimeSession.mockResolvedValue({ sessionDid: socket.data.sessionDid });
+      fakeAuthService.verifyCollaborationToken.mockResolvedValue(true);
+      return socket;
+    }
+    const args = { documentId: "doc-1", data: "d", collaborationToken: "ct" } as DocumentUpdateArgs;
+
+    it("403 EDIT_REVOKED when a GP editor's admitted epoch is now stale — no persist, no broadcast", async () => {
+      const bcast = { emit: vi.fn() };
+      const socket = makeEditor({ rail: "gp", admittedEditGrantEpoch: 2 }, bcast);
+      (deps.gateEpochCache as any).getEditGrantEpoch.mockResolvedValue(5);
+      const cb = vi.fn();
+      await handleDocumentUpdate(deps, createFakeIO(), socket, args, cb);
+      expect(cb).toHaveBeenCalledWith(expect.objectContaining({ statusCode: 403, errorCode: ErrorCode.EDIT_REVOKED }));
+      expect(fakeMongoDBStore.createUpdate).not.toHaveBeenCalled();
+      expect(bcast.emit).not.toHaveBeenCalled();
+    });
+
+    it("403 when a workspace editor's tier is now disabled", async () => {
+      const socket = makeEditor({ rail: "workspace" });
+      fakeSessionManager.getWorkspaceEditEnabled.mockResolvedValue(false);
+      const cb = vi.fn();
+      await handleDocumentUpdate(deps, createFakeIO(), socket, args, cb);
+      expect(cb).toHaveBeenCalledWith(expect.objectContaining({ statusCode: 403, errorCode: ErrorCode.EDIT_REVOKED }));
+      expect(fakeMongoDBStore.createUpdate).not.toHaveBeenCalled();
+    });
+
+    it("403 when a public editor's collabJoinEnabled is no longer true (false OR undefined)", async () => {
+      for (const val of [false, undefined]) {
+        vi.clearAllMocks();
+        const socket = makeEditor({ rail: "public" });
+        fakeSessionManager.getCollabJoinEnabled.mockResolvedValue(val);
+        const cb = vi.fn();
+        await handleDocumentUpdate(deps, createFakeIO(), socket, args, cb);
+        expect(cb).toHaveBeenCalledWith(expect.objectContaining({ statusCode: 403, errorCode: ErrorCode.EDIT_REVOKED }));
+        expect(fakeMongoDBStore.createUpdate).not.toHaveBeenCalled();
+      }
+    });
+
+    it("persists for a GP editor whose epoch is still current", async () => {
+      const socket = makeEditor({ rail: "gp", admittedEditGrantEpoch: 5 });
+      (deps.gateEpochCache as any).getEditGrantEpoch.mockResolvedValue(5);
+      fakeMongoDBStore.createUpdate.mockResolvedValue({ id: "u1", documentId: "doc-1", data: "d", updateType: "yjs_update", commitCid: null, createdAt: 1 });
+      const cb = vi.fn();
+      await handleDocumentUpdate(deps, createFakeIO(), socket, args, cb);
+      expect(fakeMongoDBStore.createUpdate).toHaveBeenCalled();
+      expect(cb).toHaveBeenCalledWith(expect.objectContaining({ status: true }));
+    });
+
+    it("persists for a GP editor when the gate epoch is unreachable (null — fail-open)", async () => {
+      const socket = makeEditor({ rail: "gp", admittedEditGrantEpoch: 2 });
+      (deps.gateEpochCache as any).getEditGrantEpoch.mockResolvedValue(null);
+      fakeMongoDBStore.createUpdate.mockResolvedValue({ id: "u1", documentId: "doc-1", data: "d", updateType: "yjs_update", commitCid: null, createdAt: 1 });
+      const cb = vi.fn();
+      await handleDocumentUpdate(deps, createFakeIO(), socket, args, cb);
+      expect(fakeMongoDBStore.createUpdate).toHaveBeenCalled();
+      expect(cb).toHaveBeenCalledWith(expect.objectContaining({ status: true }));
+    });
+
+    it("does NOT guard a dsheet editor (no rail model — must not 403)", async () => {
+      const socket = createFakeSocket({ emit: vi.fn() }, { role: "editor" });
+      socket.data.appType = "dsheet"; // excluded from the ddoc-only guard
+      fakeSessionManager.getRuntimeSession.mockResolvedValue({ sessionDid: socket.data.sessionDid });
+      fakeAuthService.verifyCollaborationToken.mockResolvedValue(true);
+      fakeMongoDBStore.createUpdate.mockResolvedValue({ id: "u1", documentId: "doc-1", data: "d", updateType: "yjs_update", commitCid: null, createdAt: 1 });
+      const cb = vi.fn();
+      await handleDocumentUpdate(deps, createFakeIO(), socket, args, cb);
+      expect(fakeMongoDBStore.createUpdate).toHaveBeenCalled();
+      expect(cb).toHaveBeenCalledWith(expect.objectContaining({ status: true }));
     });
   });
 });

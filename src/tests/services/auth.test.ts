@@ -3,7 +3,7 @@ import * as ucans from "@ucans/ucans";
 import { AuthService } from "../../services/auth";
 import { getIdentitySigningDid, getOwnerDid } from "../../utils/contract";
 
-vi.mock("@ucans/ucans", () => ({ verify: vi.fn() }));
+vi.mock("@ucans/ucans", () => ({ verify: vi.fn(), validate: vi.fn() }));
 vi.mock("../../utils/contract", () => ({
   getIdentitySigningDid: vi.fn(),
   getOwnerDid: vi.fn(),
@@ -113,5 +113,50 @@ describe("verifyOwnerOp (OR of two bound proofs)", () => {
       identityToken: "it", identityContractAddress: "0xIdentity" as any,
     });
     expect(spy).toHaveBeenCalledWith("it", "0xIdentity", "ddoc-A");
+  });
+});
+
+describe("verifyEditUcan", () => {
+  const serverDid = "did:key:zServerTest";
+  const gateDid = "did:key:zGateTest";
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it("returns the facts when verify passes and the fact docId matches", async () => {
+    (ucans.verify as any).mockResolvedValue({ ok: true });
+    (ucans.validate as any).mockResolvedValue({ payload: { fct: [{ docId: "doc-1", editGrantEpoch: 3, nullifier: "n-1" }] } });
+    const svc = new AuthService(serverDid, gateDid);
+    expect(await svc.verifyEditUcan("tok", "doc-1")).toEqual({ editGrantEpoch: 3, nullifier: "n-1" });
+    // rooted at the pinned gate DID + the collab:EDIT capability
+    expect(ucans.verify).toHaveBeenCalledWith("tok", expect.objectContaining({
+      audience: serverDid,
+      requiredCapabilities: [expect.objectContaining({
+        capability: { with: { scheme: "collab", hierPart: "doc-1" }, can: { namespace: "collab", segments: ["EDIT"] } },
+        rootIssuer: gateDid,
+      })],
+    }));
+  });
+
+  it("returns null when verify fails (wrong issuer / capability / audience)", async () => {
+    (ucans.verify as any).mockResolvedValue({ ok: false });
+    const svc = new AuthService(serverDid, gateDid);
+    expect(await svc.verifyEditUcan("tok", "doc-1")).toBeNull();
+    // verify gates validate: a failed verify must not reach fact extraction.
+    expect(ucans.validate).not.toHaveBeenCalled();
+  });
+
+  it("returns null when the fact docId disagrees with the requested documentId", async () => {
+    (ucans.verify as any).mockResolvedValue({ ok: true });
+    (ucans.validate as any).mockResolvedValue({ payload: { fct: [{ docId: "doc-OTHER", editGrantEpoch: 3, nullifier: "n-1" }] } });
+    const svc = new AuthService(serverDid, gateDid);
+    expect(await svc.verifyEditUcan("tok", "doc-1")).toBeNull();
+  });
+
+  it("returns null (short-circuit, no verify call) when no gate DID is pinned", async () => {
+    const svc = new AuthService(serverDid, undefined);
+    expect(await svc.verifyEditUcan("tok", "doc-1")).toBeNull();
+    expect(ucans.verify).not.toHaveBeenCalled();
   });
 });

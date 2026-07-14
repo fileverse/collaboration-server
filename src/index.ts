@@ -15,9 +15,13 @@ import { createRedisAdapter } from "./redis";
 import { databaseService } from "./database";
 import {
   createCollabJoinEnabledHandler,
+  createWorkspaceEditTierHandler,
+  createRefreshEditGrantHandler,
   createListMyDocumentsHandler,
   createDeleteDocumentHandler,
+  createMirrorReadHandler,
 } from "./services/owner-op-routes";
+import { gateEpochCache } from "./services/gate-epoch";
 import { createFlushHandler } from "./services/flush-route";
 import { createLightNode } from "@waku/sdk";
 import protobuf from "protobufjs";
@@ -95,6 +99,18 @@ class CollaborationServer {
       "/documents/:documentId/collab-join-enabled",
       createCollabJoinEnabledHandler({ authService, sessionManager }, this.io)
     );
+    this.app.post(
+      "/documents/:documentId/workspace-edit-tier",
+      createWorkspaceEditTierHandler({ authService, sessionManager }, this.io)
+    );
+    this.app.post(
+      "/documents/:documentId/refresh-edit-grant",
+      createRefreshEditGrantHandler({ authService, sessionManager, gateEpochCache }, this.io)
+    );
+    this.app.get(
+      "/documents/:documentId/mirror",
+      createMirrorReadHandler({ mongodbStore })
+    );
     this.app.post("/flush", createFlushHandler({ authService, mongodbStore }));
     this.app.post("/list-my-documents", createListMyDocumentsHandler({ authService, mongodbStore }));
     this.app.delete(
@@ -124,6 +140,18 @@ class CollaborationServer {
 
   async start() {
     try {
+      if (!config.gate.did) {
+        console.warn(
+          "[startup] GATE_DID is not set — GP (private/group) live editing is DISABLED; only owner/workspace/public rails admit writes."
+        );
+      } else if (!config.gate.url) {
+        // GATE_DID without GATE_URL: verifyEditUcan admits GP joins but the epoch cache can
+        // never reach the gate, so every revocation (demote/revoke) is a permanent silent no-op.
+        throw new Error(
+          "[startup] GATE_DID is set but GATE_URL is not — GP editGrantEpoch revocation would never take effect. Set GATE_URL to the gate origin, or unset GATE_DID to disable GP editing."
+        );
+      }
+
       // Initialize database connection
       await databaseService.connect();
 

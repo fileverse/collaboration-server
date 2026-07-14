@@ -22,6 +22,11 @@ vi.mock("../../database/models", () => {
     CounterModel: { findOneAndUpdate: vi.fn(), deleteOne: vi.fn().mockResolvedValue(undefined) },
     SessionModel: { findOne: vi.fn(), find: vi.fn(), deleteMany: vi.fn().mockResolvedValue(undefined) },
     DocumentMetaModel: { findOneAndUpdate: vi.fn(), find: vi.fn(), findById: vi.fn(), updateMany: vi.fn().mockResolvedValue(undefined), deleteOne: vi.fn().mockResolvedValue(undefined) },
+    DocumentMirrorModel: {
+      findOneAndUpdate: vi.fn().mockResolvedValue(undefined),
+      findOne: vi.fn(),
+      deleteMany: vi.fn().mockResolvedValue(undefined),
+    },
   };
 });
 
@@ -148,6 +153,40 @@ describe("createSnapshot: keep-latest", () => {
     expect(DocumentUpdateModel.deleteMany).toHaveBeenCalledWith({
       documentId: "doc-1", sessionDid: "room-did", updateType: "snapshot", seq: { $lt: 12 },
     });
+  });
+});
+
+describe("mirror lane", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it("upserts keyed by (documentId, fileKeyEpoch), overwrite-in-place with NO destructive prune", async () => {
+    const { DocumentMirrorModel } = await import("../../database/models");
+    const store = new MongoDBStore();
+    await store.upsertMirrorSnapshot({ documentId: "doc-1", data: "ct", fileKeyEpoch: 4, sessionDid: "sess-1", createdAt: 111 });
+
+    expect(DocumentMirrorModel.findOneAndUpdate).toHaveBeenCalledWith(
+      { documentId: "doc-1", fileKeyEpoch: 4 },
+      { $set: { data: "ct", createdAt: 111, authorSessionDid: "sess-1" } },
+      { upsert: true }
+    );
+    // A client-asserted epoch must NEVER trigger a delete of other rows.
+    expect(DocumentMirrorModel.deleteMany).not.toHaveBeenCalled();
+  });
+
+  it("getLatestMirror returns the most recent row (by createdAt) or null", async () => {
+    const { DocumentMirrorModel } = await import("../../database/models");
+    const lean = vi.fn().mockResolvedValue({ documentId: "doc-1", fileKeyEpoch: 9, data: "ct", createdAt: 222 });
+    const sort = vi.fn().mockReturnValue({ lean });
+    (DocumentMirrorModel.findOne as any).mockReturnValue({ sort });
+    const store = new MongoDBStore();
+    expect(await store.getLatestMirror("doc-1")).toEqual({ data: "ct", fileKeyEpoch: 9, createdAt: 222 });
+    expect(DocumentMirrorModel.findOne).toHaveBeenCalledWith({ documentId: "doc-1" });
+    expect(sort).toHaveBeenCalledWith({ createdAt: -1 });
+
+    (DocumentMirrorModel.findOne as any).mockReturnValue({ sort: vi.fn().mockReturnValue({ lean: vi.fn().mockResolvedValue(null) }) });
+    expect(await store.getLatestMirror("doc-1")).toBeNull();
   });
 });
 
@@ -369,8 +408,8 @@ describe("purgeDocument", () => {
     vi.clearAllMocks();
   });
 
-  it("wipes all five collections for the documentId", async () => {
-    const { DocumentUpdateModel, DocumentCommitModel, DocumentMetaModel, SessionModel, CounterModel } =
+  it("wipes all six collections for the documentId", async () => {
+    const { DocumentUpdateModel, DocumentCommitModel, DocumentMetaModel, SessionModel, CounterModel, DocumentMirrorModel } =
       await import("../../database/models");
 
     const store = new MongoDBStore();
@@ -381,6 +420,7 @@ describe("purgeDocument", () => {
     expect(DocumentMetaModel.deleteOne).toHaveBeenCalledWith({ _id: "doc-1" });
     expect(SessionModel.deleteMany).toHaveBeenCalledWith({ documentId: "doc-1" });
     expect(CounterModel.deleteOne).toHaveBeenCalledWith({ _id: "doc-1" });
+    expect(DocumentMirrorModel.deleteMany).toHaveBeenCalledWith({ documentId: "doc-1" });
   });
 });
 

@@ -1,5 +1,5 @@
 import { DocumentUpdate, DocumentCommit } from "../types/index";
-import { DocumentUpdateModel, DocumentCommitModel, CounterModel, SessionModel, DocumentMetaModel } from "../database/models";
+import { DocumentUpdateModel, DocumentCommitModel, CounterModel, SessionModel, DocumentMetaModel, DocumentMirrorModel } from "../database/models";
 
 export class MongoDBStore {
   // Update management
@@ -159,6 +159,34 @@ export class MongoDBStore {
     });
 
     return { ...snapshot, seq, updateType: "snapshot" };
+  }
+
+  /**
+   * View-plane keep-latest: one row per (documentId, fileKeyEpoch), overwritten in place.
+   * fileKeyEpoch is client-asserted, so it never drives a destructive prune — recency comes
+   * from the server-stamped createdAt at read time.
+   */
+  async upsertMirrorSnapshot(mirror: {
+    documentId: string;
+    data: string;
+    fileKeyEpoch: number;
+    sessionDid: string;
+    createdAt: number;
+  }): Promise<void> {
+    await DocumentMirrorModel.findOneAndUpdate(
+      { documentId: mirror.documentId, fileKeyEpoch: mirror.fileKeyEpoch },
+      { $set: { data: mirror.data, createdAt: mirror.createdAt, authorSessionDid: mirror.sessionDid } },
+      { upsert: true }
+    );
+  }
+
+  /** The most recently written mirror snapshot (server-stamped createdAt), or null. Open read. */
+  async getLatestMirror(
+    documentId: string
+  ): Promise<{ data: string; fileKeyEpoch: number; createdAt: number } | null> {
+    const row: any = await DocumentMirrorModel.findOne({ documentId }).sort({ createdAt: -1 }).lean();
+    if (!row) return null;
+    return { data: row.data, fileKeyEpoch: row.fileKeyEpoch, createdAt: row.createdAt };
   }
 
   async getHydrationRange(
@@ -411,6 +439,7 @@ export class MongoDBStore {
       DocumentMetaModel.deleteOne({ _id: documentId }),
       SessionModel.deleteMany({ documentId }),
       CounterModel.deleteOne({ _id: documentId }),
+      DocumentMirrorModel.deleteMany({ documentId }),
     ]);
   }
 

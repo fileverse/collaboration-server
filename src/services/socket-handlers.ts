@@ -11,6 +11,7 @@ import {
   UpdateHistoryArgs,
   UpdateHistoryResponseData,
   SnapshotArgs,
+  MirrorSnapshotArgs,
   DocumentMetaArgs,
   PeersListArgs,
   AwarenessArgs,
@@ -25,6 +26,7 @@ import { requireAuth } from "./auth-middleware";
 import { authService } from "./auth";
 import { mongodbStore } from "./mongodb-store";
 import { sessionManager } from "./session-manager";
+import { gateEpochCache } from "./gate-epoch";
 import { Hex, isAddress } from "viem";
 import type { SocketHandlerDeps } from "./socket-handlers.deps";
 
@@ -32,6 +34,7 @@ const defaultDeps: SocketHandlerDeps = {
   authService,
   sessionManager,
   mongodbStore,
+  gateEpochCache,
 };
 
 function validateHexAddress(address: string | undefined, fieldName: string): address is Hex {
@@ -80,6 +83,9 @@ export function registerEventHandlers(io: AppServer): void {
     );
     socket.on("/documents/snapshot", (args, callback) =>
       handleSnapshot(defaultDeps, socket, args, callback)
+    );
+    socket.on("/documents/mirror-snapshot", (args, callback) =>
+      handleMirrorSnapshot(defaultDeps, socket, args, callback)
     );
     socket.on("/documents/meta", (args, callback) =>
       handleSetDocumentMeta(defaultDeps, socket, args, callback)
@@ -146,6 +152,9 @@ export async function handleAuth(
     let sessionType: "new" | "existing";
     let roomInfo: string | undefined;
     let resolvedAppType: AppType;
+    let rail: "gp" | "workspace" | "public" | undefined = undefined;
+    let admittedEditGrantEpoch: number | undefined = undefined;
+    let actorHandle: string | undefined = undefined;
 
     if (!existingSession && args.ownerToken) {
       // - Set up a new session (owner flow)
@@ -336,19 +345,49 @@ export async function handleAuth(
         }
       }
 
-      // collabJoinEnabled gate (R5-b): ddoc-ONLY (dsheet must never break; new dsheet rooms also get
-      // collabJoinEnabled:false from createSession, so an unscoped gate would kill all dsheet collaboration).
-      // Read the flag FRESH FROM MONGO (HTTP process flips it in Task 13; in-memory copy can be stale).
-      // Only an explicit `false` closes a ddoc room to non-owners; undefined (legacy) stays open; owners bypass.
+      // Rail-exclusive edit admission (ddoc-only, non-owner): resolved by the credential the
+      // client presents, never a sequential try-each. An editUcan join is GP-or-reject and must
+      // NEVER fall through to workspace/public — a demoted GP editor still holds the un-rotated
+      // roomKey, and falling through would let them re-enter as a lower-trust bearer.
       if (storedAppType === "ddoc" && role === "editor") {
-        const joinEnabled = await sessionManager.getCollabJoinEnabled(documentId, existingSession.sessionDid);
-        if (joinEnabled === false) {
-          return callback({
-            status: false,
-            statusCode: 403,
-            error: "Link sharing is disabled for this document",
-            errorCode: ErrorCode.JOIN_DISABLED,
-          });
+        if (args.editUcan) {
+          const gp = await authService.verifyEditUcan(args.editUcan, documentId);
+          const currentEpoch = gp ? await deps.gateEpochCache.getEditGrantEpoch(documentId) : null;
+          if (gp && (currentEpoch === null || gp.editGrantEpoch >= currentEpoch)) {
+            rail = "gp";
+            admittedEditGrantEpoch = gp.editGrantEpoch;
+            actorHandle = gp.nullifier;
+          } else {
+            return callback({
+              status: false,
+              statusCode: 403,
+              error: "Edit access is not authorized for this document",
+              errorCode: ErrorCode.JOIN_DISABLED,
+            });
+          }
+        } else if (
+          // Gates a collaborator whose portal DID differs from the doc owner's. A team member
+          // sharing the portal's collaborator DID resolves as owner above and never reaches here,
+          // so the tier is not a per-member edit boundary for shared-DID teams (awaits MemberSA).
+          ownerDid &&
+          (await sessionManager.getWorkspaceEditEnabled(documentId, existingSession.sessionDid)) === true
+        ) {
+          rail = "workspace";
+          actorHandle = args.ownerAddress?.toLowerCase();
+        } else {
+          // Read fresh from Mongo (an HTTP process can flip this; the in-memory copy may be
+          // stale). Only an explicit `true` opens a ddoc room to a non-GP, non-workspace bearer.
+          const joinEnabled = await sessionManager.getCollabJoinEnabled(documentId, existingSession.sessionDid);
+          if (joinEnabled !== true) {
+            return callback({
+              status: false,
+              statusCode: 403,
+              error: "Link sharing is disabled for this document",
+              errorCode: ErrorCode.JOIN_DISABLED,
+            });
+          }
+          rail = "public";
+          actorHandle = args.actorHandle;
         }
       }
 
@@ -379,6 +418,9 @@ export async function handleAuth(
     socket.data.sessionDid = sessionDid;
     socket.data.role = role;
     socket.data.appType = resolvedAppType;
+    socket.data.rail = rail;
+    socket.data.admittedEditGrantEpoch = admittedEditGrantEpoch;
+    socket.data.actorHandle = actorHandle;
 
     // Join the Socket.IO room
     const roomName = getRoomName(documentId, sessionDid);
@@ -473,6 +515,35 @@ export async function handleDocumentUpdate(
         error: "Authentication failed",
         errorCode: ErrorCode.AUTH_TOKEN_INVALID,
       });
+    }
+
+    if (socket.data.role !== "owner" && normalizeAppType(socket.data.appType) === "ddoc") {
+      const rail = socket.data.rail;
+      let revoked = false;
+      if (rail === "gp") {
+        const currentEpoch = await deps.gateEpochCache.getEditGrantEpoch(documentId);
+        if (currentEpoch !== null && (socket.data.admittedEditGrantEpoch ?? -1) < currentEpoch) {
+          revoked = true;
+        }
+      } else if (rail === "workspace") {
+        if ((await sessionManager.getWorkspaceEditEnabled(documentId, sessionDid)) !== true) {
+          revoked = true;
+        }
+      } else {
+        // public / no rail: no epoch to check; only an explicit true still authorizes.
+        // false or a legacy-undefined flag both revoke, matching admission.
+        if ((await sessionManager.getCollabJoinEnabled(documentId, sessionDid)) !== true) {
+          revoked = true;
+        }
+      }
+      if (revoked) {
+        return callback({
+          status: false,
+          statusCode: 403,
+          error: "Edit access has been revoked",
+          errorCode: ErrorCode.EDIT_REVOKED,
+        });
+      }
     }
 
     const updateId = uuidv4();
@@ -820,6 +891,54 @@ export async function handleSnapshot(
       error: "Internal server error",
       errorCode: ErrorCode.INTERNAL_ERROR,
     });
+  }
+}
+
+// fileKeyEpoch is a client-asserted rotation counter (0 until a private narrow rotates the
+// fileKey). The mirror read returns the highest epoch, so an out-of-range value would shadow
+// every legitimate write; bound it generously here, at the trust boundary.
+const MAX_FILE_KEY_EPOCH = 1_000_000;
+
+export async function handleMirrorSnapshot(
+  deps: SocketHandlerDeps,
+  socket: AppSocket,
+  args: MirrorSnapshotArgs,
+  callback: (response: AckResponse<{ ok: true }>) => void
+): Promise<void> {
+  try {
+    const { sessionManager, mongodbStore } = deps;
+    if (!requireAuth(socket)) {
+      return callback({ status: false, statusCode: 401, error: "Not authenticated", errorCode: ErrorCode.NOT_AUTHENTICATED });
+    }
+    // Any admitted editor may author the mirror: the owner, or a rail-admitted non-owner
+    // editor (socket.data.rail set at JOIN). Viewers never socket-connect (load-on-open).
+    if (socket.data.role !== "owner" && !socket.data.rail) {
+      return callback({ status: false, statusCode: 403, error: "Not an editor", errorCode: ErrorCode.COMMIT_UNAUTHORIZED });
+    }
+
+    const { data, fileKeyEpoch } = args;
+    const documentId = args.documentId || socket.data.documentId;
+    if (!data || !Number.isSafeInteger(fileKeyEpoch) || fileKeyEpoch < 0 || fileKeyEpoch > MAX_FILE_KEY_EPOCH) {
+      return callback({ status: false, statusCode: 400, error: "Mirror data and an in-range non-negative integer fileKeyEpoch are required", errorCode: ErrorCode.UPDATE_DATA_MISSING });
+    }
+
+    const session = await sessionManager.getRuntimeSession(documentId, socket.data.sessionDid);
+    if (!session) {
+      return callback({ status: false, statusCode: 404, error: "Session not found", errorCode: ErrorCode.SESSION_NOT_FOUND });
+    }
+
+    await mongodbStore.upsertMirrorSnapshot({
+      documentId,
+      data,
+      fileKeyEpoch,
+      sessionDid: session.sessionDid,
+      createdAt: Date.now(),
+    });
+
+    callback({ status: true, statusCode: 200, data: { ok: true } });
+  } catch (error) {
+    console.error("Error in mirror snapshot handler:", error);
+    callback({ status: false, statusCode: 500, error: "Internal server error", errorCode: ErrorCode.INTERNAL_ERROR });
   }
 }
 

@@ -40,4 +40,8 @@ export const config: ServerConfig = {
   agenda: {
     concurrency: parseInt(process.env.AGENDA_DEFAULT_CONCURRENCY || "1"),
   },
+  gate: {
+    url: process.env.GATE_URL,
+    did: process.env.GATE_DID,
+  },
 };

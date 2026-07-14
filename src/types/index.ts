@@ -81,6 +81,7 @@ export enum ErrorCode {
   NOT_AUTHENTICATED = "NOT_AUTHENTICATED",
   APP_MISMATCH = "APP_MISMATCH",
   JOIN_DISABLED = "JOIN_DISABLED",
+  EDIT_REVOKED = "EDIT_REVOKED",
   DB_ERROR = "DB_ERROR",
   INTERNAL_ERROR = "INTERNAL_ERROR",
 }
@@ -113,6 +114,8 @@ export interface AuthArgs {
   ownerIdentityDid?: string;
   identityToken?: string;
   identityContractAddress?: string;
+  editUcan?: string;
+  actorHandle?: string;
 }
 
 export interface AuthResponseData {
@@ -145,6 +148,12 @@ export interface SnapshotArgs {
   // The author's contiguous range-read floor at authorship time — the seq up to which
   // this full-state snapshot is provably complete. Hydration cuts the tail here.
   floorSeq: number;
+}
+
+export interface MirrorSnapshotArgs {
+  documentId?: string;
+  data: string;
+  fileKeyEpoch: number;
 }
 
 export interface DocumentMetaArgs {
@@ -277,6 +286,7 @@ export interface ClientToServerEvents {
   "/documents/commit/history": ClientEventHandler<CommitHistoryArgs, CommitHistoryResponseData>;
   "/documents/update/history": ClientEventHandler<UpdateHistoryArgs, UpdateHistoryResponseData>;
   "/documents/snapshot": ClientEventHandler<SnapshotArgs, { id: string; seq: number }>;
+  "/documents/mirror-snapshot": ClientEventHandler<MirrorSnapshotArgs, { ok: true }>;
   "/documents/meta": ClientEventHandler<DocumentMetaArgs, { ok: true }>;
   "/documents/peers/list": ClientEventHandler<PeersListArgs, PeersListResponseData>;
   "/documents/awareness": ClientEventHandler<AwarenessArgs, MessageResponseData>;
@@ -302,6 +312,9 @@ export interface SocketData {
   role: "owner" | "editor";
   authenticated: boolean;
   appType: AppType;
+  rail?: "gp" | "workspace" | "public";
+  admittedEditGrantEpoch?: number;
+  actorHandle?: string;
 }
 
 // ***************************************
@@ -351,6 +364,10 @@ export interface ServerConfig {
   auth: {
     serverDid: string;
     serverKeyPair?: any;
+  };
+  gate: {
+    url: string | undefined;
+    did: string | undefined;
   };
   rateLimit: {
     windowMs: number;

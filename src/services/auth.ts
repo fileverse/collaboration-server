@@ -2,13 +2,16 @@ import * as ucans from "@ucans/ucans";
 import { getIdentitySigningDid, getOwnerDid } from "../utils/contract";
 import { Hex } from "viem";
 import NodeCache from "node-cache";
+import { config } from "../config";
 
 export class AuthService {
   private serverDid: string;
+  private gateDid?: string;
   private collaborationTokenCache = new NodeCache({ stdTTL: 3600 });
 
-  constructor(serverDid: string) {
+  constructor(serverDid: string, gateDid?: string) {
     this.serverDid = serverDid;
+    this.gateDid = gateDid;
   }
 
   getServerDid(): string {
@@ -75,6 +78,50 @@ export class AuthService {
     }
   }
 
+  /**
+   * Verify a gate-minted edit-admission UCAN, rooted at the pinned gate DID. Returns the
+   * signed facts (editGrantEpoch, nullifier) or null. The epoch comes from the token, never a client arg.
+   */
+  async verifyEditUcan(
+    token: string,
+    documentId: string
+  ): Promise<{ editGrantEpoch: number; nullifier: string } | null> {
+    if (!this.gateDid) return null; // GP editing disabled until GATE_DID is pinned
+    try {
+      const result = await ucans.verify(token, {
+        audience: this.serverDid,
+        requiredCapabilities: [
+          {
+            capability: {
+              with: { scheme: "collab", hierPart: documentId },
+              can: { namespace: "collab", segments: ["EDIT"] },
+            },
+            rootIssuer: this.gateDid,
+          },
+        ],
+      });
+      if (!result.ok) return null;
+
+      const parsed = await ucans.validate(token);
+      const fact = ((parsed.payload.fct ?? [])[0] ?? {}) as {
+        docId?: string;
+        editGrantEpoch?: number;
+        nullifier?: string;
+      };
+      if (
+        fact.docId !== documentId ||
+        typeof fact.editGrantEpoch !== "number" ||
+        typeof fact.nullifier !== "string"
+      ) {
+        return null;
+      }
+      return { editGrantEpoch: fact.editGrantEpoch, nullifier: fact.nullifier };
+    } catch (error) {
+      console.error("Edit UCAN verification error:", error);
+      return null;
+    }
+  }
+
   async verifyIdentityToken(
     token: string,
     identityContractAddress: Hex,
@@ -138,5 +185,6 @@ export class AuthService {
 }
 
 export const authService = new AuthService(
-  process.env.SERVER_DID || "did:key:z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK"
+  process.env.SERVER_DID || "did:key:z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK",
+  config.gate.did
 );
