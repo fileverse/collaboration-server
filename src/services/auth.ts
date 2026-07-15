@@ -80,12 +80,17 @@ export class AuthService {
 
   /**
    * Verify a gate-minted edit-admission UCAN, rooted at the pinned gate DID. Returns the
-   * signed facts (editGrantEpoch, nullifier) or null. The epoch comes from the token, never a client arg.
+   * signed facts — actor UCANs carry `editHandle`, legacy UCANs carry `editGrantEpoch`+`nullifier` —
+   * or null. These come from the token, never a client arg.
    */
   async verifyEditUcan(
     token: string,
     documentId: string
-  ): Promise<{ editGrantEpoch: number; nullifier: string } | null> {
+  ): Promise<
+    | { kind: "legacy"; editGrantEpoch: number; nullifier: string }
+    | { kind: "actor"; editHandle: string }
+    | null
+  > {
     if (!this.gateDid) return null; // GP editing disabled until GATE_DID is pinned
     try {
       const result = await ucans.verify(token, {
@@ -107,15 +112,14 @@ export class AuthService {
         docId?: string;
         editGrantEpoch?: number;
         nullifier?: string;
+        editHandle?: string;
       };
-      if (
-        fact.docId !== documentId ||
-        typeof fact.editGrantEpoch !== "number" ||
-        typeof fact.nullifier !== "string"
-      ) {
-        return null;
+      if (fact.docId !== documentId) return null;
+      if (typeof fact.editHandle === "string") return { kind: "actor", editHandle: fact.editHandle };
+      if (typeof fact.editGrantEpoch === "number" && typeof fact.nullifier === "string") {
+        return { kind: "legacy", editGrantEpoch: fact.editGrantEpoch, nullifier: fact.nullifier };
       }
-      return { editGrantEpoch: fact.editGrantEpoch, nullifier: fact.nullifier };
+      return null;
     } catch (error) {
       console.error("Edit UCAN verification error:", error);
       return null;

@@ -313,6 +313,7 @@ export interface SocketData {
   authenticated: boolean;
   appType: AppType;
   rail?: "gp" | "workspace" | "public";
+  railKind?: "gp-actor" | "gp-legacy" | "workspace" | "public";
   admittedEditGrantEpoch?: number;
   actorHandle?: string;
 }

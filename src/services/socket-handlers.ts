@@ -26,7 +26,7 @@ import { requireAuth } from "./auth-middleware";
 import { authService } from "./auth";
 import { mongodbStore } from "./mongodb-store";
 import { sessionManager } from "./session-manager";
-import { gateEpochCache } from "./gate-epoch";
+import { gateEpochCache, editBoundCache } from "./gate-epoch";
 import { Hex, isAddress } from "viem";
 import type { SocketHandlerDeps } from "./socket-handlers.deps";
 
@@ -35,6 +35,7 @@ const defaultDeps: SocketHandlerDeps = {
   sessionManager,
   mongodbStore,
   gateEpochCache,
+  editBoundCache,
 };
 
 function validateHexAddress(address: string | undefined, fieldName: string): address is Hex {
@@ -153,6 +154,7 @@ export async function handleAuth(
     let roomInfo: string | undefined;
     let resolvedAppType: AppType;
     let rail: "gp" | "workspace" | "public" | undefined = undefined;
+    let railKind: "gp-actor" | "gp-legacy" | "workspace" | "public" | undefined = undefined;
     let admittedEditGrantEpoch: number | undefined = undefined;
     let actorHandle: string | undefined = undefined;
 
@@ -352,11 +354,38 @@ export async function handleAuth(
       if (storedAppType === "ddoc" && role === "editor") {
         if (args.editUcan) {
           const gp = await authService.verifyEditUcan(args.editUcan, documentId);
-          const currentEpoch = gp ? await deps.gateEpochCache.getEditGrantEpoch(documentId) : null;
-          if (gp && (currentEpoch === null || gp.editGrantEpoch >= currentEpoch)) {
-            rail = "gp";
-            admittedEditGrantEpoch = gp.editGrantEpoch;
-            actorHandle = gp.nullifier;
+          if (gp?.kind === "actor") {
+            // Per-actor positive-state admission (keyed on editHandle = hash(C, docId)); fail-closed on
+            // cold/unbound. See docs/architecture/gp-semaphore.md.
+            const state = await deps.editBoundCache.check(documentId, gp.editHandle);
+            if (state === "bound" || state === "stale-bound") {
+              rail = "gp";
+              railKind = "gp-actor";
+              actorHandle = gp.editHandle;
+            } else {
+              return callback({
+                status: false,
+                statusCode: 403,
+                error: "Edit access is not authorized for this document",
+                errorCode: ErrorCode.JOIN_DISABLED,
+              });
+            }
+          } else if (gp?.kind === "legacy") {
+            // Legacy doc-wide epoch admit (dual-support until 7-day UCAN expiry + full client rollout).
+            const currentEpoch = await deps.gateEpochCache.getEditGrantEpoch(documentId);
+            if (currentEpoch === null || gp.editGrantEpoch >= currentEpoch) {
+              rail = "gp";
+              railKind = "gp-legacy";
+              admittedEditGrantEpoch = gp.editGrantEpoch;
+              actorHandle = gp.nullifier;
+            } else {
+              return callback({
+                status: false,
+                statusCode: 403,
+                error: "Edit access is not authorized for this document",
+                errorCode: ErrorCode.JOIN_DISABLED,
+              });
+            }
           } else {
             return callback({
               status: false,
@@ -373,6 +402,7 @@ export async function handleAuth(
           (await sessionManager.getWorkspaceEditEnabled(documentId, existingSession.sessionDid)) === true
         ) {
           rail = "workspace";
+          railKind = "workspace";
           actorHandle = args.ownerAddress?.toLowerCase();
         } else {
           // Read fresh from Mongo (an HTTP process can flip this; the in-memory copy may be
@@ -387,6 +417,7 @@ export async function handleAuth(
             });
           }
           rail = "public";
+          railKind = "public";
           actorHandle = args.actorHandle;
         }
       }
@@ -419,6 +450,7 @@ export async function handleAuth(
     socket.data.role = role;
     socket.data.appType = resolvedAppType;
     socket.data.rail = rail;
+    socket.data.railKind = railKind;
     socket.data.admittedEditGrantEpoch = admittedEditGrantEpoch;
     socket.data.actorHandle = actorHandle;
 
@@ -458,6 +490,24 @@ export async function handleAuth(
       errorCode: ErrorCode.INTERNAL_ERROR,
     });
   }
+}
+
+// Live per-actor edit-admission re-check against the ADMITTED context stamped at JOIN.
+// Fail-closed for the actor rail (cold/unbound → reject). See docs/architecture/gp-semaphore.md.
+export async function isStillAdmitted(socket: AppSocket, deps: SocketHandlerDeps): Promise<boolean> {
+  const { rail, railKind, documentId, sessionDid, actorHandle, admittedEditGrantEpoch } = socket.data;
+  if (!documentId || !sessionDid) return false;
+  if (railKind === "gp-actor") {
+    if (!actorHandle) return false;
+    const s = await deps.editBoundCache.check(documentId, actorHandle);
+    return s === "bound" || s === "stale-bound";
+  }
+  if (railKind === "gp-legacy") {
+    const epoch = await deps.gateEpochCache.getEditGrantEpoch(documentId);
+    return epoch === null || (admittedEditGrantEpoch ?? -1) >= epoch;
+  }
+  if (rail === "workspace") return (await deps.sessionManager.getWorkspaceEditEnabled(documentId, sessionDid)) === true;
+  return (await deps.sessionManager.getCollabJoinEnabled(documentId, sessionDid)) === true;
 }
 
 export async function handleDocumentUpdate(
@@ -518,24 +568,7 @@ export async function handleDocumentUpdate(
     }
 
     if (socket.data.role !== "owner" && normalizeAppType(socket.data.appType) === "ddoc") {
-      const rail = socket.data.rail;
-      let revoked = false;
-      if (rail === "gp") {
-        const currentEpoch = await deps.gateEpochCache.getEditGrantEpoch(documentId);
-        if (currentEpoch !== null && (socket.data.admittedEditGrantEpoch ?? -1) < currentEpoch) {
-          revoked = true;
-        }
-      } else if (rail === "workspace") {
-        if ((await sessionManager.getWorkspaceEditEnabled(documentId, sessionDid)) !== true) {
-          revoked = true;
-        }
-      } else {
-        // public / no rail: no epoch to check; only an explicit true still authorizes.
-        // false or a legacy-undefined flag both revoke, matching admission.
-        if ((await sessionManager.getCollabJoinEnabled(documentId, sessionDid)) !== true) {
-          revoked = true;
-        }
-      }
+      const revoked = !(await isStillAdmitted(socket, deps));
       if (revoked) {
         return callback({
           status: false,
@@ -914,6 +947,10 @@ export async function handleMirrorSnapshot(
     // editor (socket.data.rail set at JOIN). Viewers never socket-connect (load-on-open).
     if (socket.data.role !== "owner" && !socket.data.rail) {
       return callback({ status: false, statusCode: 403, error: "Not an editor", errorCode: ErrorCode.COMMIT_UNAUTHORIZED });
+    }
+    // Live per-actor re-check: a demoted editor holding a stale socket must not author a mirror.
+    if (socket.data.role !== "owner" && !(await isStillAdmitted(socket, deps))) {
+      return callback({ status: false, statusCode: 403, error: "Edit access has been revoked", errorCode: ErrorCode.EDIT_REVOKED });
     }
 
     const { data, fileKeyEpoch } = args;

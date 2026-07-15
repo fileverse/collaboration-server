@@ -3,7 +3,7 @@ import type { AppServer } from "../types/index";
 import type { AuthService } from "./auth";
 import type { SessionManager } from "./session-manager";
 import type { MongoDBStore } from "./mongodb-store";
-import type { GateEpochCache } from "./gate-epoch";
+import type { GateEpochCache, EditBoundCache } from "./gate-epoch";
 import { getRoomName } from "./socket-handlers";
 import { Hex } from "viem";
 
@@ -154,7 +154,7 @@ export function createRefreshEditGrantHandler(
       for (const sd of sessionDids) {
         const sockets = await io.in(getRoomName(documentId, sd)).fetchSockets();
         for (const s of sockets) {
-          if (s.data.rail === "gp" && (s.data.admittedEditGrantEpoch ?? -1) < currentEpoch) {
+          if (s.data.railKind === "gp-legacy" && (s.data.admittedEditGrantEpoch ?? -1) < currentEpoch) {
             s.disconnect(true);
           }
         }
@@ -162,6 +162,38 @@ export function createRefreshEditGrantHandler(
     }
 
     res.status(200).json({ ok: true, editGrantEpoch: currentEpoch });
+  };
+}
+
+/** Targeted eviction of specific gp-actor handles from the per-actor edit-bound cache.
+ *  No socket disconnect: enforcement is the next-write/mirror 403 at the existing
+ *  socket chokepoints (see docs/architecture/gp-semaphore.md), so co-editors are undisturbed. */
+export function createEvictEditActorsHandler(deps: OwnerOpDeps & { editBoundCache: EditBoundCache }) {
+  return async (req: Request, res: Response): Promise<void> => {
+    const documentId = req.params.documentId;
+    const { sessionDid, handles, identityToken, identityContractAddress, ownerToken, ownerAddress, portalAddress } = req.body || {};
+
+    const session = await deps.sessionManager.getSession(documentId, sessionDid);
+    if (!session) {
+      res.status(404).json({ error: "Session not found" });
+      return;
+    }
+
+    const authorized = await deps.authService.verifyOwnerOp({
+      ddocId: documentId,
+      boundOwnerIdentityDid: (session as any).ownerIdentityDid ?? null,
+      boundOwnerDid: session.ownerDid ?? null,
+      identityToken, identityContractAddress: identityContractAddress as Hex,
+      ownerToken, ownerAddress: ownerAddress as Hex, portalAddress: portalAddress as Hex,
+    });
+    if (!authorized) {
+      res.status(403).json({ error: "Not the document owner" });
+      return;
+    }
+
+    const list = Array.isArray(handles) ? handles.filter((h) => typeof h === "string") : [];
+    deps.editBoundCache.evict(documentId, list);
+    res.status(200).json({ ok: true, evicted: list.length });
   };
 }
 

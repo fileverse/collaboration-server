@@ -17,11 +17,12 @@ import {
   createCollabJoinEnabledHandler,
   createWorkspaceEditTierHandler,
   createRefreshEditGrantHandler,
+  createEvictEditActorsHandler,
   createListMyDocumentsHandler,
   createDeleteDocumentHandler,
   createMirrorReadHandler,
 } from "./services/owner-op-routes";
-import { gateEpochCache } from "./services/gate-epoch";
+import { gateEpochCache, editBoundCache } from "./services/gate-epoch";
 import { createFlushHandler } from "./services/flush-route";
 import { createLightNode } from "@waku/sdk";
 import protobuf from "protobufjs";
@@ -106,6 +107,10 @@ class CollaborationServer {
     this.app.post(
       "/documents/:documentId/refresh-edit-grant",
       createRefreshEditGrantHandler({ authService, sessionManager, gateEpochCache }, this.io)
+    );
+    this.app.post(
+      "/documents/:documentId/evict-edit-actors",
+      createEvictEditActorsHandler({ authService, sessionManager, editBoundCache })
     );
     this.app.get(
       "/documents/:documentId/mirror",
