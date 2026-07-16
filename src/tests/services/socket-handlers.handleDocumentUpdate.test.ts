@@ -51,6 +51,7 @@ describe("handleDocumentUpdate", () => {
     sessionManager: fakeSessionManager as any,
     mongodbStore: fakeMongoDBStore as any,
     gateEpochCache: { getEditGrantEpoch: vi.fn() } as any,
+    editBoundCache: {} as any,
   };
 
   beforeEach(() => {
@@ -317,6 +318,7 @@ describe("handleDocumentUpdate", () => {
     ) {
       const socket = createFakeSocket(broadcast ?? { emit: vi.fn() }, { role: "editor" });
       socket.data.rail = railData.rail;
+      if (railData.rail === "gp") socket.data.railKind = "gp-legacy";
       if (railData.admittedEditGrantEpoch !== undefined) {
         socket.data.admittedEditGrantEpoch = railData.admittedEditGrantEpoch;
       }

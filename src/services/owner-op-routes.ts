@@ -96,8 +96,9 @@ export function createWorkspaceEditTierHandler(deps: OwnerOpDeps, io: AppServer)
     const targets = await deps.sessionManager.getNonTerminatedSessionsForDocument(documentId);
     const sessionDids = new Set<string>(targets.map((t) => t.sessionDid));
     sessionDids.add(sessionDid);
+    let updated = 0;
     for (const sd of sessionDids) {
-      await deps.sessionManager.setWorkspaceEditEnabled(documentId, sd, !!enabled);
+      if (await deps.sessionManager.setWorkspaceEditEnabled(documentId, sd, !!enabled)) updated++;
     }
 
     if (enabled === false) {
@@ -112,7 +113,7 @@ export function createWorkspaceEditTierHandler(deps: OwnerOpDeps, io: AppServer)
       }
     }
 
-    res.status(200).json({ ok: true });
+    res.status(200).json({ ok: true, updated });
   };
 }
 

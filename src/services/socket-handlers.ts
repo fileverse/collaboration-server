@@ -29,6 +29,7 @@ import { sessionManager } from "./session-manager";
 import { gateEpochCache, editBoundCache } from "./gate-epoch";
 import { Hex, isAddress } from "viem";
 import type { SocketHandlerDeps } from "./socket-handlers.deps";
+import { config } from "../config";
 
 const defaultDeps: SocketHandlerDeps = {
   authService,
@@ -157,6 +158,19 @@ export async function handleAuth(
     let railKind: "gp-actor" | "gp-legacy" | "workspace" | "public" | undefined = undefined;
     let admittedEditGrantEpoch: number | undefined = undefined;
     let actorHandle: string | undefined = undefined;
+
+    // joinOnly is strictly privilege-reducing: never create or bind a room on behalf of
+    // a joiner. A workspace member's valid SHARED ownerToken would otherwise create the
+    // session and bind THEIR identity as the room's root of trust (member-first-bind).
+    // Distinct code so clients can render read-only-until-creator-opens.
+    if (!existingSession && args.joinOnly === true) {
+      return callback({
+        status: false,
+        statusCode: 404,
+        error: "Room not established",
+        errorCode: ErrorCode.ROOM_NOT_ESTABLISHED,
+      });
+    }
 
     if (!existingSession && args.ownerToken) {
       // - Set up a new session (owner flow)
@@ -320,7 +334,47 @@ export async function handleAuth(
         );
       }
 
-      role = ownerDid === existingSession.ownerDid ? "owner" : "editor";
+      // Identity-based role (ddoc-only): the shared team-portal
+      // DID cannot tell a member from the creator, but the per-person identity signingDid
+      // can. On a bound session a presented identityToken DECIDES the role — owner needs
+      // BOTH the proven identity match and the portal ownerToken match. An invalid token
+      // is a 401, never a fallback; a token-less join keeps the legacy compare only while
+      // the sunset flag is on.
+      const boundIdentityDid = existingSession.ownerIdentityDid ?? null;
+      if (storedAppType === "ddoc" && boundIdentityDid && args.identityToken) {
+        const provenDid = args.identityContractAddress
+          ? await authService.verifyIdentityToken(
+              args.identityToken,
+              args.identityContractAddress as Hex,
+              documentId
+            )
+          : null;
+        if (!provenDid) {
+          return callback({
+            status: false,
+            statusCode: 401,
+            error: "Invalid identity proof",
+            errorCode: ErrorCode.AUTH_TOKEN_INVALID,
+          });
+        }
+        role =
+          provenDid === boundIdentityDid && ownerDid === existingSession.ownerDid
+            ? "owner"
+            : "editor";
+      } else if (
+        storedAppType === "ddoc" &&
+        boundIdentityDid &&
+        !args.identityToken &&
+        !config.auth.legacyRoleFallback
+      ) {
+        role = "editor";
+      } else {
+        role = ownerDid === existingSession.ownerDid ? "owner" : "editor";
+      }
+
+      // joinOnly caps the role: on an unbound/legacy session the shared-DID compare
+      // resolves a team member to owner — a join-only bearer never gets owner powers.
+      if (args.joinOnly === true && role === "owner") role = "editor";
 
       // R3 heal (ddoc-only): a session bound before identity proof was required (or
       // bound empty) is filled — once, atomically — by a proven owner, so the pre-fix
@@ -328,6 +382,7 @@ export async function handleAuth(
       if (
         storedAppType === "ddoc" &&
         role === "owner" &&
+        args.joinOnly !== true &&
         !existingSession.ownerIdentityDid &&
         args.identityToken &&
         args.identityContractAddress
@@ -395,10 +450,12 @@ export async function handleAuth(
             });
           }
         } else if (
-          // Gates a collaborator whose portal DID differs from the doc owner's. A team member
-          // sharing the portal's collaborator DID resolves as owner above and never reaches here,
-          // so the tier is not a per-member edit boundary for shared-DID teams (awaits MemberSA).
+          // Whole-team PrivateEdit: membership proof is the SHARED portal secret — the
+          // ownerToken must resolve to the session's own ownerDid (identity already told
+          // us this bearer is not the creator). A valid-but-DIFFERENT ownerToken is some
+          // other portal's owner and gets no workspace admission.
           ownerDid &&
+          ownerDid === existingSession.ownerDid &&
           (await sessionManager.getWorkspaceEditEnabled(documentId, existingSession.sessionDid)) === true
         ) {
           rail = "workspace";

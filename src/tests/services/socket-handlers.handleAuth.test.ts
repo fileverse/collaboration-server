@@ -2,6 +2,7 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 import { handleAuth, getRoomName } from "../../services/socket-handlers";
 import { AppServer, AppSocket, AuthArgs, ErrorCode } from "../../types";
 import type { SocketHandlerDeps } from "../../services/socket-handlers.deps";
+import { config } from "../../config";
 
 function createFakeIO(options?: {
   broadcastOperator?: { emit: ReturnType<typeof vi.fn> };
@@ -72,6 +73,7 @@ describe("handleAuth", () => {
     sessionManager: fakeSessionManager as any,
     mongodbStore: fakeMongoDBStore,
     gateEpochCache: fakeGateEpochCache as any,
+    editBoundCache: { check: vi.fn() } as any,
   };
 
   beforeEach(() => {
@@ -1055,6 +1057,216 @@ describe("handleAuth", () => {
     );
     expect(fakeSocket.data.role).toBe("owner");
   });
+
+  it("joinOnly: rejects ROOM_NOT_ESTABLISHED instead of creating a session", async () => {
+    fakeSessionManager.getSession.mockResolvedValue(null);
+    const fakeIO = createFakeIO();
+    const fakeSocket = createFakeSocket();
+    const callback = vi.fn();
+
+    await handleAuth(deps, fakeIO, fakeSocket, {
+      documentId: "doc-1",
+      sessionDid: "session-1",
+      collaborationToken: "collab-token",
+      ownerToken: "shared-workspace-owner-token",
+      ownerAddress: "0x1111111111111111111111111111111111111111",
+      contractAddress: "0x2222222222222222222222222222222222222222",
+      joinOnly: true,
+    }, callback);
+
+    expect(callback).toHaveBeenCalledWith({
+      status: false,
+      statusCode: 404,
+      error: "Room not established",
+      errorCode: ErrorCode.ROOM_NOT_ESTABLISHED,
+    });
+    expect(fakeSessionManager.createSession).not.toHaveBeenCalled();
+  });
+
+  it("joinOnly: caps role at editor and skips the null-fill heal on an unbound session", async () => {
+    fakeSessionManager.getSession.mockResolvedValue({
+      documentId: "doc-1",
+      sessionDid: "session-1",
+      ownerDid: "did:key:shared-portal",
+      ownerIdentityDid: null,
+      appType: "ddoc",
+    });
+    fakeAuthService.verifyCollaborationToken.mockResolvedValue("did:key:collab");
+    fakeAuthService.verifyOwnerToken.mockResolvedValue("did:key:shared-portal");
+    fakeAuthService.verifyIdentityToken.mockResolvedValue("did:key:member");
+    fakeSessionManager.getWorkspaceEditEnabled.mockResolvedValue(true);
+    const fakeIO = createFakeIO();
+    const fakeSocket = createFakeSocket();
+    const callback = vi.fn();
+
+    await handleAuth(deps, fakeIO, fakeSocket, {
+      documentId: "doc-1",
+      sessionDid: "session-1",
+      collaborationToken: "collab-token",
+      ownerToken: "shared-workspace-owner-token",
+      ownerAddress: "0x1111111111111111111111111111111111111111",
+      contractAddress: "0x2222222222222222222222222222222222222222",
+      identityToken: "member-identity-token",
+      identityContractAddress: "0x3333333333333333333333333333333333333333",
+      joinOnly: true,
+    }, callback);
+
+    expect(fakeSessionManager.fillOwnerIdentityDidIfAbsent).not.toHaveBeenCalled();
+    expect(callback).toHaveBeenCalledWith(
+      expect.objectContaining({
+        status: true,
+        data: expect.objectContaining({ role: "editor" }),
+      })
+    );
+    expect(fakeSocket.data.rail).toBe("workspace");
+  });
+
+  const boundSession = {
+    documentId: "doc-1",
+    sessionDid: "session-1",
+    ownerDid: "did:key:shared-portal",
+    ownerIdentityDid: "did:key:creator",
+    appType: "ddoc",
+  };
+  const boundJoinArgs = {
+    documentId: "doc-1",
+    sessionDid: "session-1",
+    collaborationToken: "collab-token",
+    ownerToken: "shared-workspace-owner-token",
+    ownerAddress: "0x1111111111111111111111111111111111111111",
+    contractAddress: "0x2222222222222222222222222222222222222222",
+    identityToken: "identity-token",
+    identityContractAddress: "0x3333333333333333333333333333333333333333",
+  };
+
+  it("role: proven identity == bound + matching ownerToken → owner", async () => {
+    fakeSessionManager.getSession.mockResolvedValue({ ...boundSession });
+    fakeAuthService.verifyCollaborationToken.mockResolvedValue("did:key:collab");
+    fakeAuthService.verifyOwnerToken.mockResolvedValue("did:key:shared-portal");
+    fakeAuthService.verifyIdentityToken.mockResolvedValue("did:key:creator");
+    const callback = vi.fn();
+
+    await handleAuth(deps, createFakeIO(), createFakeSocket(), { ...boundJoinArgs }, callback);
+
+    expect(callback).toHaveBeenCalledWith(
+      expect.objectContaining({ status: true, data: expect.objectContaining({ role: "owner" }) })
+    );
+  });
+
+  it("role: proven identity differs from bound → editor (workspace member)", async () => {
+    fakeSessionManager.getSession.mockResolvedValue({ ...boundSession });
+    fakeAuthService.verifyCollaborationToken.mockResolvedValue("did:key:collab");
+    fakeAuthService.verifyOwnerToken.mockResolvedValue("did:key:shared-portal");
+    fakeAuthService.verifyIdentityToken.mockResolvedValue("did:key:member");
+    fakeSessionManager.getWorkspaceEditEnabled.mockResolvedValue(true);
+    const fakeSocket = createFakeSocket();
+    const callback = vi.fn();
+
+    await handleAuth(deps, createFakeIO(), fakeSocket, { ...boundJoinArgs }, callback);
+
+    expect(callback).toHaveBeenCalledWith(
+      expect.objectContaining({ status: true, data: expect.objectContaining({ role: "editor" }) })
+    );
+  });
+
+  it("role: INVALID identity token on a bound session → 401, never a fallback", async () => {
+    fakeSessionManager.getSession.mockResolvedValue({ ...boundSession });
+    fakeAuthService.verifyCollaborationToken.mockResolvedValue("did:key:collab");
+    fakeAuthService.verifyOwnerToken.mockResolvedValue("did:key:shared-portal");
+    fakeAuthService.verifyIdentityToken.mockResolvedValue(null);
+    const callback = vi.fn();
+
+    await handleAuth(deps, createFakeIO(), createFakeSocket(), { ...boundJoinArgs }, callback);
+
+    expect(callback).toHaveBeenCalledWith({
+      status: false,
+      statusCode: 401,
+      error: "Invalid identity proof",
+      errorCode: ErrorCode.AUTH_TOKEN_INVALID,
+    });
+  });
+
+  it("role: token-less join on a bound session → legacy owner while fallback is on", async () => {
+    fakeSessionManager.getSession.mockResolvedValue({ ...boundSession });
+    fakeAuthService.verifyCollaborationToken.mockResolvedValue("did:key:collab");
+    fakeAuthService.verifyOwnerToken.mockResolvedValue("did:key:shared-portal");
+    const { identityToken, identityContractAddress, ...tokenless } = boundJoinArgs;
+    const callback = vi.fn();
+
+    await handleAuth(deps, createFakeIO(), createFakeSocket(), tokenless as any, callback);
+
+    expect(callback).toHaveBeenCalledWith(
+      expect.objectContaining({ status: true, data: expect.objectContaining({ role: "owner" }) })
+    );
+  });
+
+  it("role: token-less join on a bound session → editor once the fallback is sunset", async () => {
+    const prior = config.auth.legacyRoleFallback;
+    config.auth.legacyRoleFallback = false;
+    try {
+      fakeSessionManager.getSession.mockResolvedValue({ ...boundSession });
+      fakeAuthService.verifyCollaborationToken.mockResolvedValue("did:key:collab");
+      fakeAuthService.verifyOwnerToken.mockResolvedValue("did:key:shared-portal");
+      fakeSessionManager.getWorkspaceEditEnabled.mockResolvedValue(true);
+      const { identityToken, identityContractAddress, ...tokenless } = boundJoinArgs;
+      const callback = vi.fn();
+
+      await handleAuth(deps, createFakeIO(), createFakeSocket(), tokenless as any, callback);
+
+      expect(callback).toHaveBeenCalledWith(
+        expect.objectContaining({ status: true, data: expect.objectContaining({ role: "editor" }) })
+      );
+    } finally {
+      config.auth.legacyRoleFallback = prior;
+    }
+  });
+
+  it("workspace arm: rejects a FOREIGN portal's valid ownerToken (no cross-portal admission)", async () => {
+    fakeSessionManager.getSession.mockResolvedValue({ ...boundSession });
+    fakeAuthService.verifyCollaborationToken.mockResolvedValue("did:key:collab");
+    fakeAuthService.verifyOwnerToken.mockResolvedValue("did:key:OTHER-portal");
+    fakeAuthService.verifyIdentityToken.mockResolvedValue("did:key:stranger");
+    fakeSessionManager.getWorkspaceEditEnabled.mockResolvedValue(true);
+    fakeSessionManager.getCollabJoinEnabled.mockResolvedValue(undefined);
+    const callback = vi.fn();
+
+    await handleAuth(deps, createFakeIO(), createFakeSocket(), { ...boundJoinArgs }, callback);
+
+    expect(callback).toHaveBeenCalledWith(
+      expect.objectContaining({ statusCode: 403, errorCode: ErrorCode.JOIN_DISABLED })
+    );
+  });
+
+  it("workspace arm: member is rejected fail-closed when the flag is undefined", async () => {
+    fakeSessionManager.getSession.mockResolvedValue({ ...boundSession });
+    fakeAuthService.verifyCollaborationToken.mockResolvedValue("did:key:collab");
+    fakeAuthService.verifyOwnerToken.mockResolvedValue("did:key:shared-portal");
+    fakeAuthService.verifyIdentityToken.mockResolvedValue("did:key:member");
+    fakeSessionManager.getWorkspaceEditEnabled.mockResolvedValue(undefined);
+    fakeSessionManager.getCollabJoinEnabled.mockResolvedValue(undefined);
+    const callback = vi.fn();
+
+    await handleAuth(deps, createFakeIO(), createFakeSocket(), { ...boundJoinArgs }, callback);
+
+    expect(callback).toHaveBeenCalledWith(
+      expect.objectContaining({ statusCode: 403, errorCode: ErrorCode.JOIN_DISABLED })
+    );
+  });
+
+  it("workspace arm: member with matching ownerDid + flag true → rail and railKind workspace", async () => {
+    fakeSessionManager.getSession.mockResolvedValue({ ...boundSession });
+    fakeAuthService.verifyCollaborationToken.mockResolvedValue("did:key:collab");
+    fakeAuthService.verifyOwnerToken.mockResolvedValue("did:key:shared-portal");
+    fakeAuthService.verifyIdentityToken.mockResolvedValue("did:key:member");
+    fakeSessionManager.getWorkspaceEditEnabled.mockResolvedValue(true);
+    const fakeSocket = createFakeSocket();
+    const callback = vi.fn();
+
+    await handleAuth(deps, createFakeIO(), fakeSocket, { ...boundJoinArgs }, callback);
+
+    expect(fakeSocket.data.rail).toBe("workspace");
+    expect(fakeSocket.data.railKind).toBe("workspace");
+  });
 });
 
 describe("handleAuth — edit-claim admission (existing session, non-owner)", () => {
@@ -1087,6 +1299,7 @@ describe("handleAuth — edit-claim admission (existing session, non-owner)", ()
     sessionManager: fakeSessionManager as any,
     mongodbStore: fakeMongoDBStore,
     gateEpochCache: fakeGateEpochCache as any,
+    editBoundCache: { check: vi.fn() } as any,
   };
 
   beforeEach(() => {
@@ -1113,7 +1326,7 @@ describe("handleAuth — edit-claim admission (existing session, non-owner)", ()
 
   it("admits a GP editor with a valid, fresh editUcan and records rail+epoch+actor", async () => {
     existingSessionSetup();
-    fakeAuthService.verifyEditUcan.mockResolvedValue({ editGrantEpoch: 5, nullifier: "null-1" });
+    fakeAuthService.verifyEditUcan.mockResolvedValue({ kind: "legacy", editGrantEpoch: 5, nullifier: "null-1" });
     (deps as any).gateEpochCache.getEditGrantEpoch.mockResolvedValue(5);
     const socket = createFakeSocket();
     const cb = vi.fn();
@@ -1126,7 +1339,7 @@ describe("handleAuth — edit-claim admission (existing session, non-owner)", ()
 
   it("REJECTS a stale-epoch GP editUcan — no fall-through to public even when join is enabled", async () => {
     existingSessionSetup();
-    fakeAuthService.verifyEditUcan.mockResolvedValue({ editGrantEpoch: 2, nullifier: "null-1" });
+    fakeAuthService.verifyEditUcan.mockResolvedValue({ kind: "legacy", editGrantEpoch: 2, nullifier: "null-1" });
     (deps as any).gateEpochCache.getEditGrantEpoch.mockResolvedValue(5); // advanced past 2
     fakeSessionManager.getCollabJoinEnabled.mockResolvedValue(true); // public IS on — must NOT rescue a stale GP grant
     const socket = createFakeSocket();
@@ -1138,7 +1351,7 @@ describe("handleAuth — edit-claim admission (existing session, non-owner)", ()
 
   it("admits a valid GP editUcan when the gate epoch is unreachable (getEditGrantEpoch → null) — transient fail-open", async () => {
     existingSessionSetup();
-    fakeAuthService.verifyEditUcan.mockResolvedValue({ editGrantEpoch: 3, nullifier: "null-1" });
+    fakeAuthService.verifyEditUcan.mockResolvedValue({ kind: "legacy", editGrantEpoch: 3, nullifier: "null-1" });
     (deps as any).gateEpochCache.getEditGrantEpoch.mockResolvedValue(null); // gate transiently down
     const socket = createFakeSocket();
     const cb = vi.fn();
@@ -1160,8 +1373,19 @@ describe("handleAuth — edit-claim admission (existing session, non-owner)", ()
   });
 
   it("admits a workspace editor (member proof + tier enabled) with rail=workspace", async () => {
-    existingSessionSetup();
-    fakeAuthService.verifyOwnerToken.mockResolvedValue("member-did"); // != session ownerDid ⇒ editor
+    // The shared portal secret (ownerToken) only proves portal membership; the per-person
+    // identity proof decides owner-vs-editor. Here identity resolves a non-creator DID, so
+    // this bearer is a workspace editor even though ownerToken matches the session's own ownerDid.
+    fakeSessionManager.getSession.mockResolvedValue({
+      sessionDid: "sess-1",
+      ownerDid: "owner-did",
+      ownerIdentityDid: "owner-identity-did",
+      appType: "ddoc",
+    });
+    fakeAuthService.verifyCollaborationToken.mockResolvedValue("user-did");
+    fakeSessionManager.addClientToSession.mockResolvedValue(true);
+    fakeAuthService.verifyOwnerToken.mockResolvedValue("owner-did"); // session's own ownerDid
+    fakeAuthService.verifyIdentityToken.mockResolvedValue("member-identity-did"); // != bound owner identity ⇒ editor
     fakeSessionManager.getWorkspaceEditEnabled.mockResolvedValue(true);
     const socket = createFakeSocket();
     const cb = vi.fn();
@@ -1173,11 +1397,14 @@ describe("handleAuth — edit-claim admission (existing session, non-owner)", ()
         ownerToken: "ot",
         ownerAddress: "0x1111111111111111111111111111111111111111",
         contractAddress: "0x2222222222222222222222222222222222222222",
+        identityToken: "it",
+        identityContractAddress: "0x3333333333333333333333333333333333333333",
       }),
       cb
     );
     expect(cb).toHaveBeenCalledWith(expect.objectContaining({ status: true }));
     expect(socket.data.rail).toBe("workspace");
+    expect(socket.data.railKind).toBe("workspace");
   });
 
   it("public bearer is admitted as rail=public ONLY on collabJoinEnabled === true", async () => {

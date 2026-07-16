@@ -128,7 +128,7 @@ describe("verifyEditUcan", () => {
     (ucans.verify as any).mockResolvedValue({ ok: true });
     (ucans.validate as any).mockResolvedValue({ payload: { fct: [{ docId: "doc-1", editGrantEpoch: 3, nullifier: "n-1" }] } });
     const svc = new AuthService(serverDid, gateDid);
-    expect(await svc.verifyEditUcan("tok", "doc-1")).toEqual({ editGrantEpoch: 3, nullifier: "n-1" });
+    expect(await svc.verifyEditUcan("tok", "doc-1")).toEqual({ kind: "legacy", editGrantEpoch: 3, nullifier: "n-1" });
     // rooted at the pinned gate DID + the collab:EDIT capability
     expect(ucans.verify).toHaveBeenCalledWith("tok", expect.objectContaining({
       audience: serverDid,

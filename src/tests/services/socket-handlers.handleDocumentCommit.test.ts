@@ -42,6 +42,7 @@ describe("handleDocumentCommit", () => {
     sessionManager: fakeSessionManager as any,
     mongodbStore: fakeMongoDBStore as any,
     gateEpochCache: {} as any,
+    editBoundCache: {} as any,
   };
 
   beforeEach(() => {

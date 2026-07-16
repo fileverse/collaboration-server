@@ -146,6 +146,36 @@ describe("POST workspace-edit-tier", () => {
     expect(deps.sessionManager.setWorkspaceEditEnabled).toHaveBeenCalledWith("doc-1", "s-b", true);
     expect(deps.sessionManager.setWorkspaceEditEnabled).toHaveBeenCalledWith("doc-1", "s-req", true);
   });
+
+  it("returns {ok, updated} counting the sessions actually flipped", async () => {
+    deps.sessionManager.getSession.mockResolvedValue({ sessionDid: "s-req", ownerDid: "od", ownerIdentityDid: "oid" });
+    deps.authService.verifyOwnerOp.mockResolvedValue(true);
+    deps.sessionManager.getNonTerminatedSessionsForDocument.mockResolvedValue([{ sessionDid: "s-a" }]);
+    deps.sessionManager.setWorkspaceEditEnabled.mockResolvedValue(true);
+    const r = res();
+
+    await createWorkspaceEditTierHandler(deps, io)(
+      { params: { documentId: "doc-1" }, body: { sessionDid: "s-req", enabled: true } } as any, r
+    );
+
+    expect(r.status).toHaveBeenCalledWith(200);
+    expect(r.json).toHaveBeenCalledWith({ ok: true, updated: 2 });
+  });
+
+  it("reports updated: 0 when no session row is actually flipped", async () => {
+    deps.sessionManager.getSession.mockResolvedValue({ sessionDid: "s-req", ownerDid: "od", ownerIdentityDid: "oid" });
+    deps.authService.verifyOwnerOp.mockResolvedValue(true);
+    deps.sessionManager.getNonTerminatedSessionsForDocument.mockResolvedValue([]);
+    deps.sessionManager.setWorkspaceEditEnabled.mockResolvedValue(false);
+    const r = res();
+
+    await createWorkspaceEditTierHandler(deps, io)(
+      { params: { documentId: "doc-1" }, body: { sessionDid: "s-req", enabled: true } } as any, r
+    );
+
+    expect(r.status).toHaveBeenCalledWith(200);
+    expect(r.json).toHaveBeenCalledWith({ ok: true, updated: 0 });
+  });
 });
 
 describe("POST /list-my-documents", () => {
@@ -271,8 +301,8 @@ describe("POST refresh-edit-grant", () => {
   it("refreshes the epoch and force-drops ONLY stale GP sockets (not fresh GP / workspace / owner)", async () => {
     deps.authService.verifyOwnerOp.mockResolvedValue(true);
     gateEpochCache.refreshEditGrantEpoch.mockResolvedValue(6);
-    const staleGp: any = { data: { role: "editor", rail: "gp", admittedEditGrantEpoch: 5 }, disconnect: vi.fn() };
-    const freshGp: any = { data: { role: "editor", rail: "gp", admittedEditGrantEpoch: 6 }, disconnect: vi.fn() };
+    const staleGp: any = { data: { role: "editor", rail: "gp", railKind: "gp-legacy", admittedEditGrantEpoch: 5 }, disconnect: vi.fn() };
+    const freshGp: any = { data: { role: "editor", rail: "gp", railKind: "gp-legacy", admittedEditGrantEpoch: 6 }, disconnect: vi.fn() };
     const ws: any = { data: { role: "editor", rail: "workspace", admittedEditGrantEpoch: 0 }, disconnect: vi.fn() };
     const owner: any = { data: { role: "owner" }, disconnect: vi.fn() };
     io.in = vi.fn(() => ({ fetchSockets: vi.fn().mockResolvedValue([staleGp, freshGp, ws, owner]) }));
@@ -296,8 +326,8 @@ describe("POST refresh-edit-grant", () => {
       { sessionDid: "s-a" },
       { sessionDid: "s-b" },
     ]);
-    const gpA: any = { data: { role: "editor", rail: "gp", admittedEditGrantEpoch: 5 }, disconnect: vi.fn() };
-    const gpCaller: any = { data: { role: "editor", rail: "gp", admittedEditGrantEpoch: 5 }, disconnect: vi.fn() };
+    const gpA: any = { data: { role: "editor", rail: "gp", railKind: "gp-legacy", admittedEditGrantEpoch: 5 }, disconnect: vi.fn() };
+    const gpCaller: any = { data: { role: "editor", rail: "gp", railKind: "gp-legacy", admittedEditGrantEpoch: 5 }, disconnect: vi.fn() };
     const byRoom: Record<string, any[]> = {
       [getRoomName("doc-1", "s-a")]: [gpA],
       [getRoomName("doc-1", "s-b")]: [],
@@ -318,7 +348,7 @@ describe("POST refresh-edit-grant", () => {
   it("does NOT force-drop when the gate epoch is unavailable (null) — the chokepoint backstop covers it", async () => {
     deps.authService.verifyOwnerOp.mockResolvedValue(true);
     gateEpochCache.refreshEditGrantEpoch.mockResolvedValue(null);
-    const gp: any = { data: { role: "editor", rail: "gp", admittedEditGrantEpoch: 5 }, disconnect: vi.fn() };
+    const gp: any = { data: { role: "editor", rail: "gp", railKind: "gp-legacy", admittedEditGrantEpoch: 5 }, disconnect: vi.fn() };
     io.in = vi.fn(() => ({ fetchSockets: vi.fn().mockResolvedValue([gp]) }));
     const r = res();
     await createRefreshEditGrantHandler(deps, io)(

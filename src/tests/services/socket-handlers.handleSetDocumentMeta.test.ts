@@ -16,6 +16,7 @@ describe("handleSetDocumentMeta", () => {
     sessionManager: { getRuntimeSession } as any,
     mongodbStore: { upsertDocumentMeta } as any,
     gateEpochCache: {} as any,
+    editBoundCache: {} as any,
   };
 
   beforeEach(() => {

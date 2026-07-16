@@ -24,6 +24,7 @@ describe("handleSnapshot", () => {
     sessionManager: { getRuntimeSession } as any,
     mongodbStore: { createSnapshot } as any,
     gateEpochCache: {} as any,
+    editBoundCache: {} as any,
   };
 
   it("rejects a non-owner with 403", async () => {

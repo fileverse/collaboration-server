@@ -24,6 +24,11 @@ export const config: ServerConfig = {
 
   auth: {
     serverDid: process.env.SERVER_DID || "did:key:z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK",
+    // Sunset flag: while true, a token-less join on a bound
+    // session keeps the legacy ownerDid-compare role (old clients stay owners). Set
+    // LEGACY_ROLE_FALLBACK=false once identityToken-sending clients are fully rolled
+    // out — from then on a token-less join on a bound session is never owner.
+    legacyRoleFallback: process.env.LEGACY_ROLE_FALLBACK !== "false",
   },
 
   rateLimit: {

@@ -47,6 +47,7 @@ describe("handleDisconnecting", () => {
     sessionManager: fakeSessionManager as any,
     mongodbStore: fakeMongoDBStore,
     gateEpochCache: {} as any,
+    editBoundCache: {} as any,
   };
 
   beforeEach(() => {

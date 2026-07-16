@@ -13,6 +13,7 @@ describe("handleMirrorSnapshot", () => {
     deps = {
       sessionManager: { getRuntimeSession: vi.fn().mockResolvedValue({ sessionDid: "sess-1" }) },
       mongodbStore: { upsertMirrorSnapshot: vi.fn().mockResolvedValue(undefined) },
+      gateEpochCache: { getEditGrantEpoch: vi.fn().mockResolvedValue(null) },
     };
   });
 
@@ -47,7 +48,7 @@ describe("handleMirrorSnapshot", () => {
 
   it("persists for an admitted GP editor", async () => {
     const cb = vi.fn();
-    await handleMirrorSnapshot(deps, socket({ role: "editor", rail: "gp" }), { data: "ct", fileKeyEpoch: 2 } as any, cb);
+    await handleMirrorSnapshot(deps, socket({ role: "editor", rail: "gp", railKind: "gp-legacy", admittedEditGrantEpoch: 1 }), { data: "ct", fileKeyEpoch: 2 } as any, cb);
     expect(deps.mongodbStore.upsertMirrorSnapshot).toHaveBeenCalledWith(
       expect.objectContaining({ documentId: "doc-1", data: "ct", fileKeyEpoch: 2, sessionDid: "sess-1", createdAt: expect.any(Number) })
     );

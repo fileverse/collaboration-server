@@ -82,6 +82,7 @@ export enum ErrorCode {
   APP_MISMATCH = "APP_MISMATCH",
   JOIN_DISABLED = "JOIN_DISABLED",
   EDIT_REVOKED = "EDIT_REVOKED",
+  ROOM_NOT_ESTABLISHED = "ROOM_NOT_ESTABLISHED",
   DB_ERROR = "DB_ERROR",
   INTERNAL_ERROR = "INTERNAL_ERROR",
 }
@@ -116,6 +117,9 @@ export interface AuthArgs {
   identityContractAddress?: string;
   editUcan?: string;
   actorHandle?: string;
+  /** Privilege-reducing join mode (workspace member): the server must never create or
+   *  bind a session for this connection, and the role is capped at editor. */
+  joinOnly?: boolean;
 }
 
 export interface AuthResponseData {
@@ -365,6 +369,7 @@ export interface ServerConfig {
   auth: {
     serverDid: string;
     serverKeyPair?: any;
+    legacyRoleFallback: boolean;
   };
   gate: {
     url: string | undefined;

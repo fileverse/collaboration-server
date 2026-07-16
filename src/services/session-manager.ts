@@ -165,14 +165,16 @@ export class SessionManager {
     return (doc as any)?.workspaceEditEnabled;
   }
 
-  async setWorkspaceEditEnabled(documentId: string, sessionDid: string, enabled: boolean): Promise<void> {
+  async setWorkspaceEditEnabled(documentId: string, sessionDid: string, enabled: boolean): Promise<boolean> {
     const sessionKey = this.getSessionKey(documentId, sessionDid);
     const session = this.inMemorySessions.get(sessionKey);
     if (session) session.workspaceEditEnabled = enabled;
     try {
-      await SessionModel.findOneAndUpdate({ documentId, sessionDid }, { workspaceEditEnabled: enabled });
+      const res = await SessionModel.findOneAndUpdate({ documentId, sessionDid }, { workspaceEditEnabled: enabled });
+      return res !== null || session !== undefined;
     } catch (error) {
       console.error("Error setting workspaceEditEnabled:", error);
+      return false;
     }
   }
 
