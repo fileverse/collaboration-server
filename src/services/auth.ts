@@ -1,5 +1,5 @@
 import * as ucans from "@ucans/ucans";
-import { getIdentitySigningDid, getOwnerDid } from "../utils/contract";
+import { getIdentitySigningDid, getOwnerDid, refreshOwnerDid } from "../utils/contract";
 import { Hex } from "viem";
 import NodeCache from "node-cache";
 import { config } from "../config";
@@ -8,6 +8,9 @@ export class AuthService {
   private serverDid: string;
   private gateDid?: string;
   private collaborationTokenCache = new NodeCache({ stdTTL: 3600 });
+  // Rate-limits the mismatch-triggered fresh chain read so garbage tokens
+  // can't hammer the RPC.
+  private ownerDidRecheckMemo = new NodeCache({ stdTTL: 10 });
 
   constructor(serverDid: string, gateDid?: string) {
     this.serverDid = serverDid;
@@ -20,36 +23,47 @@ export class AuthService {
 
   async verifyOwnerToken(token: string, contractAddress: Hex, collaboratorAddress: Hex) {
     try {
-      const ownerDid = await getOwnerDid(contractAddress, collaboratorAddress);
-      // Reject anything that isn't a DID string before it reaches ucans.verify
-      // (which throws a TypeError on a malformed rootIssuer instead of failing
-      // the verification) — an unregistered or mis-decoded collaborator must
-      // 401 cleanly.
-      if (!ownerDid || typeof ownerDid !== "string" || !ownerDid.startsWith("did:")) {
-        return null;
+      const cachedDid = await getOwnerDid(contractAddress, collaboratorAddress);
+      if (this.isDid(cachedDid) && (await this.ucanVerifiesAgainstOwner(token, contractAddress, cachedDid))) {
+        return cachedDid;
       }
-
-      const result = await ucans.verify(token, {
-        audience: this.serverDid,
-        requiredCapabilities: [
-          {
-            capability: {
-              with: { scheme: "storage", hierPart: contractAddress.toLowerCase() },
-              can: { namespace: "collaboration", segments: ["CREATE"] },
-            },
-            rootIssuer: ownerDid,
-          },
-        ],
-      });
-
-      if (result.ok) {
-        return ownerDid;
-      }
-      return null;
+      // The cached DID may predate a workspace rotation (member removal
+      // re-registers the collab DID) — one rate-limited fresh chain read,
+      // then a single re-verify.
+      const memoKey = `recheck-${contractAddress}-${collaboratorAddress}`;
+      if (this.ownerDidRecheckMemo.get(memoKey)) return null;
+      this.ownerDidRecheckMemo.set(memoKey, true);
+      const freshDid = await refreshOwnerDid(contractAddress, collaboratorAddress);
+      if (!this.isDid(freshDid) || freshDid === cachedDid) return null;
+      return (await this.ucanVerifiesAgainstOwner(token, contractAddress, freshDid)) ? freshDid : null;
     } catch (error) {
       console.error("UCAN verification error:", error);
       return null;
     }
+  }
+
+  private isDid(value: unknown): value is string {
+    // Reject anything that isn't a DID string before it reaches ucans.verify
+    // (which throws a TypeError on a malformed rootIssuer instead of failing
+    // the verification) — an unregistered or mis-decoded collaborator must
+    // 401 cleanly.
+    return typeof value === "string" && value.startsWith("did:");
+  }
+
+  private async ucanVerifiesAgainstOwner(token: string, contractAddress: Hex, rootIssuer: string): Promise<boolean> {
+    const result = await ucans.verify(token, {
+      audience: this.serverDid,
+      requiredCapabilities: [
+        {
+          capability: {
+            with: { scheme: "storage", hierPart: contractAddress.toLowerCase() },
+            can: { namespace: "collaboration", segments: ["CREATE"] },
+          },
+          rootIssuer,
+        },
+      ],
+    });
+    return result.ok;
   }
 
   async verifyCollaborationToken(token: string, sessionDid: string, documentId: string) {

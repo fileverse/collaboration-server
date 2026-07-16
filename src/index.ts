@@ -18,6 +18,7 @@ import {
   createWorkspaceEditTierHandler,
   createRefreshEditGrantHandler,
   createEvictEditActorsHandler,
+  createEvictWorkspaceMemberHandler,
   createListMyDocumentsHandler,
   createDeleteDocumentHandler,
   createMirrorReadHandler,
@@ -111,6 +112,10 @@ class CollaborationServer {
     this.app.post(
       "/documents/:documentId/evict-edit-actors",
       createEvictEditActorsHandler({ authService, sessionManager, editBoundCache })
+    );
+    this.app.post(
+      "/workspaces/:portalAddress/evict-member",
+      createEvictWorkspaceMemberHandler({ authService, sessionManager }, this.io)
     );
     this.app.get(
       "/documents/:documentId/mirror",

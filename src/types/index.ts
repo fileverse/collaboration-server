@@ -127,6 +127,9 @@ export interface AuthResponseData {
   role: "owner" | "editor";
   sessionType: "new" | "existing";
   roomInfo?: string;
+  /** Latest stored roomKey-encrypted title (DocumentMeta) — fresher than the
+   *  session-frozen roomInfo blob after a mid-session rename. */
+  title?: string | null;
 }
 
 export interface DocumentUpdateArgs {
@@ -264,6 +267,12 @@ export interface MembershipChangePayload {
   roomId: string;
 }
 
+export interface MetaUpdatePayload {
+  roomId: string;
+  /** roomKey-encrypted; the server never sees the plaintext title. */
+  title: string | null;
+}
+
 export interface SessionTerminatedPayload {
   roomId: string;
 }
@@ -302,6 +311,7 @@ export interface ServerToClientEvents {
   "/server/error": (data: ServerErrorPayload) => void;
   "/document/content_update": (data: ContentUpdatePayload) => void;
   "/document/awareness_update": (data: AwarenessUpdatePayload) => void;
+  "/document/meta_update": (data: MetaUpdatePayload) => void;
   "/room/membership_change": (data: MembershipChangePayload) => void;
   "/session/terminated": (data: SessionTerminatedPayload) => void;
 }
@@ -320,6 +330,7 @@ export interface SocketData {
   railKind?: "gp-actor" | "gp-legacy" | "workspace" | "public";
   admittedEditGrantEpoch?: number;
   actorHandle?: string;
+  actorIdentityDid?: string;
 }
 
 // ***************************************

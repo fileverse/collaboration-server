@@ -43,6 +43,7 @@ describe("handleTerminateSession", () => {
     getSession: vi.fn(),
     deactivateSession: vi.fn(),
     terminateSession: vi.fn(),
+    updateSessionOwnerDid: vi.fn(),
   };
   const fakeMongoDBStore = {} as any;
   const deps: SocketHandlerDeps = {
@@ -308,6 +309,50 @@ describe("handleTerminateSession", () => {
       fakeSessionResponse.sessionDid,
       "ddoc"
     );
+  });
+
+  it("lets the owner terminate after a rotation (heal instead of 401)", async () => {
+    const fetchSocketsResponse: any[] = [];
+    const fakeIO = createFakeIO(fetchSocketsResponse);
+    const fakeBroadcastOperator = { emit: vi.fn() };
+    const fakeSocket = createFakeSocket(fakeBroadcastOperator);
+
+    const fakeArgs = {
+      documentId: "test-document-id",
+      sessionDid: "test-session-did",
+      ownerToken: "test-owner-token",
+      ownerAddress: "0x0000000000000000000000000000000000000001",
+      contractAddress: "0x0000000000000000000000000000000000000002",
+    };
+    const callback = vi.fn();
+
+    const fakeSessionResponse = {
+      sessionDid: fakeArgs.sessionDid,
+      ownerDid: "did:key:old",
+      portalAddress: "0x0000000000000000000000000000000000000002",
+      appType: "ddoc" as const,
+    };
+    fakeSessionManager.getSession.mockResolvedValue(fakeSessionResponse);
+    fakeAuthService.verifyOwnerToken.mockResolvedValue("did:key:new");
+    fakeSessionManager.terminateSession.mockResolvedValue(undefined);
+
+    await handleTerminateSession(deps, fakeIO, fakeSocket, fakeArgs, callback);
+
+    expect(fakeSessionManager.updateSessionOwnerDid).toHaveBeenCalledWith(
+      fakeArgs.documentId,
+      fakeSessionResponse.sessionDid,
+      "did:key:new"
+    );
+    expect(fakeSessionManager.terminateSession).toHaveBeenCalledWith(
+      fakeArgs.documentId,
+      fakeSessionResponse.sessionDid,
+      "ddoc"
+    );
+    expect(callback).toHaveBeenCalledWith({
+      status: true,
+      statusCode: 200,
+      data: { message: "Session terminated" },
+    });
   });
 
   it("returns 500 when an unexpected error occurs in terminate session handler", async () => {

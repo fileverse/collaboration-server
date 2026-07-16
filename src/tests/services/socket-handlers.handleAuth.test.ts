@@ -61,8 +61,9 @@ describe("handleAuth", () => {
     getCollabJoinEnabled: vi.fn(),
     getWorkspaceEditEnabled: vi.fn(),
     fillOwnerIdentityDidIfAbsent: vi.fn(),
+    updateSessionOwnerDid: vi.fn(),
   };
-  const fakeMongoDBStore = {} as any;
+  const fakeMongoDBStore = { getDocumentMeta: vi.fn().mockResolvedValue(null) } as any;
   const fakeGateEpochCache = {
     getEditGrantEpoch: vi.fn(),
     refreshEditGrantEpoch: vi.fn(),
@@ -178,6 +179,7 @@ describe("handleAuth", () => {
     expect(fakeSessionManager.getOtherNonTerminatedSessions).toHaveBeenCalledWith(
       fakeArgs.documentId,
       "owner-did",
+      fakeArgs.contractAddress,
       fakeArgs.sessionDid,
     );
     expect(fakeSessionManager.createSession).toHaveBeenCalledWith({
@@ -220,8 +222,74 @@ describe("handleAuth", () => {
         role: "owner",
         sessionType: "new",
         roomInfo: fakeArgs.roomInfo,
+        title: null,
       },
     });
+  });
+
+  it("returns the latest stored DocumentMeta title in the ack", async () => {
+    const fakeIO = createFakeIO();
+    const fakeSocket = createFakeSocket();
+    const fakeArgs: AuthArgs = {
+      documentId: "doc-1",
+      sessionDid: "session-1",
+      collaborationToken: "collab-token",
+      ownerToken: "owner-token",
+      ownerAddress: "0x0000000000000000000000000000000000000001",
+      contractAddress: "0x0000000000000000000000000000000000000002",
+      identityToken: "identity-token",
+      identityContractAddress: "0x0000000000000000000000000000000000000003",
+      roomInfo: "room-info",
+    };
+    const callback = vi.fn();
+
+    fakeSessionManager.getSession.mockResolvedValue(undefined);
+    fakeAuthService.verifyOwnerToken.mockResolvedValue("owner-did");
+    fakeAuthService.verifyIdentityToken.mockResolvedValue("owner-identity-did");
+    fakeSessionManager.getOtherNonTerminatedSessions.mockResolvedValue([]);
+    fakeMongoDBStore.getDocumentMeta.mockResolvedValueOnce({ editLock: null, title: "enc-title" });
+
+    await handleAuth(deps, fakeIO, fakeSocket, fakeArgs, callback);
+
+    expect(fakeMongoDBStore.getDocumentMeta).toHaveBeenCalledWith("doc-1");
+    expect(callback).toHaveBeenCalledWith(
+      expect.objectContaining({
+        statusCode: 200,
+        data: expect.objectContaining({ title: "enc-title" }),
+      })
+    );
+  });
+
+  it("returns a null ack title when the DocumentMeta read fails", async () => {
+    const fakeIO = createFakeIO();
+    const fakeSocket = createFakeSocket();
+    const fakeArgs: AuthArgs = {
+      documentId: "doc-1",
+      sessionDid: "session-1",
+      collaborationToken: "collab-token",
+      ownerToken: "owner-token",
+      ownerAddress: "0x0000000000000000000000000000000000000001",
+      contractAddress: "0x0000000000000000000000000000000000000002",
+      identityToken: "identity-token",
+      identityContractAddress: "0x0000000000000000000000000000000000000003",
+      roomInfo: "room-info",
+    };
+    const callback = vi.fn();
+
+    fakeSessionManager.getSession.mockResolvedValue(undefined);
+    fakeAuthService.verifyOwnerToken.mockResolvedValue("owner-did");
+    fakeAuthService.verifyIdentityToken.mockResolvedValue("owner-identity-did");
+    fakeSessionManager.getOtherNonTerminatedSessions.mockResolvedValue([]);
+    fakeMongoDBStore.getDocumentMeta.mockRejectedValueOnce(new Error("mongo down"));
+
+    await handleAuth(deps, fakeIO, fakeSocket, fakeArgs, callback);
+
+    expect(callback).toHaveBeenCalledWith(
+      expect.objectContaining({
+        statusCode: 200,
+        data: expect.objectContaining({ title: null }),
+      })
+    );
   });
 
   it("creates a new owner session and terminates other active sessions when they exist", async () => {
@@ -283,6 +351,7 @@ describe("handleAuth", () => {
     expect(fakeSessionManager.getOtherNonTerminatedSessions).toHaveBeenCalledWith(
       fakeArgs.documentId,
       "owner-did",
+      fakeArgs.contractAddress,
       fakeArgs.sessionDid,
     );
 
@@ -360,6 +429,7 @@ describe("handleAuth", () => {
         role: "owner",
         sessionType: "new",
         roomInfo: fakeArgs.roomInfo,
+        title: null,
       },
     });
   });
@@ -454,6 +524,7 @@ describe("handleAuth", () => {
         role: "editor",
         sessionType: "existing",
         roomInfo: existingSession.roomInfo,
+        title: null,
       },
     });
   });
@@ -698,6 +769,7 @@ describe("handleAuth", () => {
         role: "owner",
         sessionType: "existing",
         roomInfo: existingSession.roomInfo,
+        title: null,
       },
     });
   });
@@ -797,6 +869,7 @@ describe("handleAuth", () => {
         role: "editor",
         sessionType: "existing",
         roomInfo: existingSession.roomInfo,
+        title: null,
       },
     });
   });
@@ -899,6 +972,7 @@ describe("handleAuth", () => {
         role: "editor",
         sessionType: "existing",
         roomInfo: existingSession.roomInfo,
+        title: null,
       },
     });
   });
@@ -1267,6 +1341,141 @@ describe("handleAuth", () => {
     expect(fakeSocket.data.rail).toBe("workspace");
     expect(fakeSocket.data.railKind).toBe("workspace");
   });
+
+  describe("rotation heal", () => {
+    const rotatedSession = {
+      documentId: "doc-1",
+      sessionDid: "session-1",
+      ownerDid: "did:key:old",
+      ownerIdentityDid: "did:key:creator",
+      portalAddress: "0xAaAaAaAaAaAaAaAaAaAaAaAaAaAaAaAaAaAaAaAa",
+      appType: "ddoc",
+    };
+    const rotatedJoinArgs = {
+      documentId: "doc-1",
+      sessionDid: "session-1",
+      collaborationToken: "collab-token",
+      ownerToken: "shared-workspace-owner-token",
+      ownerAddress: "0x1111111111111111111111111111111111111111",
+      // Same portal as rotatedSession.portalAddress, different case.
+      contractAddress: "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      joinOnly: true,
+    };
+
+    it("adopts a rotated ownerDid for the session's own portal and admits the workspace member", async () => {
+      fakeSessionManager.getSession.mockResolvedValue({ ...rotatedSession });
+      fakeAuthService.verifyCollaborationToken.mockResolvedValue("did:key:collab");
+      fakeAuthService.verifyOwnerToken.mockResolvedValue("did:key:new");
+      fakeSessionManager.getWorkspaceEditEnabled.mockResolvedValue(true);
+      const fakeSocket = createFakeSocket();
+      const callback = vi.fn();
+
+      await handleAuth(deps, createFakeIO(), fakeSocket, { ...rotatedJoinArgs }, callback);
+
+      expect(fakeSessionManager.updateSessionOwnerDid).toHaveBeenCalledWith(
+        "doc-1",
+        "session-1",
+        "did:key:new"
+      );
+      expect(callback).toHaveBeenCalledWith(expect.objectContaining({ status: true }));
+      expect(fakeSocket.data.rail).toBe("workspace");
+    });
+
+    it("does NOT heal when the presented contractAddress differs from session.portalAddress", async () => {
+      fakeSessionManager.getSession.mockResolvedValue({ ...rotatedSession });
+      fakeAuthService.verifyCollaborationToken.mockResolvedValue("did:key:collab");
+      fakeAuthService.verifyOwnerToken.mockResolvedValue("did:key:new");
+      fakeSessionManager.getCollabJoinEnabled.mockResolvedValue(undefined);
+      const callback = vi.fn();
+
+      await handleAuth(
+        deps,
+        createFakeIO(),
+        createFakeSocket(),
+        {
+          ...rotatedJoinArgs,
+          contractAddress: "0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        },
+        callback
+      );
+
+      expect(fakeSessionManager.updateSessionOwnerDid).not.toHaveBeenCalled();
+      expect(callback).toHaveBeenCalledWith(
+        expect.objectContaining({ statusCode: 403, errorCode: ErrorCode.JOIN_DISABLED })
+      );
+    });
+
+    it("does NOT heal when portalAddress is null (legacy session)", async () => {
+      fakeSessionManager.getSession.mockResolvedValue({ ...rotatedSession, portalAddress: null });
+      fakeAuthService.verifyCollaborationToken.mockResolvedValue("did:key:collab");
+      fakeAuthService.verifyOwnerToken.mockResolvedValue("did:key:new");
+      fakeSessionManager.getCollabJoinEnabled.mockResolvedValue(undefined);
+      const callback = vi.fn();
+
+      await handleAuth(deps, createFakeIO(), createFakeSocket(), { ...rotatedJoinArgs }, callback);
+
+      expect(fakeSessionManager.updateSessionOwnerDid).not.toHaveBeenCalled();
+    });
+
+    it("restores owner role for the identity-bound creator after rotation", async () => {
+      fakeSessionManager.getSession.mockResolvedValue({ ...rotatedSession });
+      fakeAuthService.verifyCollaborationToken.mockResolvedValue("did:key:collab");
+      fakeAuthService.verifyOwnerToken.mockResolvedValue("did:key:new");
+      fakeAuthService.verifyIdentityToken.mockResolvedValue("did:key:creator");
+      const callback = vi.fn();
+
+      await handleAuth(
+        deps,
+        createFakeIO(),
+        createFakeSocket(),
+        {
+          ...rotatedJoinArgs,
+          joinOnly: false,
+          identityToken: "identity-token",
+          identityContractAddress: "0x3333333333333333333333333333333333333333",
+        },
+        callback
+      );
+
+      expect(fakeSessionManager.updateSessionOwnerDid).toHaveBeenCalledWith(
+        "doc-1",
+        "session-1",
+        "did:key:new"
+      );
+      expect(callback).toHaveBeenCalledWith(
+        expect.objectContaining({ status: true, data: expect.objectContaining({ role: "owner" }) })
+      );
+    });
+  });
+
+  describe("actorIdentityDid stamp", () => {
+    it("stamps the proven identity DID on the socket for a member join", async () => {
+      fakeSessionManager.getSession.mockResolvedValue({ ...boundSession });
+      fakeAuthService.verifyCollaborationToken.mockResolvedValue("did:key:collab");
+      fakeAuthService.verifyOwnerToken.mockResolvedValue("did:key:shared-portal");
+      fakeAuthService.verifyIdentityToken.mockResolvedValue("did:key:member");
+      fakeSessionManager.getWorkspaceEditEnabled.mockResolvedValue(true);
+      const fakeSocket = createFakeSocket();
+      const callback = vi.fn();
+
+      await handleAuth(deps, createFakeIO(), fakeSocket, { ...boundJoinArgs }, callback);
+
+      expect(fakeSocket.data.actorIdentityDid).toBe("did:key:member");
+    });
+
+    it("leaves actorIdentityDid undefined when no identityToken is presented", async () => {
+      fakeSessionManager.getSession.mockResolvedValue({ ...boundSession });
+      fakeAuthService.verifyCollaborationToken.mockResolvedValue("did:key:collab");
+      fakeAuthService.verifyOwnerToken.mockResolvedValue("did:key:shared-portal");
+      const { identityToken, identityContractAddress, ...tokenless } = boundJoinArgs;
+      const fakeSocket = createFakeSocket();
+      const callback = vi.fn();
+
+      await handleAuth(deps, createFakeIO(), fakeSocket, tokenless as any, callback);
+
+      expect(fakeSocket.data.actorIdentityDid).toBeUndefined();
+    });
+  });
 });
 
 describe("handleAuth — edit-claim admission (existing session, non-owner)", () => {
@@ -1288,7 +1497,7 @@ describe("handleAuth — edit-claim admission (existing session, non-owner)", ()
     getWorkspaceEditEnabled: vi.fn(),
     fillOwnerIdentityDidIfAbsent: vi.fn(),
   };
-  const fakeMongoDBStore = {} as any;
+  const fakeMongoDBStore = { getDocumentMeta: vi.fn().mockResolvedValue(null) } as any;
   const fakeGateEpochCache = {
     getEditGrantEpoch: vi.fn(),
     refreshEditGrantEpoch: vi.fn(),

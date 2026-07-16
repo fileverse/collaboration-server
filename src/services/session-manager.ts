@@ -107,6 +107,23 @@ export class SessionManager {
     }
   }
 
+  // Rotation heal: the chain re-registered the portal collab DID (member
+  // removal); adopt it so compares against the stored value keep working.
+  async updateSessionOwnerDid(
+    documentId: string,
+    sessionDid: string,
+    ownerDid: string
+  ): Promise<void> {
+    try {
+      await SessionModel.updateOne({ documentId, sessionDid }, { $set: { ownerDid } });
+      const sessionKey = this.getSessionKey(documentId, sessionDid);
+      const mem = this.inMemorySessions.get(sessionKey);
+      if (mem) mem.ownerDid = ownerDid;
+    } catch (error) {
+      console.error("Error updating session ownerDid:", error);
+    }
+  }
+
   async getSession(documentId: string, sessionDid: string): Promise<RuntimeSession | undefined> {
     // Check in-memory first for active sessions
     const sessionKey = this.getSessionKey(documentId, sessionDid);
@@ -269,10 +286,17 @@ export class SessionManager {
   async getOtherNonTerminatedSessions(
     documentId: string,
     ownerDid: string,
+    portalAddress: string | null,
     excludeSessionDid?: string
   ): Promise<Array<{ documentId: string; sessionDid: string; appType?: "ddoc" | "dsheet" }>> {
     try {
-      const query: Record<string, any> = { documentId, ownerDid, state: { $ne: "terminated" } };
+      const or: Record<string, any>[] = [{ ownerDid }];
+      if (portalAddress && /^0x[0-9a-fA-F]{40}$/.test(portalAddress)) {
+        // Post-rotation sessions store the old ownerDid — the portal match is
+        // what lets a new-DID owner sweep them.
+        or.push({ portalAddress: { $regex: `^${portalAddress}$`, $options: "i" } });
+      }
+      const query: Record<string, any> = { documentId, state: { $ne: "terminated" }, $or: or };
       if (excludeSessionDid) {
         query.sessionDid = { $ne: excludeSessionDid };
       }
@@ -302,6 +326,28 @@ export class SessionManager {
       return sessions.map((s: any) => ({ sessionDid: s.sessionDid }));
     } catch (error) {
       console.error("Error getting non-terminated sessions for document:", error);
+      return [];
+    }
+  }
+
+  async getNonTerminatedSessionsForPortal(
+    portalAddress: string
+  ): Promise<Array<{ documentId: string; sessionDid: string }>> {
+    if (!/^0x[0-9a-fA-F]{40}$/.test(portalAddress)) return [];
+    try {
+      const sessions = await SessionModel.find(
+        {
+          portalAddress: { $regex: `^${portalAddress}$`, $options: "i" },
+          state: { $ne: "terminated" },
+        },
+        { documentId: 1, sessionDid: 1 }
+      ).lean();
+      return sessions.map((s: any) => ({
+        documentId: s.documentId,
+        sessionDid: s.sessionDid,
+      }));
+    } catch (error) {
+      console.error("Error getting non-terminated sessions for portal:", error);
       return [];
     }
   }

@@ -8,6 +8,7 @@ vi.mock("../../database/models", () => ({
     findOneAndUpdate: vi.fn(),
     find: vi.fn(),
     countDocuments: vi.fn(),
+    updateOne: vi.fn(),
   },
   DocumentUpdateModel: {
     deleteMany: vi.fn(),
@@ -200,13 +201,14 @@ describe("SessionManager", () => {
     const sessions = await sessionManager.getOtherNonTerminatedSessions(
       "doc-1",
       "owner-did",
+      null,
       "session-1"
     );
 
     expect(SessionModel.find).toHaveBeenCalledWith({
       documentId: "doc-1",
-      ownerDid: "owner-did",
       state: { $ne: "terminated" },
+      $or: [{ ownerDid: "owner-did" }],
       sessionDid: { $ne: "session-1" },
     });
     expect(sessions).toEqual([
@@ -383,5 +385,96 @@ describe("SessionManager", () => {
     expect(session?.appType).toBe("dsheet");
 
     await freshManager.destroy();
+  });
+
+  // updateSessionOwnerDid
+
+  describe("updateSessionOwnerDid", () => {
+    it("persists the new ownerDid and mirrors it in memory", async () => {
+      const freshManager = new SessionManager();
+      await freshManager.createSession({
+        documentId: "doc1",
+        sessionDid: "sess1",
+        ownerDid: "did:key:old",
+        portalAddress: "0x" + "a".repeat(40),
+        collabJoinEnabled: false,
+      } as any);
+      vi.clearAllMocks();
+
+      await freshManager.updateSessionOwnerDid("doc1", "sess1", "did:key:new");
+
+      expect(SessionModel.updateOne).toHaveBeenCalledWith(
+        { documentId: "doc1", sessionDid: "sess1" },
+        { $set: { ownerDid: "did:key:new" } }
+      );
+      const session = await freshManager.getSession("doc1", "sess1");
+      expect(session?.ownerDid).toBe("did:key:new");
+
+      await freshManager.destroy();
+    });
+  });
+
+  // getNonTerminatedSessionsForPortal
+
+  describe("getNonTerminatedSessionsForPortal", () => {
+    it("matches portalAddress case-insensitively and excludes terminated", async () => {
+      const portal = "0x" + "A".repeat(40);
+      vi.mocked(SessionModel.find).mockReturnValue({
+        lean: vi.fn().mockResolvedValue([{ documentId: "doc-1", sessionDid: "sess-1" }]),
+      } as any);
+
+      const sessions = await sessionManager.getNonTerminatedSessionsForPortal(portal);
+
+      expect(SessionModel.find).toHaveBeenCalledWith(
+        {
+          portalAddress: { $regex: `^${portal}$`, $options: "i" },
+          state: { $ne: "terminated" },
+        },
+        { documentId: 1, sessionDid: 1 }
+      );
+      expect(sessions).toEqual([{ documentId: "doc-1", sessionDid: "sess-1" }]);
+    });
+
+    it("returns [] for a non-hex portalAddress without querying", async () => {
+      const out = await sessionManager.getNonTerminatedSessionsForPortal("not-an-address');--");
+
+      expect(out).toEqual([]);
+      expect(SessionModel.find).not.toHaveBeenCalled();
+    });
+  });
+
+  // getOtherNonTerminatedSessions ($or sweep)
+
+  describe("getOtherNonTerminatedSessions ($or sweep)", () => {
+    it("matches by portalAddress even when ownerDid differs (post-rotation orphan)", async () => {
+      const portal = "0x" + "a".repeat(40);
+      vi.mocked(SessionModel.find).mockResolvedValue([
+        { documentId: "doc-1", sessionDid: "orphan-session", ownerDid: "did:key:old", appType: "ddoc" },
+      ] as any);
+
+      const sessions = await sessionManager.getOtherNonTerminatedSessions("doc-1", "did:key:new", portal);
+
+      expect(SessionModel.find).toHaveBeenCalledWith({
+        documentId: "doc-1",
+        state: { $ne: "terminated" },
+        $or: [{ ownerDid: "did:key:new" }, { portalAddress: { $regex: `^${portal}$`, $options: "i" } }],
+      });
+      expect(sessions).toEqual([{ documentId: "doc-1", sessionDid: "orphan-session", appType: "ddoc" }]);
+    });
+
+    it("still matches legacy null-portal sessions by ownerDid", async () => {
+      vi.mocked(SessionModel.find).mockResolvedValue([
+        { documentId: "doc-1", sessionDid: "legacy-session", ownerDid: "did:key:x", appType: "ddoc" },
+      ] as any);
+
+      const sessions = await sessionManager.getOtherNonTerminatedSessions("doc-1", "did:key:x", null);
+
+      expect(SessionModel.find).toHaveBeenCalledWith({
+        documentId: "doc-1",
+        state: { $ne: "terminated" },
+        $or: [{ ownerDid: "did:key:x" }],
+      });
+      expect(sessions).toEqual([{ documentId: "doc-1", sessionDid: "legacy-session", appType: "ddoc" }]);
+    });
   });
 });

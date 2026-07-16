@@ -1,12 +1,13 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import * as ucans from "@ucans/ucans";
 import { AuthService } from "../../services/auth";
-import { getIdentitySigningDid, getOwnerDid } from "../../utils/contract";
+import { getIdentitySigningDid, getOwnerDid, refreshOwnerDid } from "../../utils/contract";
 
 vi.mock("@ucans/ucans", () => ({ verify: vi.fn(), validate: vi.fn() }));
 vi.mock("../../utils/contract", () => ({
   getIdentitySigningDid: vi.fn(),
   getOwnerDid: vi.fn(),
+  refreshOwnerDid: vi.fn(),
 }));
 
 describe("verifyCollaborationToken cache (R4a)", () => {
@@ -64,6 +65,52 @@ describe("verifyIdentityToken", () => {
     (getIdentitySigningDid as any).mockResolvedValue(null);
     const auth = new AuthService("did:server");
     expect(await auth.verifyIdentityToken("tok", "0xIdentity" as any, "ddoc-A")).toBeNull();
+  });
+});
+
+describe("verifyOwnerToken rotation re-read", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it("re-reads the chain once when the cached DID fails verification and accepts the fresh DID", async () => {
+    (getOwnerDid as any).mockResolvedValue("did:key:old");
+    (refreshOwnerDid as any).mockResolvedValue("did:key:new");
+    (ucans.verify as any).mockImplementation((_token: string, opts: any) =>
+      Promise.resolve({ ok: opts.requiredCapabilities[0].rootIssuer === "did:key:new" })
+    );
+    const auth = new AuthService("did:server");
+
+    const did = await auth.verifyOwnerToken("tok", "0xContract" as any, "0xCollab" as any);
+
+    expect(did).toBe("did:key:new");
+    expect(refreshOwnerDid).toHaveBeenCalledTimes(1);
+    expect(refreshOwnerDid).toHaveBeenCalledWith("0xContract", "0xCollab");
+  });
+
+  it("rate-limits the re-read per (contract, address)", async () => {
+    (getOwnerDid as any).mockResolvedValue("did:key:old");
+    (refreshOwnerDid as any).mockResolvedValue("did:key:still-wrong");
+    (ucans.verify as any).mockResolvedValue({ ok: false });
+    const auth = new AuthService("did:server");
+
+    const first = await auth.verifyOwnerToken("badtok", "0xContract" as any, "0xCollab" as any);
+    const second = await auth.verifyOwnerToken("badtok", "0xContract" as any, "0xCollab" as any);
+
+    expect(first).toBeNull();
+    expect(second).toBeNull();
+    expect(refreshOwnerDid).toHaveBeenCalledTimes(1);
+  });
+
+  it("returns the cached DID on the happy path without any re-read", async () => {
+    (getOwnerDid as any).mockResolvedValue("did:key:owner");
+    (ucans.verify as any).mockResolvedValue({ ok: true });
+    const auth = new AuthService("did:server");
+
+    const did = await auth.verifyOwnerToken("tok", "0xContract" as any, "0xCollab" as any);
+
+    expect(did).toBe("did:key:owner");
+    expect(refreshOwnerDid).not.toHaveBeenCalled();
   });
 });
 

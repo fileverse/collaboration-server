@@ -256,6 +256,14 @@ export class MongoDBStore {
     );
   }
 
+  async getDocumentMeta(
+    documentId: string
+  ): Promise<{ editLock: string | null; title: string | null } | null> {
+    const meta: any = await DocumentMetaModel.findById(documentId).select("editLock title").lean();
+    if (!meta) return null;
+    return { editLock: meta.editLock ?? null, title: meta.title ?? null };
+  }
+
   // Discovery: docs bound to the proven owner (identity DID or portal owner DID) — recovery for a wiped device.
   async listDocumentsForOwner(
     by: { ownerIdentityDid?: string; ownerDid?: string }

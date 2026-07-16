@@ -5,7 +5,16 @@ import type { SessionManager } from "./session-manager";
 import type { MongoDBStore } from "./mongodb-store";
 import type { GateEpochCache, EditBoundCache } from "./gate-epoch";
 import { getRoomName } from "./socket-handlers";
-import { Hex } from "viem";
+import { Hex, isAddress } from "viem";
+import { getPortalOwnerAddress, bustOwnerDidCacheForPortal } from "../utils/contract";
+
+// Duplicated from socket-handlers.ts (not exported there); keep in sync if that changes.
+function validateHexAddress(address: string | undefined, fieldName: string): address is Hex {
+  if (!address || !isAddress(address)) {
+    return false;
+  }
+  return true;
+}
 
 export interface OwnerOpDeps {
   authService: Pick<AuthService, "verifyOwnerOp">;
@@ -274,5 +283,70 @@ export function createMirrorReadHandler(deps: { mongodbStore: Pick<MongoDBStore,
       return;
     }
     res.status(200).json(mirror);
+  };
+}
+
+export function createEvictWorkspaceMemberHandler(
+  deps: {
+    authService: Pick<AuthService, "verifyOwnerToken">;
+    sessionManager: Pick<SessionManager, "getNonTerminatedSessionsForPortal">;
+  },
+  io: AppServer
+) {
+  return async (req: Request, res: Response): Promise<void> => {
+    const portalAddress = req.params.portalAddress as Hex;
+    const { memberIdentityDid, ownerToken, ownerAddress } = req.body || {};
+
+    if (
+      !validateHexAddress(portalAddress, "portalAddress") ||
+      !validateHexAddress(ownerAddress, "ownerAddress")
+    ) {
+      res.status(400).json({ error: "Invalid portal or owner address" });
+      return;
+    }
+    if (typeof memberIdentityDid !== "string" || !memberIdentityDid.startsWith("did:")) {
+      res.status(400).json({ error: "memberIdentityDid must be a DID string" });
+      return;
+    }
+    if (typeof ownerToken !== "string" || !ownerToken) {
+      res.status(400).json({ error: "ownerToken is required" });
+      return;
+    }
+
+    // Owner-only: the presented address must BE the portal creator
+    // (Portal.owner() = the workspace Admin Sub-Agent). collaboratorKeys(MSA)
+    // is the shared member DID every member can sign for — it lives at a
+    // different address and never passes this gate.
+    const portalOwner = await getPortalOwnerAddress(portalAddress);
+    if (!portalOwner || portalOwner.toLowerCase() !== String(ownerAddress).toLowerCase()) {
+      res.status(403).json({ error: "Not the portal owner" });
+      return;
+    }
+    const ownerDid = await deps.authService.verifyOwnerToken(
+      ownerToken,
+      portalAddress,
+      ownerAddress as Hex
+    );
+    if (!ownerDid) {
+      res.status(403).json({ error: "Owner token verification failed" });
+      return;
+    }
+
+    bustOwnerDidCacheForPortal(portalAddress);
+
+    const sessions = await deps.sessionManager.getNonTerminatedSessionsForPortal(portalAddress);
+    let dropped = 0;
+    for (const s of sessions) {
+      const roomName = getRoomName(s.documentId, s.sessionDid);
+      const sockets = await io.in(roomName).fetchSockets();
+      for (const sock of sockets) {
+        if (sock.data.actorIdentityDid === memberIdentityDid) {
+          sock.disconnect(true);
+          dropped++;
+        }
+      }
+    }
+
+    res.status(200).json({ ok: true, sessions: sessions.length, dropped });
   };
 }

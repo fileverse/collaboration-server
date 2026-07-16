@@ -158,6 +158,7 @@ export async function handleAuth(
     let railKind: "gp-actor" | "gp-legacy" | "workspace" | "public" | undefined = undefined;
     let admittedEditGrantEpoch: number | undefined = undefined;
     let actorHandle: string | undefined = undefined;
+    let provenIdentityDid: string | null = null;
 
     // joinOnly is strictly privilege-reducing: never create or bind a room on behalf of
     // a joiner. A workspace member's valid SHARED ownerToken would otherwise create the
@@ -232,12 +233,14 @@ export async function handleAuth(
           });
         }
         boundOwnerIdentityDid = provenSigningDid;
+        provenIdentityDid = provenSigningDid;
       }
 
       // Terminate other sessions with socket notification
       const otherSessions = await sessionManager.getOtherNonTerminatedSessions(
         documentId,
         ownerDid,
+        args.contractAddress ?? null,
         sessionDid
       );
       for (const oldSession of otherSessions) {
@@ -334,6 +337,29 @@ export async function handleAuth(
         );
       }
 
+      // Rotation heal: the chain is the root of trust for the portal collab
+      // DID; the stored session value is a cache of it. A verified ownerToken
+      // for the session's OWN portal that resolves to a different DID means
+      // the workspace rotated (member removal) — adopt it, or the whole team
+      // stays locked out of the established session. A foreign portal's owner
+      // fails the address guard; a removed member's stale token never
+      // verifies against the rotated chain slot.
+      if (
+        ownerDid &&
+        existingSession.portalAddress &&
+        args.contractAddress &&
+        existingSession.portalAddress.toLowerCase() ===
+          args.contractAddress.toLowerCase() &&
+        ownerDid !== existingSession.ownerDid
+      ) {
+        await sessionManager.updateSessionOwnerDid(
+          documentId,
+          existingSession.sessionDid,
+          ownerDid
+        );
+        existingSession.ownerDid = ownerDid;
+      }
+
       // Identity-based role (ddoc-only): the shared team-portal
       // DID cannot tell a member from the creator, but the per-person identity signingDid
       // can. On a bound session a presented identityToken DECIDES the role — owner needs
@@ -361,6 +387,7 @@ export async function handleAuth(
           provenDid === boundIdentityDid && ownerDid === existingSession.ownerDid
             ? "owner"
             : "editor";
+        provenIdentityDid = provenDid;
       } else if (
         storedAppType === "ddoc" &&
         boundIdentityDid &&
@@ -393,6 +420,7 @@ export async function handleAuth(
           documentId
         );
         if (provenSigningDid) {
+          provenIdentityDid = provenSigningDid;
           await sessionManager.fillOwnerIdentityDidIfAbsent(
             documentId,
             existingSession.sessionDid,
@@ -510,6 +538,7 @@ export async function handleAuth(
     socket.data.railKind = railKind;
     socket.data.admittedEditGrantEpoch = admittedEditGrantEpoch;
     socket.data.actorHandle = actorHandle;
+    socket.data.actorIdentityDid = provenIdentityDid ?? undefined;
 
     // Join the Socket.IO room
     const roomName = getRoomName(documentId, sessionDid);
@@ -528,6 +557,12 @@ export async function handleAuth(
     };
     socket.to(roomName).emit("/room/membership_change", membershipPayload);
 
+    // Latest stored title beats the session-frozen roomInfo blob for joiners
+    // arriving after a mid-session rename.
+    const documentMeta = await deps.mongodbStore
+      .getDocumentMeta(documentId)
+      .catch(() => null);
+
     callback({
       status: true,
       statusCode: 200,
@@ -536,6 +571,7 @@ export async function handleAuth(
         role,
         sessionType,
         roomInfo,
+        title: documentMeta?.title ?? null,
       },
     });
   } catch (error) {
@@ -1084,6 +1120,12 @@ export async function handleSetDocumentMeta(
       title: args.title,
     });
 
+    const roomName = getRoomName(documentId, socket.data.sessionDid);
+    socket.to(roomName).emit("/document/meta_update", {
+      roomId: documentId,
+      title: args.title,
+    });
+
     callback({
       status: true,
       statusCode: 200,
@@ -1207,6 +1249,17 @@ export async function handleTerminateSession(
       contractAddress,
       ownerAddress
     );
+
+    if (
+      ownerDid &&
+      session.portalAddress &&
+      contractAddress &&
+      session.portalAddress.toLowerCase() === String(contractAddress).toLowerCase() &&
+      ownerDid !== session.ownerDid
+    ) {
+      await sessionManager.updateSessionOwnerDid(documentId, session.sessionDid, ownerDid);
+      session.ownerDid = ownerDid;
+    }
 
     if (ownerDid !== session.ownerDid) {
       return callback({

@@ -1,7 +1,13 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { createCollabJoinEnabledHandler, createListMyDocumentsHandler, createDeleteDocumentHandler, createWorkspaceEditTierHandler } from "../../services/owner-op-routes";
-import { createRefreshEditGrantHandler, createMirrorReadHandler } from "../../services/owner-op-routes";
+import { createRefreshEditGrantHandler, createMirrorReadHandler, createEvictWorkspaceMemberHandler } from "../../services/owner-op-routes";
 import { getRoomName } from "../../services/socket-handlers";
+import { getPortalOwnerAddress, bustOwnerDidCacheForPortal } from "../../utils/contract";
+
+vi.mock("../../utils/contract", () => ({
+  getPortalOwnerAddress: vi.fn(),
+  bustOwnerDidCacheForPortal: vi.fn(),
+}));
 
 function res() {
   const r: any = {};
@@ -375,5 +381,140 @@ describe("GET /documents/:id/mirror", () => {
     const r = res();
     await createMirrorReadHandler(deps)({ params: { documentId: "doc-1" } } as any, r);
     expect(r.status).toHaveBeenCalledWith(404);
+  });
+});
+
+describe("createEvictWorkspaceMemberHandler", () => {
+  const portalAddress = "0x0000000000000000000000000000000000000002";
+  const ownerAddress = "0x0000000000000000000000000000000000000001"; // Portal.owner() (ASA)
+  const msaAddress = "0x0000000000000000000000000000000000000003"; // shared member DID address — must NOT pass
+  let deps: any, io: any;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    deps = {
+      authService: { verifyOwnerToken: vi.fn() },
+      sessionManager: { getNonTerminatedSessionsForPortal: vi.fn().mockResolvedValue([]) },
+    };
+    io = { in: vi.fn(() => ({ fetchSockets: vi.fn().mockResolvedValue([]) })) };
+    (getPortalOwnerAddress as any).mockResolvedValue(ownerAddress);
+  });
+
+  it("drops only sockets whose actorIdentityDid matches, across all portal sessions", async () => {
+    deps.authService.verifyOwnerToken.mockResolvedValue("did:key:owner");
+    deps.sessionManager.getNonTerminatedSessionsForPortal.mockResolvedValue([
+      { documentId: "doc1", sessionDid: "sess1" },
+      { documentId: "doc2", sessionDid: "sess2" },
+    ]);
+    const matchSock: any = { data: { actorIdentityDid: "did:key:member" }, disconnect: vi.fn() };
+    const otherMemberSock: any = { data: { actorIdentityDid: "did:key:other" }, disconnect: vi.fn() };
+    const undefinedDidSock: any = { data: {}, disconnect: vi.fn() };
+    const otherRoomSock: any = { data: { actorIdentityDid: "did:key:other2" }, disconnect: vi.fn() };
+    const byRoom: Record<string, any[]> = {
+      [getRoomName("doc1", "sess1")]: [matchSock, otherMemberSock, undefinedDidSock],
+      [getRoomName("doc2", "sess2")]: [otherRoomSock],
+    };
+    io.in = vi.fn((room: string) => ({ fetchSockets: vi.fn().mockResolvedValue(byRoom[room] ?? []) }));
+    const r = res();
+
+    await createEvictWorkspaceMemberHandler(deps, io)(
+      {
+        params: { portalAddress },
+        body: { memberIdentityDid: "did:key:member", ownerToken: "tok", ownerAddress },
+      } as any,
+      r
+    );
+
+    expect(matchSock.disconnect).toHaveBeenCalledWith(true);
+    expect(otherMemberSock.disconnect).not.toHaveBeenCalled();
+    expect(undefinedDidSock.disconnect).not.toHaveBeenCalled();
+    expect(otherRoomSock.disconnect).not.toHaveBeenCalled();
+    expect(r.status).toHaveBeenCalledWith(200);
+    expect(r.json).toHaveBeenCalledWith({ ok: true, sessions: 2, dropped: 1 });
+    expect(bustOwnerDidCacheForPortal).toHaveBeenCalledWith(portalAddress);
+  });
+
+  it("403s when ownerAddress is not Portal.owner() (e.g. the MSA)", async () => {
+    const r = res();
+
+    await createEvictWorkspaceMemberHandler(deps, io)(
+      {
+        params: { portalAddress },
+        body: { memberIdentityDid: "did:key:member", ownerToken: "tok", ownerAddress: msaAddress },
+      } as any,
+      r
+    );
+
+    expect(r.status).toHaveBeenCalledWith(403);
+    expect(r.json).toHaveBeenCalledWith({ error: "Not the portal owner" });
+    expect(deps.authService.verifyOwnerToken).not.toHaveBeenCalled();
+    expect(deps.sessionManager.getNonTerminatedSessionsForPortal).not.toHaveBeenCalled();
+  });
+
+  it("403s when the owner token does not verify", async () => {
+    deps.authService.verifyOwnerToken.mockResolvedValue(null);
+    const r = res();
+
+    await createEvictWorkspaceMemberHandler(deps, io)(
+      {
+        params: { portalAddress },
+        body: { memberIdentityDid: "did:key:member", ownerToken: "bad-tok", ownerAddress },
+      } as any,
+      r
+    );
+
+    expect(r.status).toHaveBeenCalledWith(403);
+    expect(r.json).toHaveBeenCalledWith({ error: "Owner token verification failed" });
+    expect(deps.sessionManager.getNonTerminatedSessionsForPortal).not.toHaveBeenCalled();
+    expect(bustOwnerDidCacheForPortal).not.toHaveBeenCalled();
+  });
+
+  it("400s on malformed memberIdentityDid or addresses", async () => {
+    const r1 = res();
+    await createEvictWorkspaceMemberHandler(deps, io)(
+      {
+        params: { portalAddress },
+        body: { memberIdentityDid: "not-a-did", ownerToken: "tok", ownerAddress },
+      } as any,
+      r1
+    );
+    expect(r1.status).toHaveBeenCalledWith(400);
+    expect(r1.json).toHaveBeenCalledWith({ error: "memberIdentityDid must be a DID string" });
+
+    const r2 = res();
+    await createEvictWorkspaceMemberHandler(deps, io)(
+      {
+        params: { portalAddress: "not-an-address" },
+        body: { memberIdentityDid: "did:key:member", ownerToken: "tok", ownerAddress },
+      } as any,
+      r2
+    );
+    expect(r2.status).toHaveBeenCalledWith(400);
+    expect(r2.json).toHaveBeenCalledWith({ error: "Invalid portal or owner address" });
+
+    const r3 = res();
+    await createEvictWorkspaceMemberHandler(deps, io)(
+      {
+        params: { portalAddress },
+        body: { memberIdentityDid: "did:key:member", ownerToken: "tok", ownerAddress: "not-an-address" },
+      } as any,
+      r3
+    );
+    expect(r3.status).toHaveBeenCalledWith(400);
+    expect(r3.json).toHaveBeenCalledWith({ error: "Invalid portal or owner address" });
+
+    const r4 = res();
+    await createEvictWorkspaceMemberHandler(deps, io)(
+      {
+        params: { portalAddress },
+        body: { memberIdentityDid: "did:key:member", ownerAddress },
+      } as any,
+      r4
+    );
+    expect(r4.status).toHaveBeenCalledWith(400);
+    expect(r4.json).toHaveBeenCalledWith({ error: "ownerToken is required" });
+
+    // None of the malformed-input cases should have reached the chain read.
+    expect(getPortalOwnerAddress).not.toHaveBeenCalled();
   });
 });
