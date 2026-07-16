@@ -21,7 +21,13 @@ export class AuthService {
   async verifyOwnerToken(token: string, contractAddress: Hex, collaboratorAddress: Hex) {
     try {
       const ownerDid = await getOwnerDid(contractAddress, collaboratorAddress);
-      if (!ownerDid) return null;
+      // Reject anything that isn't a DID string before it reaches ucans.verify
+      // (which throws a TypeError on a malformed rootIssuer instead of failing
+      // the verification) — an unregistered or mis-decoded collaborator must
+      // 401 cleanly.
+      if (!ownerDid || typeof ownerDid !== "string" || !ownerDid.startsWith("did:")) {
+        return null;
+      }
 
       const result = await ucans.verify(token, {
         audience: this.serverDid,
