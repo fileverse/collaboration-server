@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { createCollabJoinEnabledHandler, createListMyDocumentsHandler, createDeleteDocumentHandler, createWorkspaceEditTierHandler } from "../../services/owner-op-routes";
-import { createRefreshEditGrantHandler, createMirrorReadHandler, createEvictWorkspaceMemberHandler } from "../../services/owner-op-routes";
+import { createMirrorReadHandler, createEvictWorkspaceMemberHandler, createEvictEditActorsHandler } from "../../services/owner-op-routes";
 import { getRoomName } from "../../services/socket-handlers";
 import { getPortalOwnerAddress, bustOwnerDidCacheForPortal } from "../../utils/contract";
 
@@ -268,104 +268,6 @@ describe("DELETE /documents/:id", () => {
   });
 });
 
-describe("POST refresh-edit-grant", () => {
-  let deps: any, io: any, gateEpochCache: any;
-  beforeEach(() => {
-    vi.clearAllMocks();
-    gateEpochCache = { refreshEditGrantEpoch: vi.fn() };
-    deps = {
-      authService: { verifyOwnerOp: vi.fn() },
-      sessionManager: {
-        getSession: vi.fn().mockResolvedValue({ sessionDid: "s", ownerDid: "od", ownerIdentityDid: "oid" }),
-        getNonTerminatedSessionsForDocument: vi.fn().mockResolvedValue([{ sessionDid: "s" }]),
-      },
-      gateEpochCache,
-    };
-    io = { in: vi.fn(() => ({ fetchSockets: vi.fn().mockResolvedValue([]) })) };
-  });
-
-  it("403s when verifyOwnerOp rejects (and never touches the gate)", async () => {
-    deps.authService.verifyOwnerOp.mockResolvedValue(false);
-    const r = res();
-    await createRefreshEditGrantHandler(deps, io)(
-      { params: { documentId: "doc-1" }, body: { sessionDid: "s" } } as any, r
-    );
-    expect(r.status).toHaveBeenCalledWith(403);
-    expect(gateEpochCache.refreshEditGrantEpoch).not.toHaveBeenCalled();
-  });
-
-  it("404s when the session is unknown", async () => {
-    deps.sessionManager.getSession.mockResolvedValue(null);
-    const r = res();
-    await createRefreshEditGrantHandler(deps, io)(
-      { params: { documentId: "doc-1" }, body: { sessionDid: "s" } } as any, r
-    );
-    expect(r.status).toHaveBeenCalledWith(404);
-    expect(gateEpochCache.refreshEditGrantEpoch).not.toHaveBeenCalled();
-  });
-
-  it("refreshes the epoch and force-drops ONLY stale GP sockets (not fresh GP / workspace / owner)", async () => {
-    deps.authService.verifyOwnerOp.mockResolvedValue(true);
-    gateEpochCache.refreshEditGrantEpoch.mockResolvedValue(6);
-    const staleGp: any = { data: { role: "editor", rail: "gp", railKind: "gp-legacy", admittedEditGrantEpoch: 5 }, disconnect: vi.fn() };
-    const freshGp: any = { data: { role: "editor", rail: "gp", railKind: "gp-legacy", admittedEditGrantEpoch: 6 }, disconnect: vi.fn() };
-    const ws: any = { data: { role: "editor", rail: "workspace", admittedEditGrantEpoch: 0 }, disconnect: vi.fn() };
-    const owner: any = { data: { role: "owner" }, disconnect: vi.fn() };
-    io.in = vi.fn(() => ({ fetchSockets: vi.fn().mockResolvedValue([staleGp, freshGp, ws, owner]) }));
-    const r = res();
-    await createRefreshEditGrantHandler(deps, io)(
-      { params: { documentId: "doc-1" }, body: { sessionDid: "s" } } as any, r
-    );
-    expect(gateEpochCache.refreshEditGrantEpoch).toHaveBeenCalledWith("doc-1");
-    expect(staleGp.disconnect).toHaveBeenCalledWith(true);
-    expect(freshGp.disconnect).not.toHaveBeenCalled();
-    expect(ws.disconnect).not.toHaveBeenCalled();
-    expect(owner.disconnect).not.toHaveBeenCalled();
-    expect(r.status).toHaveBeenCalledWith(200);
-    expect(r.json).toHaveBeenCalledWith({ ok: true, editGrantEpoch: 6 });
-  });
-
-  it("sweeps EVERY non-terminated session room plus the caller's own (doc-wide)", async () => {
-    deps.authService.verifyOwnerOp.mockResolvedValue(true);
-    gateEpochCache.refreshEditGrantEpoch.mockResolvedValue(6);
-    deps.sessionManager.getNonTerminatedSessionsForDocument.mockResolvedValue([
-      { sessionDid: "s-a" },
-      { sessionDid: "s-b" },
-    ]);
-    const gpA: any = { data: { role: "editor", rail: "gp", railKind: "gp-legacy", admittedEditGrantEpoch: 5 }, disconnect: vi.fn() };
-    const gpCaller: any = { data: { role: "editor", rail: "gp", railKind: "gp-legacy", admittedEditGrantEpoch: 5 }, disconnect: vi.fn() };
-    const byRoom: Record<string, any[]> = {
-      [getRoomName("doc-1", "s-a")]: [gpA],
-      [getRoomName("doc-1", "s-b")]: [],
-      [getRoomName("doc-1", "s-c")]: [gpCaller], // caller's sessionDid, NOT in the non-terminated list
-    };
-    io.in = vi.fn((room: string) => ({ fetchSockets: vi.fn().mockResolvedValue(byRoom[room] ?? []) }));
-    const r = res();
-    await createRefreshEditGrantHandler(deps, io)(
-      { params: { documentId: "doc-1" }, body: { sessionDid: "s-c" } } as any, r
-    );
-    expect(gpA.disconnect).toHaveBeenCalledWith(true); // a listed session's room was swept
-    expect(gpCaller.disconnect).toHaveBeenCalledWith(true); // the caller's own room was swept too
-    expect(io.in).toHaveBeenCalledWith(getRoomName("doc-1", "s-a"));
-    expect(io.in).toHaveBeenCalledWith(getRoomName("doc-1", "s-c"));
-    expect(r.status).toHaveBeenCalledWith(200);
-  });
-
-  it("does NOT force-drop when the gate epoch is unavailable (null) — the chokepoint backstop covers it", async () => {
-    deps.authService.verifyOwnerOp.mockResolvedValue(true);
-    gateEpochCache.refreshEditGrantEpoch.mockResolvedValue(null);
-    const gp: any = { data: { role: "editor", rail: "gp", railKind: "gp-legacy", admittedEditGrantEpoch: 5 }, disconnect: vi.fn() };
-    io.in = vi.fn(() => ({ fetchSockets: vi.fn().mockResolvedValue([gp]) }));
-    const r = res();
-    await createRefreshEditGrantHandler(deps, io)(
-      { params: { documentId: "doc-1" }, body: { sessionDid: "s" } } as any, r
-    );
-    expect(gp.disconnect).not.toHaveBeenCalled();
-    expect(r.status).toHaveBeenCalledWith(200);
-    expect(r.json).toHaveBeenCalledWith({ ok: true, editGrantEpoch: null });
-  });
-});
-
 describe("GET /documents/:id/mirror", () => {
   it("returns the latest mirror snapshot", async () => {
     const deps: any = { mongodbStore: { getLatestMirror: vi.fn().mockResolvedValue({ data: "ct", fileKeyEpoch: 3, createdAt: 9 }) } };
@@ -516,5 +418,84 @@ describe("createEvictWorkspaceMemberHandler", () => {
 
     // None of the malformed-input cases should have reached the chain read.
     expect(getPortalOwnerAddress).not.toHaveBeenCalled();
+  });
+});
+
+describe("createEvictEditActorsHandler", () => {
+  let deps: any, io: any, editBoundCache: any;
+  beforeEach(() => {
+    vi.clearAllMocks();
+    editBoundCache = { evict: vi.fn() };
+    deps = {
+      authService: { verifyOwnerOp: vi.fn() },
+      sessionManager: {
+        getSession: vi.fn().mockResolvedValue({ sessionDid: "s", ownerDid: "od", ownerIdentityDid: "oid" }),
+        getNonTerminatedSessionsForDocument: vi.fn().mockResolvedValue([{ sessionDid: "s" }]),
+      },
+      editBoundCache,
+    };
+    io = { in: vi.fn(() => ({ fetchSockets: vi.fn().mockResolvedValue([]) })) };
+  });
+
+  it("busts the cache and disconnects ONLY matching gp-actor sockets", async () => {
+    deps.authService.verifyOwnerOp.mockResolvedValue(true);
+    const target: any = { data: { role: "editor", railKind: "gp-actor", actorHandle: "h1" }, disconnect: vi.fn() };
+    const otherActor: any = { data: { role: "editor", railKind: "gp-actor", actorHandle: "h2" }, disconnect: vi.fn() };
+    const ws: any = { data: { role: "editor", railKind: "workspace", actorHandle: "0xabc" }, disconnect: vi.fn() };
+    const owner: any = { data: { role: "owner" }, disconnect: vi.fn() };
+    io.in = vi.fn(() => ({ fetchSockets: vi.fn().mockResolvedValue([target, otherActor, ws, owner]) }));
+    const r = res();
+    await createEvictEditActorsHandler(deps, io)(
+      { params: { documentId: "doc-1" }, body: { sessionDid: "s", handles: ["h1"] } } as any, r
+    );
+    expect(editBoundCache.evict).toHaveBeenCalledWith("doc-1", ["h1"]);
+    expect(target.disconnect).toHaveBeenCalledWith(true);
+    expect(otherActor.disconnect).not.toHaveBeenCalled();
+    expect(ws.disconnect).not.toHaveBeenCalled();
+    expect(owner.disconnect).not.toHaveBeenCalled();
+    expect(r.status).toHaveBeenCalledWith(200);
+    expect(r.json).toHaveBeenCalledWith({ ok: true, evicted: 1, dropped: 1 });
+  });
+
+  it("sweeps every non-terminated session room of the doc", async () => {
+    deps.authService.verifyOwnerOp.mockResolvedValue(true);
+    deps.sessionManager.getNonTerminatedSessionsForDocument.mockResolvedValue([
+      { sessionDid: "s-a" }, { sessionDid: "s-b" },
+    ]);
+    const inA: any = { data: { railKind: "gp-actor", actorHandle: "h1" }, disconnect: vi.fn() };
+    const inB: any = { data: { railKind: "gp-actor", actorHandle: "h1" }, disconnect: vi.fn() };
+    const byRoom: Record<string, any[]> = {
+      [getRoomName("doc-1", "s-a")]: [inA],
+      [getRoomName("doc-1", "s-b")]: [inB],
+    };
+    io.in = vi.fn((room: string) => ({ fetchSockets: vi.fn().mockResolvedValue(byRoom[room] ?? []) }));
+    const r = res();
+    await createEvictEditActorsHandler(deps, io)(
+      { params: { documentId: "doc-1" }, body: { sessionDid: "s-a", handles: ["h1"] } } as any, r
+    );
+    expect(inA.disconnect).toHaveBeenCalledWith(true);
+    expect(inB.disconnect).toHaveBeenCalledWith(true);
+    expect(r.json).toHaveBeenCalledWith({ ok: true, evicted: 1, dropped: 2 });
+  });
+
+  it("skips the sweep entirely for an empty handle list", async () => {
+    deps.authService.verifyOwnerOp.mockResolvedValue(true);
+    const r = res();
+    await createEvictEditActorsHandler(deps, io)(
+      { params: { documentId: "doc-1" }, body: { sessionDid: "s", handles: [] } } as any, r
+    );
+    expect(io.in).not.toHaveBeenCalled();
+    expect(r.json).toHaveBeenCalledWith({ ok: true, evicted: 0, dropped: 0 });
+  });
+
+  it("403s a non-owner without touching cache or sockets", async () => {
+    deps.authService.verifyOwnerOp.mockResolvedValue(false);
+    const r = res();
+    await createEvictEditActorsHandler(deps, io)(
+      { params: { documentId: "doc-1" }, body: { sessionDid: "s", handles: ["h1"] } } as any, r
+    );
+    expect(editBoundCache.evict).not.toHaveBeenCalled();
+    expect(io.in).not.toHaveBeenCalled();
+    expect(r.status).toHaveBeenCalledWith(403);
   });
 });

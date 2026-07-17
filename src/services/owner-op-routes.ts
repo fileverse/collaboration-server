@@ -3,7 +3,7 @@ import type { AppServer } from "../types/index";
 import type { AuthService } from "./auth";
 import type { SessionManager } from "./session-manager";
 import type { MongoDBStore } from "./mongodb-store";
-import type { GateEpochCache, EditBoundCache } from "./gate-epoch";
+import type { EditBoundCache } from "./gate-epoch";
 import { getRoomName } from "./socket-handlers";
 import { Hex, isAddress } from "viem";
 import { getPortalOwnerAddress, bustOwnerDidCacheForPortal } from "../utils/contract";
@@ -126,59 +126,13 @@ export function createWorkspaceEditTierHandler(deps: OwnerOpDeps, io: AppServer)
   };
 }
 
-export function createRefreshEditGrantHandler(
-  deps: OwnerOpDeps & { gateEpochCache: GateEpochCache },
+/** Targeted eviction of specific gp-actor handles: bust the per-actor edit-bound cache,
+ *  then drop the matching live sockets across every session room of the doc. Co-editors
+ *  with other handles are untouched. */
+export function createEvictEditActorsHandler(
+  deps: OwnerOpDeps & { editBoundCache: EditBoundCache },
   io: AppServer
 ) {
-  return async (req: Request, res: Response): Promise<void> => {
-    const documentId = req.params.documentId;
-    const { sessionDid, identityToken, identityContractAddress, ownerToken, ownerAddress, portalAddress } = req.body || {};
-
-    const session = await deps.sessionManager.getSession(documentId, sessionDid);
-    if (!session) {
-      res.status(404).json({ error: "Session not found" });
-      return;
-    }
-
-    const authorized = await deps.authService.verifyOwnerOp({
-      ddocId: documentId,
-      boundOwnerIdentityDid: (session as any).ownerIdentityDid ?? null,
-      boundOwnerDid: session.ownerDid ?? null,
-      identityToken, identityContractAddress: identityContractAddress as Hex,
-      ownerToken, ownerAddress: ownerAddress as Hex, portalAddress: portalAddress as Hex,
-    });
-    if (!authorized) {
-      res.status(403).json({ error: "Not the document owner" });
-      return;
-    }
-
-    // Post-bump epoch straight from the gate (cache-bypassing), then synchronously drop every
-    // GP-rail socket admitted below it. Still-authorized editors reconnect and re-mint a fresh
-    // grant; the demoted one holds only a view/comment share and cannot rejoin as an editor.
-    // Gate unreachable (null) ⇒ skip the drop; the chokepoint backstop still blocks stale writers.
-    const currentEpoch = await deps.gateEpochCache.refreshEditGrantEpoch(documentId);
-    if (currentEpoch !== null) {
-      const targets = await deps.sessionManager.getNonTerminatedSessionsForDocument(documentId);
-      const sessionDids = new Set<string>(targets.map((t) => t.sessionDid));
-      sessionDids.add(sessionDid);
-      for (const sd of sessionDids) {
-        const sockets = await io.in(getRoomName(documentId, sd)).fetchSockets();
-        for (const s of sockets) {
-          if (s.data.railKind === "gp-legacy" && (s.data.admittedEditGrantEpoch ?? -1) < currentEpoch) {
-            s.disconnect(true);
-          }
-        }
-      }
-    }
-
-    res.status(200).json({ ok: true, editGrantEpoch: currentEpoch });
-  };
-}
-
-/** Targeted eviction of specific gp-actor handles from the per-actor edit-bound cache.
- *  No socket disconnect: enforcement is the next-write/mirror 403 at the existing
- *  socket chokepoints (see docs/architecture/gp-semaphore.md), so co-editors are undisturbed. */
-export function createEvictEditActorsHandler(deps: OwnerOpDeps & { editBoundCache: EditBoundCache }) {
   return async (req: Request, res: Response): Promise<void> => {
     const documentId = req.params.documentId;
     const { sessionDid, handles, identityToken, identityContractAddress, ownerToken, ownerAddress, portalAddress } = req.body || {};
@@ -203,7 +157,25 @@ export function createEvictEditActorsHandler(deps: OwnerOpDeps & { editBoundCach
 
     const list = Array.isArray(handles) ? handles.filter((h) => typeof h === "string") : [];
     deps.editBoundCache.evict(documentId, list);
-    res.status(200).json({ ok: true, evicted: list.length });
+
+    let dropped = 0;
+    if (list.length > 0) {
+      const handleSet = new Set<string>(list);
+      const targets = await deps.sessionManager.getNonTerminatedSessionsForDocument(documentId);
+      const sessionDids = new Set<string>(targets.map((t) => t.sessionDid));
+      sessionDids.add(sessionDid);
+      for (const sd of sessionDids) {
+        const sockets = await io.in(getRoomName(documentId, sd)).fetchSockets();
+        for (const s of sockets) {
+          if (s.data.railKind === "gp-actor" && s.data.actorHandle && handleSet.has(s.data.actorHandle)) {
+            s.disconnect(true);
+            dropped++;
+          }
+        }
+      }
+    }
+
+    res.status(200).json({ ok: true, evicted: list.length, dropped });
   };
 }
 

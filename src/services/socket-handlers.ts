@@ -26,7 +26,7 @@ import { requireAuth } from "./auth-middleware";
 import { authService } from "./auth";
 import { mongodbStore } from "./mongodb-store";
 import { sessionManager } from "./session-manager";
-import { gateEpochCache, editBoundCache } from "./gate-epoch";
+import { editBoundCache } from "./gate-epoch";
 import { Hex, isAddress } from "viem";
 import type { SocketHandlerDeps } from "./socket-handlers.deps";
 import { config } from "../config";
@@ -35,7 +35,6 @@ const defaultDeps: SocketHandlerDeps = {
   authService,
   sessionManager,
   mongodbStore,
-  gateEpochCache,
   editBoundCache,
 };
 
@@ -49,6 +48,10 @@ function validateHexAddress(address: string | undefined, fieldName: string): add
 export function getRoomName(documentId: string, sessionDid: string): string {
   return `session::${documentId}__${sessionDid}`;
 }
+
+// Awareness-path re-check throttle; matches the edit-bound TTL so a revoked-but-idle
+// actor is caught within one cache window without adding gate traffic.
+const ADMIT_RECHECK_INTERVAL_MS = 10_000;
 
 /**
  * Coerce an untrusted appType into a known AppType. Anything that is not exactly
@@ -93,7 +96,7 @@ export function registerEventHandlers(io: AppServer): void {
       handleSetDocumentMeta(defaultDeps, socket, args, callback)
     );
     socket.on("/documents/peers/list", (args, callback) => handlePeersList(io, socket, args, callback));
-    socket.on("/documents/awareness", (args) => handleAwareness(io, socket, args));
+    socket.on("/documents/awareness", (args) => handleAwareness(defaultDeps, io, socket, args));
     socket.on("/documents/terminate", (args, callback) =>
       handleTerminateSession(defaultDeps, io, socket, args, callback)
     );
@@ -155,8 +158,7 @@ export async function handleAuth(
     let roomInfo: string | undefined;
     let resolvedAppType: AppType;
     let rail: "gp" | "workspace" | "public" | undefined = undefined;
-    let railKind: "gp-actor" | "gp-legacy" | "workspace" | "public" | undefined = undefined;
-    let admittedEditGrantEpoch: number | undefined = undefined;
+    let railKind: "gp-actor" | "workspace" | "public" | undefined = undefined;
     let actorHandle: string | undefined = undefined;
     let provenIdentityDid: string | null = null;
 
@@ -453,22 +455,6 @@ export async function handleAuth(
                 errorCode: ErrorCode.JOIN_DISABLED,
               });
             }
-          } else if (gp?.kind === "legacy") {
-            // Legacy doc-wide epoch admit (dual-support until 7-day UCAN expiry + full client rollout).
-            const currentEpoch = await deps.gateEpochCache.getEditGrantEpoch(documentId);
-            if (currentEpoch === null || gp.editGrantEpoch >= currentEpoch) {
-              rail = "gp";
-              railKind = "gp-legacy";
-              admittedEditGrantEpoch = gp.editGrantEpoch;
-              actorHandle = gp.nullifier;
-            } else {
-              return callback({
-                status: false,
-                statusCode: 403,
-                error: "Edit access is not authorized for this document",
-                errorCode: ErrorCode.JOIN_DISABLED,
-              });
-            }
           } else {
             return callback({
               status: false,
@@ -536,7 +522,6 @@ export async function handleAuth(
     socket.data.appType = resolvedAppType;
     socket.data.rail = rail;
     socket.data.railKind = railKind;
-    socket.data.admittedEditGrantEpoch = admittedEditGrantEpoch;
     socket.data.actorHandle = actorHandle;
     socket.data.actorIdentityDid = provenIdentityDid ?? undefined;
 
@@ -588,16 +573,12 @@ export async function handleAuth(
 // Live per-actor edit-admission re-check against the ADMITTED context stamped at JOIN.
 // Fail-closed for the actor rail (cold/unbound → reject). See docs/architecture/gp-semaphore.md.
 export async function isStillAdmitted(socket: AppSocket, deps: SocketHandlerDeps): Promise<boolean> {
-  const { rail, railKind, documentId, sessionDid, actorHandle, admittedEditGrantEpoch } = socket.data;
+  const { rail, railKind, documentId, sessionDid, actorHandle } = socket.data;
   if (!documentId || !sessionDid) return false;
   if (railKind === "gp-actor") {
     if (!actorHandle) return false;
     const s = await deps.editBoundCache.check(documentId, actorHandle);
     return s === "bound" || s === "stale-bound";
-  }
-  if (railKind === "gp-legacy") {
-    const epoch = await deps.gateEpochCache.getEditGrantEpoch(documentId);
-    return epoch === null || (admittedEditGrantEpoch ?? -1) >= epoch;
   }
   if (rail === "workspace") return (await deps.sessionManager.getWorkspaceEditEnabled(documentId, sessionDid)) === true;
   return (await deps.sessionManager.getCollabJoinEnabled(documentId, sessionDid)) === true;
@@ -663,12 +644,16 @@ export async function handleDocumentUpdate(
     if (socket.data.role !== "owner" && normalizeAppType(socket.data.appType) === "ddoc") {
       const revoked = !(await isStillAdmitted(socket, deps));
       if (revoked) {
-        return callback({
+        // Ack the reason first, then drop the socket — the revoked actor must not
+        // keep presence/read on a session they can no longer write to.
+        callback({
           status: false,
           statusCode: 403,
           error: "Edit access has been revoked",
           errorCode: ErrorCode.EDIT_REVOKED,
         });
+        socket.disconnect(true);
+        return;
       }
     }
 
@@ -1043,7 +1028,9 @@ export async function handleMirrorSnapshot(
     }
     // Live per-actor re-check: a demoted editor holding a stale socket must not author a mirror.
     if (socket.data.role !== "owner" && !(await isStillAdmitted(socket, deps))) {
-      return callback({ status: false, statusCode: 403, error: "Edit access has been revoked", errorCode: ErrorCode.EDIT_REVOKED });
+      callback({ status: false, statusCode: 403, error: "Edit access has been revoked", errorCode: ErrorCode.EDIT_REVOKED });
+      socket.disconnect(true);
+      return;
     }
 
     const { data, fileKeyEpoch } = args;
@@ -1181,6 +1168,7 @@ export async function handlePeersList(
 }
 
 export async function handleAwareness(
+  deps: SocketHandlerDeps,
   io: AppServer,
   socket: AppSocket,
   args: AwarenessArgs,
@@ -1197,6 +1185,20 @@ export async function handleAwareness(
     const roomName = getRoomName(documentId, socket.data.sessionDid);
     const awarenessPayload = { data, roomId: documentId };
     socket.to(roomName).emit("/document/awareness_update", awarenessPayload);
+
+    // Post-broadcast, fire-and-forget: catches revoked-but-idle (reading, cursor-moving)
+    // actors that never hit the write chokepoints. Kicks are per-actor/rail-off only.
+    if (socket.data.role !== "owner" && normalizeAppType(socket.data.appType) === "ddoc") {
+      const now = Date.now();
+      if (now - (socket.data.lastAdmitRecheckAt ?? 0) >= ADMIT_RECHECK_INTERVAL_MS) {
+        socket.data.lastAdmitRecheckAt = now;
+        void isStillAdmitted(socket, deps)
+          .then((ok) => {
+            if (!ok) socket.disconnect(true);
+          })
+          .catch(() => undefined);
+      }
+    }
   } catch (error) {
     console.error("Error in awareness handler:", error);
   }

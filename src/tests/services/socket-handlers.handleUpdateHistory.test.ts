@@ -40,7 +40,6 @@ describe("updateHistory", () => {
     authService: {} as any,
     sessionManager: {} as any,
     mongodbStore: fakeMongodbStore as any,
-    gateEpochCache: {} as any,
     editBoundCache: {} as any,
   };
 

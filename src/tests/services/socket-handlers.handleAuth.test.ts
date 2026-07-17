@@ -64,16 +64,11 @@ describe("handleAuth", () => {
     updateSessionOwnerDid: vi.fn(),
   };
   const fakeMongoDBStore = { getDocumentMeta: vi.fn().mockResolvedValue(null) } as any;
-  const fakeGateEpochCache = {
-    getEditGrantEpoch: vi.fn(),
-    refreshEditGrantEpoch: vi.fn(),
-  };
 
   const deps: SocketHandlerDeps = {
     authService: fakeAuthService as any,
     sessionManager: fakeSessionManager as any,
     mongodbStore: fakeMongoDBStore,
-    gateEpochCache: fakeGateEpochCache as any,
     editBoundCache: { check: vi.fn() } as any,
   };
 
@@ -1498,16 +1493,11 @@ describe("handleAuth — edit-claim admission (existing session, non-owner)", ()
     fillOwnerIdentityDidIfAbsent: vi.fn(),
   };
   const fakeMongoDBStore = { getDocumentMeta: vi.fn().mockResolvedValue(null) } as any;
-  const fakeGateEpochCache = {
-    getEditGrantEpoch: vi.fn(),
-    refreshEditGrantEpoch: vi.fn(),
-  };
 
   const deps: SocketHandlerDeps = {
     authService: fakeAuthService as any,
     sessionManager: fakeSessionManager as any,
     mongodbStore: fakeMongoDBStore,
-    gateEpochCache: fakeGateEpochCache as any,
     editBoundCache: { check: vi.fn() } as any,
   };
 
@@ -1533,41 +1523,15 @@ describe("handleAuth — edit-claim admission (existing session, non-owner)", ()
     fakeSessionManager.addClientToSession.mockResolvedValue(true);
   }
 
-  it("admits a GP editor with a valid, fresh editUcan and records rail+epoch+actor", async () => {
+  it("rejects an editUcan that verifies to null (epoch-fact UCANs retired)", async () => {
     existingSessionSetup();
-    fakeAuthService.verifyEditUcan.mockResolvedValue({ kind: "legacy", editGrantEpoch: 5, nullifier: "null-1" });
-    (deps as any).gateEpochCache.getEditGrantEpoch.mockResolvedValue(5);
+    fakeAuthService.verifyEditUcan.mockResolvedValue(null);
     const socket = createFakeSocket();
     const cb = vi.fn();
-    await handleAuth(deps, createFakeIO(), socket, baseArgs({ editUcan: "gate-ucan" }), cb);
-    expect(cb).toHaveBeenCalledWith(expect.objectContaining({ status: true, statusCode: 200 }));
-    expect(socket.data.rail).toBe("gp");
-    expect(socket.data.admittedEditGrantEpoch).toBe(5);
-    expect(socket.data.actorHandle).toBe("null-1");
-  });
-
-  it("REJECTS a stale-epoch GP editUcan — no fall-through to public even when join is enabled", async () => {
-    existingSessionSetup();
-    fakeAuthService.verifyEditUcan.mockResolvedValue({ kind: "legacy", editGrantEpoch: 2, nullifier: "null-1" });
-    (deps as any).gateEpochCache.getEditGrantEpoch.mockResolvedValue(5); // advanced past 2
-    fakeSessionManager.getCollabJoinEnabled.mockResolvedValue(true); // public IS on — must NOT rescue a stale GP grant
-    const socket = createFakeSocket();
-    const cb = vi.fn();
-    await handleAuth(deps, createFakeIO(), socket, baseArgs({ editUcan: "stale" }), cb);
-    expect(cb).toHaveBeenCalledWith(expect.objectContaining({ status: false, errorCode: ErrorCode.JOIN_DISABLED }));
-    expect(socket.data.rail).toBeUndefined(); // did not fall through to rail=public
-  });
-
-  it("admits a valid GP editUcan when the gate epoch is unreachable (getEditGrantEpoch → null) — transient fail-open", async () => {
-    existingSessionSetup();
-    fakeAuthService.verifyEditUcan.mockResolvedValue({ kind: "legacy", editGrantEpoch: 3, nullifier: "null-1" });
-    (deps as any).gateEpochCache.getEditGrantEpoch.mockResolvedValue(null); // gate transiently down
-    const socket = createFakeSocket();
-    const cb = vi.fn();
-    await handleAuth(deps, createFakeIO(), socket, baseArgs({ editUcan: "gate-ucan" }), cb);
-    expect(cb).toHaveBeenCalledWith(expect.objectContaining({ status: true, statusCode: 200 }));
-    expect(socket.data.rail).toBe("gp");
-    expect(socket.data.admittedEditGrantEpoch).toBe(3);
+    await handleAuth(deps, createFakeIO(), socket, baseArgs({ editUcan: "epoch-fact" }), cb);
+    expect(cb).toHaveBeenCalledWith(
+      expect.objectContaining({ status: false, statusCode: 403, errorCode: ErrorCode.JOIN_DISABLED })
+    );
   });
 
   it("REJECTS an invalid editUcan (verifyEditUcan → null) without falling through", async () => {

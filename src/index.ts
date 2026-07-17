@@ -16,14 +16,13 @@ import { databaseService } from "./database";
 import {
   createCollabJoinEnabledHandler,
   createWorkspaceEditTierHandler,
-  createRefreshEditGrantHandler,
   createEvictEditActorsHandler,
   createEvictWorkspaceMemberHandler,
   createListMyDocumentsHandler,
   createDeleteDocumentHandler,
   createMirrorReadHandler,
 } from "./services/owner-op-routes";
-import { gateEpochCache, editBoundCache } from "./services/gate-epoch";
+import { editBoundCache } from "./services/gate-epoch";
 import { createFlushHandler } from "./services/flush-route";
 import { createLightNode } from "@waku/sdk";
 import protobuf from "protobufjs";
@@ -106,12 +105,8 @@ class CollaborationServer {
       createWorkspaceEditTierHandler({ authService, sessionManager }, this.io)
     );
     this.app.post(
-      "/documents/:documentId/refresh-edit-grant",
-      createRefreshEditGrantHandler({ authService, sessionManager, gateEpochCache }, this.io)
-    );
-    this.app.post(
       "/documents/:documentId/evict-edit-actors",
-      createEvictEditActorsHandler({ authService, sessionManager, editBoundCache })
+      createEvictEditActorsHandler({ authService, sessionManager, editBoundCache }, this.io)
     );
     this.app.post(
       "/workspaces/:portalAddress/evict-member",
@@ -155,10 +150,10 @@ class CollaborationServer {
           "[startup] GATE_DID is not set — GP (private/group) live editing is DISABLED; only owner/workspace/public rails admit writes."
         );
       } else if (!config.gate.url) {
-        // GATE_DID without GATE_URL: verifyEditUcan admits GP joins but the epoch cache can
-        // never reach the gate, so every revocation (demote/revoke) is a permanent silent no-op.
+        // GATE_DID without GATE_URL: verifyEditUcan admits GP joins but the edit-bound cache
+        // can never reach the gate, so every revocation (demote/revoke) is a permanent silent no-op.
         throw new Error(
-          "[startup] GATE_DID is set but GATE_URL is not — GP editGrantEpoch revocation would never take effect. Set GATE_URL to the gate origin, or unset GATE_DID to disable GP editing."
+          "[startup] GATE_DID is set but GATE_URL is not — GP edit revocation would never take effect. Set GATE_URL to the gate origin, or unset GATE_DID to disable GP editing."
         );
       }
 

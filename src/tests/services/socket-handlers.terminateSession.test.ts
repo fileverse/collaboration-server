@@ -50,7 +50,6 @@ describe("handleTerminateSession", () => {
     authService: fakeAuthService as any,
     sessionManager: fakeSessionManager as any,
     mongodbStore: fakeMongoDBStore,
-    gateEpochCache: {} as any,
     editBoundCache: {} as any,
   };
 

@@ -171,11 +171,11 @@ describe("verifyEditUcan", () => {
     vi.clearAllMocks();
   });
 
-  it("returns the facts when verify passes and the fact docId matches", async () => {
+  it("returns null when the fact carries editGrantEpoch/nullifier but no editHandle (epoch-fact UCANs retired)", async () => {
     (ucans.verify as any).mockResolvedValue({ ok: true });
     (ucans.validate as any).mockResolvedValue({ payload: { fct: [{ docId: "doc-1", editGrantEpoch: 3, nullifier: "n-1" }] } });
     const svc = new AuthService(serverDid, gateDid);
-    expect(await svc.verifyEditUcan("tok", "doc-1")).toEqual({ kind: "legacy", editGrantEpoch: 3, nullifier: "n-1" });
+    expect(await svc.verifyEditUcan("tok", "doc-1")).toBeNull();
     // rooted at the pinned gate DID + the collab:EDIT capability
     expect(ucans.verify).toHaveBeenCalledWith("tok", expect.objectContaining({
       audience: serverDid,
@@ -184,6 +184,13 @@ describe("verifyEditUcan", () => {
         rootIssuer: gateDid,
       })],
     }));
+  });
+
+  it("returns {kind:'actor', editHandle} when the fact carries a matching docId + editHandle", async () => {
+    (ucans.verify as any).mockResolvedValue({ ok: true });
+    (ucans.validate as any).mockResolvedValue({ payload: { fct: [{ docId: "doc-1", editHandle: "h-1" }] } });
+    const svc = new AuthService(serverDid, gateDid);
+    expect(await svc.verifyEditUcan("tok", "doc-1")).toEqual({ kind: "actor", editHandle: "h-1" });
   });
 
   it("returns null when verify fails (wrong issuer / capability / audience)", async () => {

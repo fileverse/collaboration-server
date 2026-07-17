@@ -30,6 +30,7 @@ function createFakeSocket(
     id: "socket-1",
     data,
     to: vi.fn(() => toReturn),
+    disconnect: vi.fn(),
   } as unknown as AppSocket;
 }
 
@@ -50,7 +51,6 @@ describe("handleDocumentUpdate", () => {
     authService: fakeAuthService as any,
     sessionManager: fakeSessionManager as any,
     mongodbStore: fakeMongoDBStore as any,
-    gateEpochCache: { getEditGrantEpoch: vi.fn() } as any,
     editBoundCache: {} as any,
   };
 
@@ -313,31 +313,16 @@ describe("handleDocumentUpdate", () => {
 
   describe("handleDocumentUpdate — rail write-guard", () => {
     function makeEditor(
-      railData: { rail: "gp" | "workspace" | "public"; admittedEditGrantEpoch?: number },
+      railData: { rail: "gp" | "workspace" | "public" },
       broadcast?: { emit: ReturnType<typeof vi.fn> }
     ) {
       const socket = createFakeSocket(broadcast ?? { emit: vi.fn() }, { role: "editor" });
       socket.data.rail = railData.rail;
-      if (railData.rail === "gp") socket.data.railKind = "gp-legacy";
-      if (railData.admittedEditGrantEpoch !== undefined) {
-        socket.data.admittedEditGrantEpoch = railData.admittedEditGrantEpoch;
-      }
       fakeSessionManager.getRuntimeSession.mockResolvedValue({ sessionDid: socket.data.sessionDid });
       fakeAuthService.verifyCollaborationToken.mockResolvedValue(true);
       return socket;
     }
     const args = { documentId: "doc-1", data: "d", collaborationToken: "ct" } as DocumentUpdateArgs;
-
-    it("403 EDIT_REVOKED when a GP editor's admitted epoch is now stale — no persist, no broadcast", async () => {
-      const bcast = { emit: vi.fn() };
-      const socket = makeEditor({ rail: "gp", admittedEditGrantEpoch: 2 }, bcast);
-      (deps.gateEpochCache as any).getEditGrantEpoch.mockResolvedValue(5);
-      const cb = vi.fn();
-      await handleDocumentUpdate(deps, createFakeIO(), socket, args, cb);
-      expect(cb).toHaveBeenCalledWith(expect.objectContaining({ statusCode: 403, errorCode: ErrorCode.EDIT_REVOKED }));
-      expect(fakeMongoDBStore.createUpdate).not.toHaveBeenCalled();
-      expect(bcast.emit).not.toHaveBeenCalled();
-    });
 
     it("403 when a workspace editor's tier is now disabled", async () => {
       const socket = makeEditor({ rail: "workspace" });
@@ -360,23 +345,22 @@ describe("handleDocumentUpdate", () => {
       }
     });
 
-    it("persists for a GP editor whose epoch is still current", async () => {
-      const socket = makeEditor({ rail: "gp", admittedEditGrantEpoch: 5 });
-      (deps.gateEpochCache as any).getEditGrantEpoch.mockResolvedValue(5);
-      fakeMongoDBStore.createUpdate.mockResolvedValue({ id: "u1", documentId: "doc-1", data: "d", updateType: "yjs_update", commitCid: null, createdAt: 1 });
+    it("disconnects the socket after the EDIT_REVOKED 403", async () => {
+      const socket = makeEditor({ rail: "workspace" });
+      fakeSessionManager.getWorkspaceEditEnabled.mockResolvedValue(false);
       const cb = vi.fn();
       await handleDocumentUpdate(deps, createFakeIO(), socket, args, cb);
-      expect(fakeMongoDBStore.createUpdate).toHaveBeenCalled();
-      expect(cb).toHaveBeenCalledWith(expect.objectContaining({ status: true }));
+      expect(cb).toHaveBeenCalledWith(expect.objectContaining({ statusCode: 403, errorCode: ErrorCode.EDIT_REVOKED }));
+      expect((socket as any).disconnect).toHaveBeenCalledWith(true);
     });
 
-    it("persists for a GP editor when the gate epoch is unreachable (null — fail-open)", async () => {
-      const socket = makeEditor({ rail: "gp", admittedEditGrantEpoch: 2 });
-      (deps.gateEpochCache as any).getEditGrantEpoch.mockResolvedValue(null);
+    it("does not disconnect an admitted editor", async () => {
+      const socket = makeEditor({ rail: "workspace" });
+      fakeSessionManager.getWorkspaceEditEnabled.mockResolvedValue(true);
       fakeMongoDBStore.createUpdate.mockResolvedValue({ id: "u1", documentId: "doc-1", data: "d", updateType: "yjs_update", commitCid: null, createdAt: 1 });
       const cb = vi.fn();
       await handleDocumentUpdate(deps, createFakeIO(), socket, args, cb);
-      expect(fakeMongoDBStore.createUpdate).toHaveBeenCalled();
+      expect((socket as any).disconnect).not.toHaveBeenCalled();
       expect(cb).toHaveBeenCalledWith(expect.objectContaining({ status: true }));
     });
 

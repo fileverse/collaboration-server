@@ -41,7 +41,6 @@ describe("handleDocumentCommit", () => {
     authService: fakeAuthService as any,
     sessionManager: fakeSessionManager as any,
     mongodbStore: fakeMongoDBStore as any,
-    gateEpochCache: {} as any,
     editBoundCache: {} as any,
   };
 

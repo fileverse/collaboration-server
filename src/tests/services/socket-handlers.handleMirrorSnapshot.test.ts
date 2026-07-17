@@ -3,7 +3,11 @@ import { handleMirrorSnapshot } from "../../services/socket-handlers";
 import { ErrorCode } from "../../types";
 
 function socket(data: any) {
-  return { id: "s1", data: { authenticated: true, documentId: "doc-1", sessionDid: "sess-1", ...data } } as any;
+  return {
+    id: "s1",
+    data: { authenticated: true, documentId: "doc-1", sessionDid: "sess-1", ...data },
+    disconnect: vi.fn(),
+  } as any;
 }
 
 describe("handleMirrorSnapshot", () => {
@@ -13,7 +17,7 @@ describe("handleMirrorSnapshot", () => {
     deps = {
       sessionManager: { getRuntimeSession: vi.fn().mockResolvedValue({ sessionDid: "sess-1" }) },
       mongodbStore: { upsertMirrorSnapshot: vi.fn().mockResolvedValue(undefined) },
-      gateEpochCache: { getEditGrantEpoch: vi.fn().mockResolvedValue(null) },
+      editBoundCache: { check: vi.fn() },
     };
   });
 
@@ -46,19 +50,31 @@ describe("handleMirrorSnapshot", () => {
     expect(deps.mongodbStore.upsertMirrorSnapshot).not.toHaveBeenCalled();
   });
 
-  it("persists for an admitted GP editor", async () => {
-    const cb = vi.fn();
-    await handleMirrorSnapshot(deps, socket({ role: "editor", rail: "gp", railKind: "gp-legacy", admittedEditGrantEpoch: 1 }), { data: "ct", fileKeyEpoch: 2 } as any, cb);
-    expect(deps.mongodbStore.upsertMirrorSnapshot).toHaveBeenCalledWith(
-      expect.objectContaining({ documentId: "doc-1", data: "ct", fileKeyEpoch: 2, sessionDid: "sess-1", createdAt: expect.any(Number) })
-    );
-    expect(cb).toHaveBeenCalledWith(expect.objectContaining({ status: true }));
-  });
-
   it("persists for the owner", async () => {
     const cb = vi.fn();
     await handleMirrorSnapshot(deps, socket({ role: "owner" }), { data: "ct", fileKeyEpoch: 2 } as any, cb);
     expect(deps.mongodbStore.upsertMirrorSnapshot).toHaveBeenCalled();
     expect(cb).toHaveBeenCalledWith(expect.objectContaining({ status: true }));
+  });
+
+  it("disconnects the socket after the EDIT_REVOKED 403", async () => {
+    deps.editBoundCache.check.mockResolvedValue("unbound");
+    const cb = vi.fn();
+    const s = socket({ role: "editor", rail: "gp", railKind: "gp-actor", actorHandle: "h1" });
+    await handleMirrorSnapshot(deps, s, { data: "ct", fileKeyEpoch: 1 } as any, cb);
+    expect(cb).toHaveBeenCalledWith(
+      expect.objectContaining({ statusCode: 403, errorCode: ErrorCode.EDIT_REVOKED })
+    );
+    expect((s as any).disconnect).toHaveBeenCalledWith(true);
+    expect(deps.mongodbStore.upsertMirrorSnapshot).not.toHaveBeenCalled();
+  });
+
+  it("does not disconnect an admitted editor", async () => {
+    deps.editBoundCache.check.mockResolvedValue("bound");
+    const cb = vi.fn();
+    const s = socket({ role: "editor", rail: "gp", railKind: "gp-actor", actorHandle: "h1" });
+    await handleMirrorSnapshot(deps, s, { data: "ct", fileKeyEpoch: 1 } as any, cb);
+    expect((s as any).disconnect).not.toHaveBeenCalled();
+    expect(deps.mongodbStore.upsertMirrorSnapshot).toHaveBeenCalled();
   });
 });

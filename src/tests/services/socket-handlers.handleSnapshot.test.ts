@@ -23,7 +23,6 @@ describe("handleSnapshot", () => {
     authService: { verifyCollaborationToken } as any,
     sessionManager: { getRuntimeSession } as any,
     mongodbStore: { createSnapshot } as any,
-    gateEpochCache: {} as any,
     editBoundCache: {} as any,
   };
 
