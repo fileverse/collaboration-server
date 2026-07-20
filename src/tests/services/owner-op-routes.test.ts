@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { createCollabJoinEnabledHandler, createListMyDocumentsHandler, createDeleteDocumentHandler, createWorkspaceEditTierHandler } from "../../services/owner-op-routes";
 import { createMirrorReadHandler, createEvictWorkspaceMemberHandler, createEvictEditActorsHandler } from "../../services/owner-op-routes";
+import { createShareContextHandler } from "../../services/owner-op-routes";
 import { getRoomName } from "../../services/socket-handlers";
 import { getPortalOwnerAddress, bustOwnerDidCacheForPortal } from "../../utils/contract";
 
@@ -497,5 +498,30 @@ describe("createEvictEditActorsHandler", () => {
     expect(editBoundCache.evict).not.toHaveBeenCalled();
     expect(io.in).not.toHaveBeenCalled();
     expect(r.status).toHaveBeenCalledWith(403);
+  });
+});
+
+describe("share-context", () => {
+  it("GET is open and reports existence + isPublished", async () => {
+    // No auth headers at all — the handler takes no auth deps and reads nothing from req.body.
+    const shareDeps: any = {
+      mongodbStore: { getShareContext: vi.fn().mockResolvedValue({ exists: true, isPublished: true }) },
+    };
+    const r = res();
+    await createShareContextHandler(shareDeps)({ params: { documentId: "doc-1" } } as any, r);
+    expect(shareDeps.mongodbStore.getShareContext).toHaveBeenCalledWith("doc-1");
+    expect(r.status).toHaveBeenCalledWith(200);
+    expect(r.json).toHaveBeenCalledWith({ exists: true, isPublished: true });
+  });
+
+  it("GET returns exists:false for unknown doc", async () => {
+    const shareDeps: any = {
+      mongodbStore: { getShareContext: vi.fn().mockResolvedValue({ exists: false, isPublished: false }) },
+    };
+    const r = res();
+    await createShareContextHandler(shareDeps)({ params: { documentId: "doc-unknown" } } as any, r);
+    expect(shareDeps.mongodbStore.getShareContext).toHaveBeenCalledWith("doc-unknown");
+    expect(r.status).toHaveBeenCalledWith(200);
+    expect(r.json).toHaveBeenCalledWith({ exists: false, isPublished: false });
   });
 });

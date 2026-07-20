@@ -21,7 +21,7 @@ vi.mock("../../database/models", () => {
     DocumentCommitModel,
     CounterModel: { findOneAndUpdate: vi.fn(), deleteOne: vi.fn().mockResolvedValue(undefined) },
     SessionModel: { findOne: vi.fn(), find: vi.fn(), deleteMany: vi.fn().mockResolvedValue(undefined) },
-    DocumentMetaModel: { findOneAndUpdate: vi.fn(), find: vi.fn(), findById: vi.fn(), updateMany: vi.fn().mockResolvedValue(undefined), deleteOne: vi.fn().mockResolvedValue(undefined) },
+    DocumentMetaModel: { findOneAndUpdate: vi.fn(), find: vi.fn(), findById: vi.fn(), updateMany: vi.fn().mockResolvedValue(undefined), updateOne: vi.fn(), deleteOne: vi.fn().mockResolvedValue(undefined) },
     DocumentMirrorModel: {
       findOneAndUpdate: vi.fn().mockResolvedValue(undefined),
       findOne: vi.fn(),
@@ -467,6 +467,49 @@ describe("collectOrphans", () => {
     expect(SessionModel.deleteMany).not.toHaveBeenCalled();
     expect(CounterModel.deleteOne).not.toHaveBeenCalled();
     expect(n).toBe(0);
+  });
+});
+
+describe("getShareContext", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it("reports existence and isPublished", async () => {
+    const { DocumentMetaModel } = await import("../../database/models");
+    (DocumentMetaModel.findById as any).mockReturnValue({
+      select: vi.fn().mockReturnValue({
+        lean: vi.fn()
+          .mockResolvedValueOnce(null)
+          .mockResolvedValueOnce({ isPublished: false }),
+      }),
+    });
+
+    const store = new MongoDBStore();
+    expect(await store.getShareContext("doc-sc-none")).toEqual({
+      exists: false, isPublished: false,
+    });
+    expect(DocumentMetaModel.findById).toHaveBeenCalledWith("doc-sc-none");
+
+    expect(await store.getShareContext("doc-sc-2")).toEqual({
+      exists: true, isPublished: false,
+    });
+  });
+
+  it("reports isPublished true only for a strict boolean", async () => {
+    const { DocumentMetaModel } = await import("../../database/models");
+    (DocumentMetaModel.findById as any).mockReturnValue({
+      select: vi.fn().mockReturnValue({
+        lean: vi.fn()
+          .mockResolvedValueOnce({ isPublished: true })
+          .mockResolvedValueOnce({}),
+      }),
+    });
+
+    const store = new MongoDBStore();
+    expect((await store.getShareContext("doc-sc-pub")).isPublished).toBe(true);
+    // legacy row with no isPublished field normalizes to false
+    expect((await store.getShareContext("doc-sc-legacy")).isPublished).toBe(false);
   });
 });
 

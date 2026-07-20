@@ -258,6 +258,20 @@ export function createMirrorReadHandler(deps: { mongodbStore: Pick<MongoDBStore,
   };
 }
 
+/** Open read: existence only (same trust model as the mirror GET). */
+export function createShareContextHandler(deps: { mongodbStore: Pick<MongoDBStore, "getShareContext"> }) {
+  return async (req: Request, res: Response): Promise<void> => {
+    // Express 4 doesn't catch async rejections — an unhandled store error
+    // would hang the request (and the client has no timeout-free fallback).
+    try {
+      const ctx = await deps.mongodbStore.getShareContext(req.params.documentId);
+      res.status(200).json(ctx);
+    } catch {
+      res.status(500).json({ error: "share-context lookup failed" });
+    }
+  };
+}
+
 export function createEvictWorkspaceMemberHandler(
   deps: {
     authService: Pick<AuthService, "verifyOwnerToken">;

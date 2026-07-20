@@ -307,6 +307,21 @@ export class MongoDBStore {
     );
   }
 
+  /** Open existence probe: lets the client distinguish "created but not yet
+   *  published" (meta row exists from the owner's session) from a real 404. */
+  async getShareContext(
+    documentId: string
+  ): Promise<{ exists: boolean; isPublished: boolean }> {
+    const meta: any = await DocumentMetaModel.findById(documentId)
+      .select("isPublished")
+      .lean();
+    if (!meta) return { exists: false, isPublished: false };
+    return {
+      exists: true,
+      isPublished: meta.isPublished === true,
+    };
+  }
+
   // Commit management
   async createCommit(commit: DocumentCommit): Promise<DocumentCommit> {
     try {

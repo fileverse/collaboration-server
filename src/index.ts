@@ -21,6 +21,7 @@ import {
   createListMyDocumentsHandler,
   createDeleteDocumentHandler,
   createMirrorReadHandler,
+  createShareContextHandler,
 } from "./services/owner-op-routes";
 import { editBoundCache } from "./services/gate-epoch";
 import { createFlushHandler } from "./services/flush-route";
@@ -115,6 +116,10 @@ class CollaborationServer {
     this.app.get(
       "/documents/:documentId/mirror",
       createMirrorReadHandler({ mongodbStore })
+    );
+    this.app.get(
+      "/documents/:documentId/share-context",
+      createShareContextHandler({ mongodbStore })
     );
     this.app.post("/flush", createFlushHandler({ authService, mongodbStore }));
     this.app.post("/list-my-documents", createListMyDocumentsHandler({ authService, mongodbStore }));
