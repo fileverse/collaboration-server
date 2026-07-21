@@ -4,3 +4,4 @@ export { SessionModel, type ISession } from "./session";
 export { CounterModel, type ICounter } from "./counter";
 export { DocumentMetaModel, type IDocumentMeta } from "./document-meta";
 export { DocumentMirrorModel, type IDocumentMirror } from "./document-mirror";
+export { DocumentEditEpochModel, type IDocumentEditEpoch } from "./document-edit-epoch";

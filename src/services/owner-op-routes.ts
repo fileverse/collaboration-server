@@ -130,7 +130,7 @@ export function createWorkspaceEditTierHandler(deps: OwnerOpDeps, io: AppServer)
  *  then drop the matching live sockets across every session room of the doc. Co-editors
  *  with other handles are untouched. */
 export function createEvictEditActorsHandler(
-  deps: OwnerOpDeps & { editBoundCache: EditBoundCache },
+  deps: OwnerOpDeps & { editBoundCache: EditBoundCache; mongodbStore: Pick<MongoDBStore, "setMinEditEpoch"> },
   io: AppServer
 ) {
   return async (req: Request, res: Response): Promise<void> => {
@@ -153,6 +153,13 @@ export function createEvictEditActorsHandler(
     if (!authorized) {
       res.status(403).json({ error: "Not the document owner" });
       return;
+    }
+
+    // Stamp the floor even when rotation is deferred, so a stale-UCAN rejoin is blocked
+    // immediately rather than waiting on the next epoch bump to propagate. gateEpoch is
+    // optional here — an invalid value is silently skipped rather than failing the evict.
+    if (Number.isInteger(req.body?.gateEpoch) && req.body.gateEpoch >= 0) {
+      await deps.mongodbStore.setMinEditEpoch(documentId, req.body.gateEpoch);
     }
 
     const list = Array.isArray(handles) ? handles.filter((h) => typeof h === "string") : [];

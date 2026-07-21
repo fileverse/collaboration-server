@@ -434,6 +434,7 @@ describe("createEvictEditActorsHandler", () => {
         getNonTerminatedSessionsForDocument: vi.fn().mockResolvedValue([{ sessionDid: "s" }]),
       },
       editBoundCache,
+      mongodbStore: { setMinEditEpoch: vi.fn() },
     };
     io = { in: vi.fn(() => ({ fetchSockets: vi.fn().mockResolvedValue([]) })) };
   });
@@ -498,6 +499,48 @@ describe("createEvictEditActorsHandler", () => {
     expect(editBoundCache.evict).not.toHaveBeenCalled();
     expect(io.in).not.toHaveBeenCalled();
     expect(r.status).toHaveBeenCalledWith(403);
+  });
+
+  it("stamps minEditEpoch when the client sends a gateEpoch", async () => {
+    deps.authService.verifyOwnerOp.mockResolvedValue(true);
+    const r = res();
+    await createEvictEditActorsHandler(deps, io)(
+      { params: { documentId: "doc-1" }, body: { sessionDid: "s", handles: ["h1"], gateEpoch: 4 } } as any, r
+    );
+    expect(deps.mongodbStore.setMinEditEpoch).toHaveBeenCalledWith("doc-1", 4);
+  });
+
+  it("does not stamp minEditEpoch when gateEpoch is absent", async () => {
+    deps.authService.verifyOwnerOp.mockResolvedValue(true);
+    const r = res();
+    await createEvictEditActorsHandler(deps, io)(
+      { params: { documentId: "doc-1" }, body: { sessionDid: "s", handles: ["h1"] } } as any, r
+    );
+    expect(deps.mongodbStore.setMinEditEpoch).not.toHaveBeenCalled();
+  });
+
+  it("does not stamp minEditEpoch when gateEpoch is NaN, but the evict still proceeds", async () => {
+    deps.authService.verifyOwnerOp.mockResolvedValue(true);
+    const r = res();
+    await createEvictEditActorsHandler(deps, io)(
+      { params: { documentId: "doc-1" }, body: { sessionDid: "s", handles: ["h1"], gateEpoch: NaN } } as any, r
+    );
+    expect(deps.mongodbStore.setMinEditEpoch).not.toHaveBeenCalled();
+    expect(editBoundCache.evict).toHaveBeenCalledWith("doc-1", ["h1"]);
+    expect(r.status).toHaveBeenCalledWith(200);
+  });
+
+  it("does not stamp minEditEpoch when gateEpoch is negative or non-integer", async () => {
+    deps.authService.verifyOwnerOp.mockResolvedValue(true);
+    for (const badEpoch of [-1, 1.5]) {
+      deps.mongodbStore.setMinEditEpoch.mockClear();
+      const r = res();
+      await createEvictEditActorsHandler(deps, io)(
+        { params: { documentId: "doc-1" }, body: { sessionDid: "s", handles: ["h1"], gateEpoch: badEpoch } } as any, r
+      );
+      expect(deps.mongodbStore.setMinEditEpoch).not.toHaveBeenCalled();
+      expect(r.status).toHaveBeenCalledWith(200);
+    }
   });
 });
 

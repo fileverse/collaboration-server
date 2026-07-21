@@ -120,6 +120,8 @@ export interface AuthArgs {
   /** Privilege-reducing join mode (workspace member): the server must never create or
    *  bind a session for this connection, and the role is capped at editor. */
   joinOnly?: boolean;
+  // in-place re-auth into the post-rotation sessionDid — suppress the membership blip and leave the old room silently.
+  rotationCutover?: boolean;
 }
 
 export interface AuthResponseData {
@@ -283,6 +285,24 @@ export interface ServerErrorPayload {
   roomId: string;
 }
 
+export interface EpochAvailablePayload {
+  roomId: string;
+  epoch: number;
+  /** opaque, double-wrapped: inner = blob/appLock wrap (excludes the removed actor),
+   *  outer = roomKey_e (excludes the server). The server never unwraps it. */
+  payload: string;
+}
+
+export interface CutoverPayload {
+  roomId: string;
+  epoch: number;
+}
+
+export interface EpochLoadedArgs {
+  documentId: string;
+  epoch: number;
+}
+
 // ***************************************
 // Socket.IO Typed Event Maps
 // ***************************************
@@ -304,6 +324,7 @@ export interface ClientToServerEvents {
   "/documents/peers/list": ClientEventHandler<PeersListArgs, PeersListResponseData>;
   "/documents/awareness": ClientEventHandler<AwarenessArgs, MessageResponseData>;
   "/documents/terminate": ClientEventHandler<TerminateSessionArgs, MessageResponseData>;
+  "/session/epoch_loaded": ClientEventHandler<EpochLoadedArgs, { ok: true }>;
 }
 
 export interface ServerToClientEvents {
@@ -314,6 +335,8 @@ export interface ServerToClientEvents {
   "/document/meta_update": (data: MetaUpdatePayload) => void;
   "/room/membership_change": (data: MembershipChangePayload) => void;
   "/session/terminated": (data: SessionTerminatedPayload) => void;
+  "/session/epoch_available": (data: EpochAvailablePayload) => void;
+  "/session/cutover": (data: CutoverPayload) => void;
 }
 
 export interface InterServerEvents {

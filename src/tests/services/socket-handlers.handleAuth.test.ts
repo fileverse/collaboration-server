@@ -53,17 +53,22 @@ describe("handleAuth", () => {
   };
   const fakeSessionManager = {
     getSession: vi.fn(),
+    getSessionIncludingTerminated: vi.fn(),
     getOtherNonTerminatedSessions: vi.fn(),
     terminateSession: vi.fn(),
     createSession: vi.fn(),
     updateRoomInfo: vi.fn(),
     addClientToSession: vi.fn(),
+    removeClientFromSession: vi.fn(),
     getCollabJoinEnabled: vi.fn(),
     getWorkspaceEditEnabled: vi.fn(),
     fillOwnerIdentityDidIfAbsent: vi.fn(),
     updateSessionOwnerDid: vi.fn(),
   };
-  const fakeMongoDBStore = { getDocumentMeta: vi.fn().mockResolvedValue(null) } as any;
+  const fakeMongoDBStore = {
+    getDocumentMeta: vi.fn().mockResolvedValue(null),
+    getMinEditEpoch: vi.fn().mockResolvedValue(0),
+  } as any;
 
   const deps: SocketHandlerDeps = {
     authService: fakeAuthService as any,
@@ -522,6 +527,71 @@ describe("handleAuth", () => {
         title: null,
       },
     });
+  });
+
+  it("rotationCutover: silently migrates room, skips user_joined, and cleans up the old session's client list", async () => {
+    const fakeIO = createFakeIO();
+    const fakeBroadcastOperator = { emit: vi.fn() };
+    // Already-authed socket: socket.data.sessionDid holds the PRE-rotation sessionDid.
+    const fakeSocket = createFakeSocket(fakeBroadcastOperator, {
+      authenticated: true,
+      documentId: "doc-1",
+      sessionDid: "session-1-old",
+      role: "editor",
+    });
+    (fakeSocket as any).leave = vi.fn();
+
+    const fakeArgs: AuthArgs = {
+      documentId: "doc-1",
+      sessionDid: "session-1-new",
+      collaborationToken: "collab-token",
+      rotationCutover: true,
+    };
+    const callback = vi.fn();
+
+    const existingSession = {
+      sessionDid: fakeArgs.sessionDid,
+      ownerDid: "owner-did",
+      roomInfo: "existing-room-info",
+    };
+
+    fakeSessionManager.getSession.mockResolvedValue(existingSession);
+    fakeAuthService.verifyCollaborationToken.mockResolvedValue("user-did");
+    fakeSessionManager.addClientToSession.mockResolvedValue(undefined);
+    fakeSessionManager.removeClientFromSession.mockResolvedValue(undefined);
+    fakeSessionManager.getCollabJoinEnabled.mockResolvedValue(true);
+
+    await handleAuth(deps, fakeIO, fakeSocket, fakeArgs, callback);
+
+    const oldRoomName = getRoomName(fakeArgs.documentId, "session-1-old");
+    const newRoomName = getRoomName(fakeArgs.documentId, fakeArgs.sessionDid);
+
+    // Silent leave of the prior room — no /room/membership_change for it.
+    expect((fakeSocket as any).leave).toHaveBeenCalledWith(oldRoomName);
+    expect(fakeSessionManager.removeClientFromSession).toHaveBeenCalledWith(
+      fakeArgs.documentId,
+      "session-1-old",
+      fakeSocket.id
+    );
+
+    // Normal admission into the new room is unaffected.
+    expect(fakeSocket.join).toHaveBeenCalledWith(newRoomName);
+    expect(fakeSessionManager.addClientToSession).toHaveBeenCalledWith(
+      fakeArgs.documentId,
+      fakeArgs.sessionDid,
+      fakeSocket.id
+    );
+    expect(fakeSocket.data.sessionDid).toBe(fakeArgs.sessionDid);
+
+    // No membership blip on the rotation cutover join.
+    expect(fakeBroadcastOperator.emit).not.toHaveBeenCalledWith(
+      "/room/membership_change",
+      expect.objectContaining({ action: "user_joined" })
+    );
+
+    expect(callback).toHaveBeenCalledWith(
+      expect.objectContaining({ status: true, statusCode: 200 })
+    );
   });
 
   it("returns 404 when existing session is not found and no ownerToken is provided", async () => {
@@ -1127,8 +1197,9 @@ describe("handleAuth", () => {
     expect(fakeSocket.data.role).toBe("owner");
   });
 
-  it("joinOnly: rejects ROOM_NOT_ESTABLISHED instead of creating a session", async () => {
+  it("joinOnly: rejects ROOM_NOT_ESTABLISHED for a session that never existed, even after the terminated-inclusive retry", async () => {
     fakeSessionManager.getSession.mockResolvedValue(null);
+    fakeSessionManager.getSessionIncludingTerminated.mockResolvedValue(undefined);
     const fakeIO = createFakeIO();
     const fakeSocket = createFakeSocket();
     const callback = vi.fn();
@@ -1143,6 +1214,7 @@ describe("handleAuth", () => {
       joinOnly: true,
     }, callback);
 
+    expect(fakeSessionManager.getSessionIncludingTerminated).toHaveBeenCalledWith("doc-1", "session-1");
     expect(callback).toHaveBeenCalledWith({
       status: false,
       statusCode: 404,
@@ -1150,6 +1222,98 @@ describe("handleAuth", () => {
       errorCode: ErrorCode.ROOM_NOT_ESTABLISHED,
     });
     expect(fakeSessionManager.createSession).not.toHaveBeenCalled();
+  });
+
+  describe("owner-verified joinOnly read admission", () => {
+    const privateSession = {
+      documentId: "doc-1",
+      sessionDid: "session-1",
+      ownerDid: "did:key:shared-portal",
+      ownerIdentityDid: "did:key:creator",
+      appType: "ddoc",
+    };
+    const verifiedOwnerJoinArgs = {
+      documentId: "doc-1",
+      sessionDid: "session-1",
+      collaborationToken: "collab-token",
+      ownerToken: "owner-token",
+      ownerAddress: "0x1111111111111111111111111111111111111111",
+      contractAddress: "0x2222222222222222222222222222222222222222",
+      identityToken: "identity-token",
+      identityContractAddress: "0x3333333333333333333333333333333333333333",
+      joinOnly: true,
+    };
+
+    it("1. admits a verified owner into an EXISTING private session with no gp/workspace/public grants", async () => {
+      fakeSessionManager.getSession.mockResolvedValue({ ...privateSession });
+      fakeAuthService.verifyCollaborationToken.mockResolvedValue("did:key:collab");
+      fakeAuthService.verifyOwnerToken.mockResolvedValue("did:key:shared-portal");
+      fakeAuthService.verifyIdentityToken.mockResolvedValue("did:key:creator");
+      fakeSessionManager.getWorkspaceEditEnabled.mockResolvedValue(undefined);
+      fakeSessionManager.getCollabJoinEnabled.mockResolvedValue(undefined);
+      const fakeSocket = createFakeSocket();
+      const callback = vi.fn();
+
+      await handleAuth(deps, createFakeIO(), fakeSocket, { ...verifiedOwnerJoinArgs }, callback);
+
+      expect(callback).toHaveBeenCalledWith(
+        expect.objectContaining({
+          status: true,
+          data: expect.objectContaining({ role: "editor" }),
+        })
+      );
+      // Bypass is admission-only: no gp/workspace/public grant was computed for this socket.
+      expect(fakeSocket.data.rail).toBeUndefined();
+      expect(fakeSocket.data.railKind).toBeUndefined();
+    });
+
+    it("2. admits a verified owner into a TERMINATED session via the terminated-inclusive lookup", async () => {
+      fakeSessionManager.getSession.mockResolvedValue(undefined);
+      fakeSessionManager.getSessionIncludingTerminated.mockResolvedValue({ ...privateSession });
+      fakeAuthService.verifyCollaborationToken.mockResolvedValue("did:key:collab");
+      fakeAuthService.verifyOwnerToken.mockResolvedValue("did:key:shared-portal");
+      fakeAuthService.verifyIdentityToken.mockResolvedValue("did:key:creator");
+      fakeSessionManager.getWorkspaceEditEnabled.mockResolvedValue(undefined);
+      fakeSessionManager.getCollabJoinEnabled.mockResolvedValue(undefined);
+      const callback = vi.fn();
+
+      await handleAuth(deps, createFakeIO(), createFakeSocket(), { ...verifiedOwnerJoinArgs }, callback);
+
+      expect(fakeSessionManager.getSessionIncludingTerminated).toHaveBeenCalledWith("doc-1", "session-1");
+      expect(callback).toHaveBeenCalledWith(
+        expect.objectContaining({
+          status: true,
+          data: expect.objectContaining({ role: "editor" }),
+        })
+      );
+    });
+
+    it("3. still rejects a NON-owner (no grants) with JOIN_DISABLED — the gate still applies", async () => {
+      fakeSessionManager.getSession.mockResolvedValue({ ...privateSession });
+      fakeAuthService.verifyCollaborationToken.mockResolvedValue("did:key:collab");
+      // No ownerToken presented: ownerDid never resolves, so role resolves to "editor"
+      // pre-cap too — this bearer was never owner-shaped in the first place.
+      fakeSessionManager.getWorkspaceEditEnabled.mockResolvedValue(undefined);
+      fakeSessionManager.getCollabJoinEnabled.mockResolvedValue(undefined);
+      const callback = vi.fn();
+
+      await handleAuth(
+        deps,
+        createFakeIO(),
+        createFakeSocket(),
+        {
+          documentId: "doc-1",
+          sessionDid: "session-1",
+          collaborationToken: "collab-token",
+          joinOnly: true,
+        },
+        callback
+      );
+
+      expect(callback).toHaveBeenCalledWith(
+        expect.objectContaining({ status: false, statusCode: 403, errorCode: ErrorCode.JOIN_DISABLED })
+      );
+    });
   });
 
   it("joinOnly: caps role at editor and skips the null-fill heal on an unbound session", async () => {
@@ -1187,7 +1351,11 @@ describe("handleAuth", () => {
         data: expect.objectContaining({ role: "editor" }),
       })
     );
-    expect(fakeSocket.data.rail).toBe("workspace");
+    // This bearer resolved to "owner" pre-cap too (unbound session, shared-DID compare) —
+    // the same ambiguous match already gets full owner rights via the plain (non-joinOnly)
+    // path, so the rail gate is bypassed here rather than consulted.
+    expect(fakeSocket.data.rail).toBeUndefined();
+    expect(fakeSessionManager.getWorkspaceEditEnabled).not.toHaveBeenCalled();
   });
 
   const boundSession = {
@@ -1373,7 +1541,9 @@ describe("handleAuth", () => {
         "did:key:new"
       );
       expect(callback).toHaveBeenCalledWith(expect.objectContaining({ status: true }));
-      expect(fakeSocket.data.rail).toBe("workspace");
+      // Post-heal, ownerDid matches and no identityToken is presented, so this resolves
+      // to "owner" pre-cap — the rail gate is bypassed rather than consulted.
+      expect(fakeSocket.data.rail).toBeUndefined();
     });
 
     it("does NOT heal when the presented contractAddress differs from session.portalAddress", async () => {
@@ -1492,7 +1662,10 @@ describe("handleAuth — edit-claim admission (existing session, non-owner)", ()
     getWorkspaceEditEnabled: vi.fn(),
     fillOwnerIdentityDidIfAbsent: vi.fn(),
   };
-  const fakeMongoDBStore = { getDocumentMeta: vi.fn().mockResolvedValue(null) } as any;
+  const fakeMongoDBStore = {
+    getDocumentMeta: vi.fn().mockResolvedValue(null),
+    getMinEditEpoch: vi.fn().mockResolvedValue(0),
+  } as any;
 
   const deps: SocketHandlerDeps = {
     authService: fakeAuthService as any,
@@ -1578,6 +1751,37 @@ describe("handleAuth — edit-claim admission (existing session, non-owner)", ()
     expect(cb).toHaveBeenCalledWith(expect.objectContaining({ status: true }));
     expect(socket.data.rail).toBe("workspace");
     expect(socket.data.railKind).toBe("workspace");
+  });
+
+  describe("epoch floor (minEditEpoch)", () => {
+    it("rejects a gp-actor editUcan whose epoch is below the doc's minEditEpoch floor", async () => {
+      existingSessionSetup();
+      fakeAuthService.verifyEditUcan.mockResolvedValue({ kind: "actor", editHandle: "h1", epoch: 1 });
+      fakeMongoDBStore.getMinEditEpoch.mockResolvedValue(2);
+      const socket = createFakeSocket();
+      const cb = vi.fn();
+      await handleAuth(deps, createFakeIO(), socket, baseArgs({ editUcan: "gp-token" }), cb);
+      expect(fakeMongoDBStore.getMinEditEpoch).toHaveBeenCalledWith("doc-1");
+      expect(cb).toHaveBeenCalledWith(
+        expect.objectContaining({ status: false, statusCode: 403, errorCode: ErrorCode.JOIN_DISABLED })
+      );
+      expect(deps.editBoundCache.check).not.toHaveBeenCalled();
+      expect(socket.data.rail).toBeUndefined();
+    });
+
+    it("admits a gp-actor editUcan whose epoch meets the doc's minEditEpoch floor", async () => {
+      existingSessionSetup();
+      fakeAuthService.verifyEditUcan.mockResolvedValue({ kind: "actor", editHandle: "h1", epoch: 2 });
+      fakeMongoDBStore.getMinEditEpoch.mockResolvedValue(2);
+      (deps.editBoundCache.check as ReturnType<typeof vi.fn>).mockResolvedValue("bound");
+      const socket = createFakeSocket();
+      const cb = vi.fn();
+      await handleAuth(deps, createFakeIO(), socket, baseArgs({ editUcan: "gp-token" }), cb);
+      expect(cb).toHaveBeenCalledWith(expect.objectContaining({ status: true }));
+      expect(socket.data.rail).toBe("gp");
+      expect(socket.data.railKind).toBe("gp-actor");
+      expect(socket.data.actorHandle).toBe("h1");
+    });
   });
 
   it("public bearer is admitted as rail=public ONLY on collabJoinEnabled === true", async () => {

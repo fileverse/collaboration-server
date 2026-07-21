@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { DocumentUpdateModel } from "../../database/models/document-update";
 import { CounterModel } from "../../database/models/counter";
-import { MongoDBStore } from "../../services/mongodb-store";
+import { MongoDBStore, SessionTerminatedError } from "../../services/mongodb-store";
 
 vi.mock("../../database/models", () => {
   const save = vi.fn().mockResolvedValue(undefined);
@@ -27,6 +27,7 @@ vi.mock("../../database/models", () => {
       findOne: vi.fn(),
       deleteMany: vi.fn().mockResolvedValue(undefined),
     },
+    DocumentEditEpochModel: { deleteOne: vi.fn().mockResolvedValue(undefined) },
   };
 });
 
@@ -64,19 +65,22 @@ describe("createUpdate: durable-write gate", () => {
     (SessionModel.findOne as any).mockResolvedValue({ state: "active", ownerDid: "did:o" });
   });
 
-  it("relays without persisting when no non-terminated session backs the room", async () => {
-    const { SessionModel, DocumentUpdateModel } = await import("../../database/models");
+  it("relays without persisting when no session row backs the room (missing row is NOT terminated — D-11 is terminated-only)", async () => {
+    const { CounterModel, SessionModel, DocumentUpdateModel } = await import("../../database/models");
     (SessionModel.findOne as any).mockResolvedValue(null);
     const save = vi.fn();
     (DocumentUpdateModel as any).mockImplementation((doc: any) => ({ ...doc, save }));
 
     const store = new MongoDBStore();
-    const result = await store.createUpdate({
-      id: "u1", documentId: "doc-1", data: "ct", updateType: "yjs_update",
-      committed: false, commitCid: null, createdAt: 1, sessionDid: "room-did", appType: "ddoc",
-    });
+    const input = {
+      id: "u1", documentId: "doc-1", data: "ct", updateType: "yjs_update" as const,
+      committed: false, commitCid: null, createdAt: 1, sessionDid: "room-did", appType: "ddoc" as const,
+    };
+    const result = await store.createUpdate(input);
 
+    expect(result).toEqual(input);
     expect(save).not.toHaveBeenCalled();
+    expect(CounterModel.findOneAndUpdate).not.toHaveBeenCalled();
     expect(result.seq).toBeUndefined();
   });
 
@@ -89,18 +93,19 @@ describe("createUpdate: durable-write gate", () => {
     expect(result.seq).toBe(1);
   });
 
-  it("relays without persisting when the backing session is terminated", async () => {
+  it("rejects with SessionTerminatedError when the backing session is terminated (D-11: terminated-only, no ephemeral relay)", async () => {
     const { CounterModel, SessionModel } = await import("../../database/models");
     (SessionModel.findOne as any).mockResolvedValue({ state: "terminated" });
 
     const store = new MongoDBStore();
-    const result = await store.createUpdate({
-      id: "u1", documentId: "doc-1", data: "ct", updateType: "yjs_update",
-      committed: false, commitCid: null, createdAt: 1, sessionDid: "room-did", appType: "ddoc",
-    });
+    await expect(
+      store.createUpdate({
+        id: "u1", documentId: "doc-1", data: "ct", updateType: "yjs_update",
+        committed: false, commitCid: null, createdAt: 1, sessionDid: "room-did", appType: "ddoc",
+      })
+    ).rejects.toThrow(SessionTerminatedError);
 
     expect(CounterModel.findOneAndUpdate).not.toHaveBeenCalled();
-    expect(result.seq).toBeUndefined();
   });
 });
 
@@ -408,8 +413,8 @@ describe("purgeDocument", () => {
     vi.clearAllMocks();
   });
 
-  it("wipes all six collections for the documentId", async () => {
-    const { DocumentUpdateModel, DocumentCommitModel, DocumentMetaModel, SessionModel, CounterModel, DocumentMirrorModel } =
+  it("wipes all seven collections for the documentId", async () => {
+    const { DocumentUpdateModel, DocumentCommitModel, DocumentMetaModel, SessionModel, CounterModel, DocumentMirrorModel, DocumentEditEpochModel } =
       await import("../../database/models");
 
     const store = new MongoDBStore();
@@ -421,6 +426,7 @@ describe("purgeDocument", () => {
     expect(SessionModel.deleteMany).toHaveBeenCalledWith({ documentId: "doc-1" });
     expect(CounterModel.deleteOne).toHaveBeenCalledWith({ _id: "doc-1" });
     expect(DocumentMirrorModel.deleteMany).toHaveBeenCalledWith({ documentId: "doc-1" });
+    expect(DocumentEditEpochModel.deleteOne).toHaveBeenCalledWith({ _id: "doc-1" });
   });
 });
 

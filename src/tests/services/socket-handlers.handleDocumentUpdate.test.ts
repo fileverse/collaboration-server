@@ -3,6 +3,7 @@ import { handleDocumentUpdate, getRoomName } from "../../services/socket-handler
 import type { AppServer, AppSocket, DocumentUpdateArgs } from "../../types";
 import type { SocketHandlerDeps } from "../../services/socket-handlers.deps";
 import { ErrorCode } from "../../types";
+import { SessionTerminatedError } from "../../services/mongodb-store";
 
 function createFakeIO(): AppServer {
   return {} as unknown as AppServer;
@@ -286,6 +287,33 @@ describe("handleDocumentUpdate", () => {
       statusCode: 500,
       error: "Internal server error",
       errorCode: ErrorCode.INTERNAL_ERROR,
+    });
+  });
+
+  it("acks 409 SESSION_TERMINATED and does not fan out when createUpdate rejects with SessionTerminatedError", async () => {
+    const fakeIO = createFakeIO();
+    const fakeBroadcastOperator = { emit: vi.fn() };
+    const fakeSocket = createFakeSocket(fakeBroadcastOperator);
+    const fakeArgs: DocumentUpdateArgs = {
+      documentId: "doc-1",
+      data: "update-data",
+      collaborationToken: "token",
+    };
+    const callback = vi.fn();
+
+    const runtimeSession = { sessionDid: fakeSocket.data.sessionDid };
+    fakeSessionManager.getRuntimeSession.mockResolvedValue(runtimeSession);
+    fakeAuthService.verifyCollaborationToken.mockResolvedValue(true);
+    fakeMongoDBStore.createUpdate.mockRejectedValue(new SessionTerminatedError());
+
+    await handleDocumentUpdate(deps, fakeIO, fakeSocket, fakeArgs, callback);
+
+    expect(fakeBroadcastOperator.emit).not.toHaveBeenCalled();
+    expect(callback).toHaveBeenCalledWith({
+      status: false,
+      statusCode: 409,
+      error: "Session terminated",
+      errorCode: ErrorCode.SESSION_TERMINATED,
     });
   });
 

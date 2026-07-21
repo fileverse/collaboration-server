@@ -186,11 +186,11 @@ describe("verifyEditUcan", () => {
     }));
   });
 
-  it("returns {kind:'actor', editHandle} when the fact carries a matching docId + editHandle", async () => {
+  it("returns {kind:'actor', editHandle, epoch:0} when the fact carries a matching docId + editHandle but no epoch", async () => {
     (ucans.verify as any).mockResolvedValue({ ok: true });
     (ucans.validate as any).mockResolvedValue({ payload: { fct: [{ docId: "doc-1", editHandle: "h-1" }] } });
     const svc = new AuthService(serverDid, gateDid);
-    expect(await svc.verifyEditUcan("tok", "doc-1")).toEqual({ kind: "actor", editHandle: "h-1" });
+    expect(await svc.verifyEditUcan("tok", "doc-1")).toEqual({ kind: "actor", editHandle: "h-1", epoch: 0 });
   });
 
   it("returns null when verify fails (wrong issuer / capability / audience)", async () => {

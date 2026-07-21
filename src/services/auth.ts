@@ -105,7 +105,7 @@ export class AuthService {
   async verifyEditUcan(
     token: string,
     documentId: string
-  ): Promise<{ kind: "actor"; editHandle: string } | null> {
+  ): Promise<{ kind: "actor"; editHandle: string; epoch: number } | null> {
     if (!this.gateDid) return null; // GP editing disabled until GATE_DID is pinned
     try {
       const result = await ucans.verify(token, {
@@ -126,9 +126,12 @@ export class AuthService {
       const fact = ((parsed.payload.fct ?? [])[0] ?? {}) as {
         docId?: string;
         editHandle?: string;
+        epoch?: number;
       };
       if (fact.docId !== documentId) return null;
-      if (typeof fact.editHandle === "string") return { kind: "actor", editHandle: fact.editHandle };
+      if (typeof fact.editHandle === "string") {
+        return { kind: "actor", editHandle: fact.editHandle, epoch: typeof fact.epoch === "number" ? fact.epoch : 0 };
+      }
       return null;
     } catch (error) {
       console.error("Edit UCAN verification error:", error);

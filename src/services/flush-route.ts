@@ -1,7 +1,7 @@
 import type { Request, Response } from "express";
 import { v4 as uuidv4 } from "uuid";
 import type { AuthService } from "./auth";
-import type { MongoDBStore } from "./mongodb-store";
+import { SessionTerminatedError, type MongoDBStore } from "./mongodb-store";
 
 export const FLUSH_MAX_BYTES = 2 * 1024 * 1024; // a final delta is small; cap well under the 10MB body limit
 
@@ -28,20 +28,28 @@ export function createFlushHandler(deps: FlushDeps) {
       return;
     }
 
-    // Same chokepoint as the socket path: createUpdate applies seq + the durable-write gate; a row is
-    // persisted only for a bound, non-terminated room. Zero-knowledge — the server never reads `data`.
-    await deps.mongodbStore.createUpdate({
-      id: uuidv4(),
-      documentId,
-      data,
-      updateType: "yjs_update",
-      committed: false,
-      commitCid: null,
-      createdAt: Date.now(),
-      sessionDid,
-      appType: "ddoc",
-    });
-
+    // Per-actor edit admission runs at socket JOIN; this durable-write path additionally
+    // refuses a terminated (rotated-away) session so a lingering old-session client cannot
+    // persist. Zero-knowledge — the server never reads `data`.
+    try {
+      await deps.mongodbStore.createUpdate({
+        id: uuidv4(),
+        documentId,
+        data,
+        updateType: "yjs_update",
+        committed: false,
+        commitCid: null,
+        createdAt: Date.now(),
+        sessionDid,
+        appType: "ddoc",
+      });
+    } catch (err) {
+      if (err instanceof SessionTerminatedError) {
+        res.status(409).json({ error: "Session terminated" });
+        return;
+      }
+      throw err;
+    }
     res.status(200).json({ ok: true });
   };
 }

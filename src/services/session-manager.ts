@@ -159,6 +159,38 @@ export class SessionManager {
     return runtimeSession;
   }
 
+  // Terminated-inclusive lookup: same as getSession minus the state filter, for the
+  // joinOnly headless read path — termination blocks writes only (state-based, enforced
+  // independently in createUpdate), so a rotated-away session's durable rows must still
+  // be readable. Never memoized into inMemorySessions: doing so would let a later plain
+  // getSession() resurrect a terminated session for non-joinOnly admission.
+  async getSessionIncludingTerminated(
+    documentId: string,
+    sessionDid: string
+  ): Promise<RuntimeSession | undefined> {
+    const sessionKey = this.getSessionKey(documentId, sessionDid);
+    const inMemorySession = this.inMemorySessions.get(sessionKey);
+    if (inMemorySession) {
+      return inMemorySession;
+    }
+
+    const dbSession = await SessionModel.findOne({ documentId, sessionDid });
+    if (!dbSession) return undefined;
+
+    return {
+      documentId: dbSession.documentId,
+      sessionDid: dbSession.sessionDid,
+      ownerDid: dbSession.ownerDid,
+      clients: new Set<string>(),
+      roomInfo: dbSession.roomInfo,
+      appType: dbSession.appType,
+      ownerIdentityDid: dbSession.ownerIdentityDid ?? undefined,
+      portalAddress: dbSession.portalAddress ?? undefined,
+      collabJoinEnabled: dbSession.collabJoinEnabled,
+      workspaceEditEnabled: dbSession.workspaceEditEnabled,
+    };
+  }
+
   async getCollabJoinEnabled(documentId: string, sessionDid: string): Promise<boolean | undefined> {
     const doc = await SessionModel.findOne({ documentId, sessionDid }, { collabJoinEnabled: 1 }).lean();
     return (doc as any)?.collabJoinEnabled;

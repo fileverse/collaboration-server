@@ -7,7 +7,7 @@ import compression from "compression";
 import { createServer } from "http";
 import { config } from "./config";
 import { authService } from "./services/auth";
-import { registerEventHandlers } from "./services/socket-handlers";
+import { registerEventHandlers, getRoomName } from "./services/socket-handlers";
 import { authMiddleware } from "./services/auth-middleware";
 import { sessionManager } from "./services/session-manager";
 import { mongodbStore } from "./services/mongodb-store";
@@ -23,6 +23,8 @@ import {
   createMirrorReadHandler,
   createShareContextHandler,
 } from "./services/owner-op-routes";
+import { createRotateSessionHandler } from "./services/rotate-route";
+import { rotationCoordinator } from "./services/rotation-coordinator";
 import { editBoundCache } from "./services/gate-epoch";
 import { createFlushHandler } from "./services/flush-route";
 import { createLightNode } from "@waku/sdk";
@@ -107,11 +109,28 @@ class CollaborationServer {
     );
     this.app.post(
       "/documents/:documentId/evict-edit-actors",
-      createEvictEditActorsHandler({ authService, sessionManager, editBoundCache }, this.io)
+      createEvictEditActorsHandler({ authService, sessionManager, editBoundCache, mongodbStore }, this.io)
     );
     this.app.post(
       "/workspaces/:portalAddress/evict-member",
       createEvictWorkspaceMemberHandler({ authService, sessionManager }, this.io)
+    );
+    this.app.post(
+      "/documents/:documentId/rotate-session",
+      createRotateSessionHandler({
+        authService, sessionManager, mongodbStore, rotationCoordinator,
+        terminateOldSession: async (documentId, sessionDid, appType) => {
+          const room = getRoomName(documentId, sessionDid);
+          const sockets = await this.io!.in(room).fetchSockets();
+          // Laggard sockets stay AUTHED: their next write must reach createUpdate and get the
+          // D-11 SESSION_TERMINATED 409 — that ack is their self-heal signal.
+          // De-authing here would surface a 401 first and strand them frozen.
+          // See docs/architecture/gp-semaphore.md.
+          for (const s of sockets) { s.leave(room); }
+          await sessionManager.deactivateSession(documentId, sessionDid);
+          await sessionManager.terminateSession(documentId, sessionDid, appType);
+        },
+      }, this.io)
     );
     this.app.get(
       "/documents/:documentId/mirror",

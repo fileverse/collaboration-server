@@ -1,5 +1,9 @@
 import { DocumentUpdate, DocumentCommit } from "../types/index";
-import { DocumentUpdateModel, DocumentCommitModel, CounterModel, SessionModel, DocumentMetaModel, DocumentMirrorModel } from "../database/models";
+import { DocumentUpdateModel, DocumentCommitModel, CounterModel, SessionModel, DocumentMetaModel, DocumentMirrorModel, DocumentEditEpochModel } from "../database/models";
+
+export class SessionTerminatedError extends Error {
+  constructor() { super("session terminated"); this.name = "SessionTerminatedError"; }
+}
 
 export class MongoDBStore {
   // Update management
@@ -9,7 +13,10 @@ export class MongoDBStore {
         documentId: update.documentId,
         sessionDid: update.sessionDid,
       });
-      if (!session || session.state === "terminated") {
+      if (session?.state === "terminated") {
+        throw new SessionTerminatedError();
+      }
+      if (!session) {
         return update; // ephemeral relay — no durable row, no seq burned
       }
 
@@ -36,7 +43,9 @@ export class MongoDBStore {
       await mongoUpdate.save();
       return { ...update, seq };
     } catch (error) {
-      console.error("Error creating update:", error);
+      if (!(error instanceof SessionTerminatedError)) {
+        console.error("Error creating update:", error);
+      }
       throw error;
     }
   }
@@ -264,6 +273,19 @@ export class MongoDBStore {
     return { editLock: meta.editLock ?? null, title: meta.title ?? null };
   }
 
+  async setMinEditEpoch(documentId: string, epoch: number): Promise<void> {
+    await DocumentEditEpochModel.findOneAndUpdate(
+      { _id: documentId },
+      { $max: { minEditEpoch: epoch } },
+      { upsert: true }
+    );
+  }
+
+  async getMinEditEpoch(documentId: string): Promise<number> {
+    const row: any = await DocumentEditEpochModel.findById(documentId).lean();
+    return row?.minEditEpoch ?? 0;
+  }
+
   // Discovery: docs bound to the proven owner (identity DID or portal owner DID) — recovery for a wiped device.
   async listDocumentsForOwner(
     by: { ownerIdentityDid?: string; ownerDid?: string }
@@ -463,6 +485,7 @@ export class MongoDBStore {
       SessionModel.deleteMany({ documentId }),
       CounterModel.deleteOne({ _id: documentId }),
       DocumentMirrorModel.deleteMany({ documentId }),
+      DocumentEditEpochModel.deleteOne({ _id: documentId }),
     ]);
   }
 

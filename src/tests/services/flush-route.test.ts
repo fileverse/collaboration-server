@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { createFlushHandler, FLUSH_MAX_BYTES } from "../../services/flush-route";
+import { SessionTerminatedError } from "../../services/mongodb-store";
 
 function res() {
   const r: any = {};
@@ -43,5 +44,16 @@ describe("POST /flush", () => {
       documentId: "d", data: "ct", updateType: "yjs_update", sessionDid: "s", appType: "ddoc",
     }));
     expect(r.status).toHaveBeenCalledWith(200);
+  });
+
+  it("409s with an error body (not 200) when createUpdate rejects with SessionTerminatedError", async () => {
+    deps.authService.verifyCollaborationToken.mockResolvedValue(true);
+    deps.mongodbStore.createUpdate.mockRejectedValue(new SessionTerminatedError());
+    const r = res();
+    await createFlushHandler(deps)({ body: { documentId: "d", sessionDid: "s", collaborationToken: "t", data: "ct" } } as any, r);
+
+    expect(r.status).toHaveBeenCalledWith(409);
+    expect(r.status).not.toHaveBeenCalledWith(200);
+    expect(r.json).toHaveBeenCalledWith(expect.objectContaining({ error: expect.any(String) }));
   });
 });
