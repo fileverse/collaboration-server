@@ -567,4 +567,24 @@ describe("share-context", () => {
     expect(r.status).toHaveBeenCalledWith(200);
     expect(r.json).toHaveBeenCalledWith({ exists: false, isPublished: false });
   });
+
+  it("GET with ?sessionDid reports sessionExists via the same lookup owner-ops use", async () => {
+    const getSession = vi.fn().mockResolvedValueOnce({ sessionDid: "did-live" }).mockResolvedValueOnce(undefined);
+    const shareDeps: any = {
+      mongodbStore: { getShareContext: vi.fn().mockResolvedValue({ exists: true, isPublished: false }) },
+      sessionManager: { getSession },
+    };
+    const r1 = res();
+    await createShareContextHandler(shareDeps)(
+      { params: { documentId: "doc-1" }, query: { sessionDid: "did-live" } } as any, r1
+    );
+    expect(getSession).toHaveBeenCalledWith("doc-1", "did-live");
+    expect(r1.json).toHaveBeenCalledWith({ exists: true, isPublished: false, sessionExists: true });
+
+    const r2 = res();
+    await createShareContextHandler(shareDeps)(
+      { params: { documentId: "doc-1" }, query: { sessionDid: "did-stale" } } as any, r2
+    );
+    expect(r2.json).toHaveBeenCalledWith({ exists: true, isPublished: false, sessionExists: false });
+  });
 });

@@ -24,6 +24,25 @@ export interface OwnerOpDeps {
   >;
 }
 
+// Absence-vs-skew evidence for the 404 class: "no sessions at all" means the owner
+// socket never established the room; a non-empty list means the client derived a
+// sessionDid the server doesn't have (stale/rotated roomKey).
+async function logSessionNotFound(
+  op: string,
+  documentId: string,
+  sessionDid: string | undefined,
+  sessionManager: Pick<SessionManager, "getNonTerminatedSessionsForDocument">
+): Promise<void> {
+  try {
+    const others = await sessionManager.getNonTerminatedSessionsForDocument(documentId);
+    console.warn(
+      `[owner-op:${op}] session not found doc=${documentId} did=${sessionDid} nonTerminated=[${others.map((t) => t.sessionDid).join(",")}]`
+    );
+  } catch {
+    console.warn(`[owner-op:${op}] session not found doc=${documentId} did=${sessionDid}`);
+  }
+}
+
 export function createCollabJoinEnabledHandler(deps: OwnerOpDeps, io: AppServer) {
   return async (req: Request, res: Response): Promise<void> => {
     const documentId = req.params.documentId;
@@ -31,6 +50,7 @@ export function createCollabJoinEnabledHandler(deps: OwnerOpDeps, io: AppServer)
 
     const session = await deps.sessionManager.getSession(documentId, sessionDid);
     if (!session) {
+      await logSessionNotFound("collab-join-enabled", documentId, sessionDid, deps.sessionManager);
       res.status(404).json({ error: "Session not found" });
       return;
     }
@@ -84,6 +104,7 @@ export function createWorkspaceEditTierHandler(deps: OwnerOpDeps, io: AppServer)
 
     const session = await deps.sessionManager.getSession(documentId, sessionDid);
     if (!session) {
+      await logSessionNotFound("workspace-edit-tier", documentId, sessionDid, deps.sessionManager);
       res.status(404).json({ error: "Session not found" });
       return;
     }
@@ -139,6 +160,7 @@ export function createEvictEditActorsHandler(
 
     const session = await deps.sessionManager.getSession(documentId, sessionDid);
     if (!session) {
+      await logSessionNotFound("evict-edit-actors", documentId, sessionDid, deps.sessionManager);
       res.status(404).json({ error: "Session not found" });
       return;
     }
@@ -225,6 +247,7 @@ export function createDeleteDocumentHandler(deps: {
 
     const session = await deps.sessionManager.getSession(documentId, sessionDid);
     if (!session) {
+      console.warn(`[owner-op:delete] session not found doc=${documentId} did=${sessionDid}`);
       res.status(404).json({ error: "Session not found" });
       return;
     }
@@ -266,12 +289,23 @@ export function createMirrorReadHandler(deps: { mongodbStore: Pick<MongoDBStore,
 }
 
 /** Open read: existence only (same trust model as the mirror GET). */
-export function createShareContextHandler(deps: { mongodbStore: Pick<MongoDBStore, "getShareContext"> }) {
+export function createShareContextHandler(deps: {
+  mongodbStore: Pick<MongoDBStore, "getShareContext">;
+  sessionManager?: Pick<SessionManager, "getSession">;
+}) {
   return async (req: Request, res: Response): Promise<void> => {
     // Express 4 doesn't catch async rejections — an unhandled store error
     // would hang the request (and the client has no timeout-free fallback).
     try {
       const ctx = await deps.mongodbStore.getShareContext(req.params.documentId);
+      // Optional probe: same lookup the owner-ops open with, so `sessionExists`
+      // answers exactly "will an owner-op on this sessionDid find the session".
+      const sessionDid = req.query?.sessionDid;
+      if (typeof sessionDid === "string" && sessionDid && deps.sessionManager) {
+        const session = await deps.sessionManager.getSession(req.params.documentId, sessionDid);
+        res.status(200).json({ ...ctx, sessionExists: !!session });
+        return;
+      }
       res.status(200).json(ctx);
     } catch {
       res.status(500).json({ error: "share-context lookup failed" });

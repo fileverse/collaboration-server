@@ -138,7 +138,7 @@ class CollaborationServer {
     );
     this.app.get(
       "/documents/:documentId/share-context",
-      createShareContextHandler({ mongodbStore })
+      createShareContextHandler({ mongodbStore, sessionManager })
     );
     this.app.post("/flush", createFlushHandler({ authService, mongodbStore }));
     this.app.post("/list-my-documents", createListMyDocumentsHandler({ authService, mongodbStore }));
