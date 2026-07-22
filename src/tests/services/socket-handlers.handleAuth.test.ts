@@ -2,7 +2,6 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 import { handleAuth, getRoomName } from "../../services/socket-handlers";
 import { AppServer, AppSocket, AuthArgs, ErrorCode } from "../../types";
 import type { SocketHandlerDeps } from "../../services/socket-handlers.deps";
-import { config } from "../../config";
 
 function createFakeIO(options?: {
   broadcastOperator?: { emit: ReturnType<typeof vi.fn> };
@@ -1423,39 +1422,19 @@ describe("handleAuth", () => {
     });
   });
 
-  it("role: token-less join on a bound session → legacy owner while fallback is on", async () => {
+  it("role: token-less join on a bound session → editor (owner needs a proven identity token)", async () => {
     fakeSessionManager.getSession.mockResolvedValue({ ...boundSession });
     fakeAuthService.verifyCollaborationToken.mockResolvedValue("did:key:collab");
     fakeAuthService.verifyOwnerToken.mockResolvedValue("did:key:shared-portal");
+    fakeSessionManager.getWorkspaceEditEnabled.mockResolvedValue(true);
     const { identityToken, identityContractAddress, ...tokenless } = boundJoinArgs;
     const callback = vi.fn();
 
     await handleAuth(deps, createFakeIO(), createFakeSocket(), tokenless as any, callback);
 
     expect(callback).toHaveBeenCalledWith(
-      expect.objectContaining({ status: true, data: expect.objectContaining({ role: "owner" }) })
+      expect.objectContaining({ status: true, data: expect.objectContaining({ role: "editor" }) })
     );
-  });
-
-  it("role: token-less join on a bound session → editor once the fallback is sunset", async () => {
-    const prior = config.auth.legacyRoleFallback;
-    config.auth.legacyRoleFallback = false;
-    try {
-      fakeSessionManager.getSession.mockResolvedValue({ ...boundSession });
-      fakeAuthService.verifyCollaborationToken.mockResolvedValue("did:key:collab");
-      fakeAuthService.verifyOwnerToken.mockResolvedValue("did:key:shared-portal");
-      fakeSessionManager.getWorkspaceEditEnabled.mockResolvedValue(true);
-      const { identityToken, identityContractAddress, ...tokenless } = boundJoinArgs;
-      const callback = vi.fn();
-
-      await handleAuth(deps, createFakeIO(), createFakeSocket(), tokenless as any, callback);
-
-      expect(callback).toHaveBeenCalledWith(
-        expect.objectContaining({ status: true, data: expect.objectContaining({ role: "editor" }) })
-      );
-    } finally {
-      config.auth.legacyRoleFallback = prior;
-    }
   });
 
   it("workspace arm: rejects a FOREIGN portal's valid ownerToken (no cross-portal admission)", async () => {
@@ -1541,9 +1520,10 @@ describe("handleAuth", () => {
         "did:key:new"
       );
       expect(callback).toHaveBeenCalledWith(expect.objectContaining({ status: true }));
-      // Post-heal, ownerDid matches and no identityToken is presented, so this resolves
-      // to "owner" pre-cap — the rail gate is bypassed rather than consulted.
-      expect(fakeSocket.data.rail).toBeUndefined();
+      // Post-heal, ownerDid matches. A token-less join on a bound session is capped to
+      // "editor" (no legacy shared-DID owner), so the workspace member is admitted via the
+      // workspace rail (tier = edit) rather than the owner-shaped joinOnly bypass.
+      expect(fakeSocket.data.rail).toBe("workspace");
     });
 
     it("does NOT heal when the presented contractAddress differs from session.portalAddress", async () => {

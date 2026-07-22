@@ -403,7 +403,6 @@ export interface ServerConfig {
   auth: {
     serverDid: string;
     serverKeyPair?: any;
-    legacyRoleFallback: boolean;
   };
   gate: {
     url: string | undefined;

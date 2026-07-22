@@ -375,8 +375,8 @@ export async function handleAuth(
       // DID cannot tell a member from the creator, but the per-person identity signingDid
       // can. On a bound session a presented identityToken DECIDES the role — owner needs
       // BOTH the proven identity match and the portal ownerToken match. An invalid token
-      // is a 401, never a fallback; a token-less join keeps the legacy compare only while
-      // the sunset flag is on.
+      // is a 401; a token-less join on a bound session is never owner (capped to editor) —
+      // a bound session already proved identity once, so a modern client always presents it.
       const boundIdentityDid = existingSession.ownerIdentityDid ?? null;
       if (storedAppType === "ddoc" && boundIdentityDid && args.identityToken) {
         const provenDid = args.identityContractAddress
@@ -402,8 +402,7 @@ export async function handleAuth(
       } else if (
         storedAppType === "ddoc" &&
         boundIdentityDid &&
-        !args.identityToken &&
-        !config.auth.legacyRoleFallback
+        !args.identityToken
       ) {
         role = "editor";
       } else {
