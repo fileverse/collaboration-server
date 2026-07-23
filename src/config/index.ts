@@ -37,7 +37,19 @@ export const config: ServerConfig = {
     interval: process.env.PUBLISH_RECONCILE_INTERVAL || "15 minutes",
     batchSize: parseInt(process.env.PUBLISH_RECONCILE_BATCH || "500"),
   },
+  deleteGrace: {
+    windowMs: parseInt(process.env.DELETE_GRACE_WINDOW_MS || "2592000000"), // 30 days
+    interval: process.env.DELETE_GRACE_INTERVAL || "1 hour",
+    batchSize: parseInt(process.env.DELETE_GRACE_BATCH || "200"),
+  },
   agenda: {
     concurrency: parseInt(process.env.AGENDA_DEFAULT_CONCURRENCY || "1"),
+  },
+  gate: {
+    url: process.env.GATE_URL,
+    did: process.env.GATE_DID,
+  },
+  webhook: {
+    apiKey: process.env.COLLAB_WEBHOOK_API_KEY,
   },
 };

@@ -3,6 +3,7 @@ import { handleDocumentUpdate, getRoomName } from "../../services/socket-handler
 import type { AppServer, AppSocket, DocumentUpdateArgs } from "../../types";
 import type { SocketHandlerDeps } from "../../services/socket-handlers.deps";
 import { ErrorCode } from "../../types";
+import { SessionTerminatedError } from "../../services/mongodb-store";
 
 function createFakeIO(): AppServer {
   return {} as unknown as AppServer;
@@ -30,6 +31,7 @@ function createFakeSocket(
     id: "socket-1",
     data,
     to: vi.fn(() => toReturn),
+    disconnect: vi.fn(),
   } as unknown as AppSocket;
 }
 
@@ -39,6 +41,8 @@ describe("handleDocumentUpdate", () => {
   };
   const fakeSessionManager = {
     getRuntimeSession: vi.fn(),
+    getWorkspaceEditEnabled: vi.fn(),
+    getCollabJoinEnabled: vi.fn(),
   };
   const fakeMongoDBStore = {
     createUpdate: vi.fn(),
@@ -48,6 +52,7 @@ describe("handleDocumentUpdate", () => {
     authService: fakeAuthService as any,
     sessionManager: fakeSessionManager as any,
     mongodbStore: fakeMongoDBStore as any,
+    editBoundCache: {} as any,
   };
 
   beforeEach(() => {
@@ -285,6 +290,33 @@ describe("handleDocumentUpdate", () => {
     });
   });
 
+  it("acks 409 SESSION_TERMINATED and does not fan out when createUpdate rejects with SessionTerminatedError", async () => {
+    const fakeIO = createFakeIO();
+    const fakeBroadcastOperator = { emit: vi.fn() };
+    const fakeSocket = createFakeSocket(fakeBroadcastOperator);
+    const fakeArgs: DocumentUpdateArgs = {
+      documentId: "doc-1",
+      data: "update-data",
+      collaborationToken: "token",
+    };
+    const callback = vi.fn();
+
+    const runtimeSession = { sessionDid: fakeSocket.data.sessionDid };
+    fakeSessionManager.getRuntimeSession.mockResolvedValue(runtimeSession);
+    fakeAuthService.verifyCollaborationToken.mockResolvedValue(true);
+    fakeMongoDBStore.createUpdate.mockRejectedValue(new SessionTerminatedError());
+
+    await handleDocumentUpdate(deps, fakeIO, fakeSocket, fakeArgs, callback);
+
+    expect(fakeBroadcastOperator.emit).not.toHaveBeenCalled();
+    expect(callback).toHaveBeenCalledWith({
+      status: false,
+      statusCode: 409,
+      error: "Session terminated",
+      errorCode: ErrorCode.SESSION_TERMINATED,
+    });
+  });
+
   it("returns 500 when an unexpected error occurs in document update handler", async () => {
     const fakeIO = createFakeIO();
     const fakeSocket = createFakeSocket();
@@ -304,6 +336,72 @@ describe("handleDocumentUpdate", () => {
       statusCode: 500,
       error: "Internal server error",
       errorCode: ErrorCode.INTERNAL_ERROR,
+    });
+  });
+
+  describe("handleDocumentUpdate — rail write-guard", () => {
+    function makeEditor(
+      railData: { rail: "gp" | "workspace" | "public" },
+      broadcast?: { emit: ReturnType<typeof vi.fn> }
+    ) {
+      const socket = createFakeSocket(broadcast ?? { emit: vi.fn() }, { role: "editor" });
+      socket.data.rail = railData.rail;
+      fakeSessionManager.getRuntimeSession.mockResolvedValue({ sessionDid: socket.data.sessionDid });
+      fakeAuthService.verifyCollaborationToken.mockResolvedValue(true);
+      return socket;
+    }
+    const args = { documentId: "doc-1", data: "d", collaborationToken: "ct" } as DocumentUpdateArgs;
+
+    it("403 when a workspace editor's tier is now disabled", async () => {
+      const socket = makeEditor({ rail: "workspace" });
+      fakeSessionManager.getWorkspaceEditEnabled.mockResolvedValue(false);
+      const cb = vi.fn();
+      await handleDocumentUpdate(deps, createFakeIO(), socket, args, cb);
+      expect(cb).toHaveBeenCalledWith(expect.objectContaining({ statusCode: 403, errorCode: ErrorCode.EDIT_REVOKED }));
+      expect(fakeMongoDBStore.createUpdate).not.toHaveBeenCalled();
+    });
+
+    it("403 when a public editor's collabJoinEnabled is no longer true (false OR undefined)", async () => {
+      for (const val of [false, undefined]) {
+        vi.clearAllMocks();
+        const socket = makeEditor({ rail: "public" });
+        fakeSessionManager.getCollabJoinEnabled.mockResolvedValue(val);
+        const cb = vi.fn();
+        await handleDocumentUpdate(deps, createFakeIO(), socket, args, cb);
+        expect(cb).toHaveBeenCalledWith(expect.objectContaining({ statusCode: 403, errorCode: ErrorCode.EDIT_REVOKED }));
+        expect(fakeMongoDBStore.createUpdate).not.toHaveBeenCalled();
+      }
+    });
+
+    it("disconnects the socket after the EDIT_REVOKED 403", async () => {
+      const socket = makeEditor({ rail: "workspace" });
+      fakeSessionManager.getWorkspaceEditEnabled.mockResolvedValue(false);
+      const cb = vi.fn();
+      await handleDocumentUpdate(deps, createFakeIO(), socket, args, cb);
+      expect(cb).toHaveBeenCalledWith(expect.objectContaining({ statusCode: 403, errorCode: ErrorCode.EDIT_REVOKED }));
+      expect((socket as any).disconnect).toHaveBeenCalledWith(true);
+    });
+
+    it("does not disconnect an admitted editor", async () => {
+      const socket = makeEditor({ rail: "workspace" });
+      fakeSessionManager.getWorkspaceEditEnabled.mockResolvedValue(true);
+      fakeMongoDBStore.createUpdate.mockResolvedValue({ id: "u1", documentId: "doc-1", data: "d", updateType: "yjs_update", commitCid: null, createdAt: 1 });
+      const cb = vi.fn();
+      await handleDocumentUpdate(deps, createFakeIO(), socket, args, cb);
+      expect((socket as any).disconnect).not.toHaveBeenCalled();
+      expect(cb).toHaveBeenCalledWith(expect.objectContaining({ status: true }));
+    });
+
+    it("does NOT guard a dsheet editor (no rail model — must not 403)", async () => {
+      const socket = createFakeSocket({ emit: vi.fn() }, { role: "editor" });
+      socket.data.appType = "dsheet"; // excluded from the ddoc-only guard
+      fakeSessionManager.getRuntimeSession.mockResolvedValue({ sessionDid: socket.data.sessionDid });
+      fakeAuthService.verifyCollaborationToken.mockResolvedValue(true);
+      fakeMongoDBStore.createUpdate.mockResolvedValue({ id: "u1", documentId: "doc-1", data: "d", updateType: "yjs_update", commitCid: null, createdAt: 1 });
+      const cb = vi.fn();
+      await handleDocumentUpdate(deps, createFakeIO(), socket, args, cb);
+      expect(fakeMongoDBStore.createUpdate).toHaveBeenCalled();
+      expect(cb).toHaveBeenCalledWith(expect.objectContaining({ status: true }));
     });
   });
 });

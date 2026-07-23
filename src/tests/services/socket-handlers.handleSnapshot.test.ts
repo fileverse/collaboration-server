@@ -23,6 +23,7 @@ describe("handleSnapshot", () => {
     authService: { verifyCollaborationToken } as any,
     sessionManager: { getRuntimeSession } as any,
     mongodbStore: { createSnapshot } as any,
+    editBoundCache: {} as any,
   };
 
   it("rejects a non-owner with 403", async () => {

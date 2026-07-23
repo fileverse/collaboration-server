@@ -26,8 +26,23 @@ function createFakeSocket(
     id: "socket-1",
     data,
     to: vi.fn(() => op),
+    disconnect: vi.fn(),
   } as unknown as AppSocket;
 }
+
+function createDeps(check = vi.fn().mockResolvedValue("bound")) {
+  return {
+    authService: {} as any,
+    sessionManager: {
+      getWorkspaceEditEnabled: vi.fn().mockResolvedValue(true),
+      getCollabJoinEnabled: vi.fn().mockResolvedValue(true),
+    } as any,
+    mongodbStore: {} as any,
+    editBoundCache: { check } as any,
+  };
+}
+
+const flush = () => new Promise((r) => setImmediate(r));
 
 describe('handleAwareness', () => {
   beforeEach(() => {
@@ -43,7 +58,7 @@ describe('handleAwareness', () => {
       collaborationToken: "",
     };
 
-    await handleAwareness(fakeIO, fakeSocket, fakeArgs);
+    await handleAwareness(createDeps() as any, fakeIO, fakeSocket, fakeArgs);
     expect(fakeSocket.to).not.toHaveBeenCalled();
   });
 
@@ -59,7 +74,7 @@ describe('handleAwareness', () => {
       collaborationToken: "test-collaborator-token",
     };
 
-    await handleAwareness(fakeIO, fakeSocket, fakeArgs);
+    await handleAwareness(createDeps() as any, fakeIO, fakeSocket, fakeArgs);
 
     const roomName = `session::${fakeArgs.documentId}__${fakeSocket.data.sessionDid}`;
     expect(fakeSocket.to).toHaveBeenCalledWith(roomName);
@@ -83,6 +98,43 @@ describe('handleAwareness', () => {
       collaborationToken: "",
     };
 
-    await expect(handleAwareness(fakeIO, fakeSocket as any, fakeArgs)).resolves.not.toThrow();
+    await expect(handleAwareness(createDeps() as any, fakeIO, fakeSocket as any, fakeArgs)).resolves.not.toThrow();
+  });
+
+  it("disconnects a revoked gp-actor editor on awareness traffic", async () => {
+    const deps = createDeps(vi.fn().mockResolvedValue("unbound"));
+    const socket = createFakeSocket(undefined, { role: "editor", rail: "gp", railKind: "gp-actor", actorHandle: "h1" });
+    await handleAwareness(deps as any, createFakeIO(), socket, { documentId: "test-document-id", data: "x" } as any);
+    await flush();
+    expect((socket as any).to).toHaveBeenCalled(); // broadcast always goes out
+    expect((socket as any).disconnect).toHaveBeenCalledWith(true);
+  });
+
+  it("never re-checks the owner", async () => {
+    const check = vi.fn();
+    const deps = createDeps(check);
+    const socket = createFakeSocket(undefined, { role: "owner" });
+    await handleAwareness(deps as any, createFakeIO(), socket, { documentId: "test-document-id", data: "x" } as any);
+    await flush();
+    expect(check).not.toHaveBeenCalled();
+    expect((socket as any).disconnect).not.toHaveBeenCalled();
+  });
+
+  it("throttles: a second call within the interval does not re-check", async () => {
+    const check = vi.fn().mockResolvedValue("bound");
+    const deps = createDeps(check);
+    const socket = createFakeSocket(undefined, { role: "editor", rail: "gp", railKind: "gp-actor", actorHandle: "h1" });
+    await handleAwareness(deps as any, createFakeIO(), socket, { documentId: "test-document-id", data: "x" } as any);
+    await handleAwareness(deps as any, createFakeIO(), socket, { documentId: "test-document-id", data: "x" } as any);
+    await flush();
+    expect(check).toHaveBeenCalledTimes(1);
+  });
+
+  it("leaves an admitted editor connected", async () => {
+    const deps = createDeps(vi.fn().mockResolvedValue("bound"));
+    const socket = createFakeSocket(undefined, { role: "editor", rail: "gp", railKind: "gp-actor", actorHandle: "h1" });
+    await handleAwareness(deps as any, createFakeIO(), socket, { documentId: "test-document-id", data: "x" } as any);
+    await flush();
+    expect((socket as any).disconnect).not.toHaveBeenCalled();
   });
 });

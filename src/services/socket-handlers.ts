@@ -11,10 +11,12 @@ import {
   UpdateHistoryArgs,
   UpdateHistoryResponseData,
   SnapshotArgs,
+  MirrorSnapshotArgs,
   DocumentMetaArgs,
   PeersListArgs,
   AwarenessArgs,
   TerminateSessionArgs,
+  EpochLoadedArgs,
   DocumentCommit,
   AppServer,
   AppSocket,
@@ -23,15 +25,19 @@ import {
 } from "../types/index";
 import { requireAuth } from "./auth-middleware";
 import { authService } from "./auth";
-import { mongodbStore } from "./mongodb-store";
+import { mongodbStore, SessionTerminatedError } from "./mongodb-store";
 import { sessionManager } from "./session-manager";
+import { editBoundCache } from "./gate-epoch";
+import { rotationCoordinator } from "./rotation-coordinator";
 import { Hex, isAddress } from "viem";
 import type { SocketHandlerDeps } from "./socket-handlers.deps";
+import { config } from "../config";
 
 const defaultDeps: SocketHandlerDeps = {
   authService,
   sessionManager,
   mongodbStore,
+  editBoundCache,
 };
 
 function validateHexAddress(address: string | undefined, fieldName: string): address is Hex {
@@ -44,6 +50,10 @@ function validateHexAddress(address: string | undefined, fieldName: string): add
 export function getRoomName(documentId: string, sessionDid: string): string {
   return `session::${documentId}__${sessionDid}`;
 }
+
+// Awareness-path re-check throttle; matches the edit-bound TTL so a revoked-but-idle
+// actor is caught within one cache window without adding gate traffic.
+const ADMIT_RECHECK_INTERVAL_MS = 10_000;
 
 /**
  * Coerce an untrusted appType into a known AppType. Anything that is not exactly
@@ -81,14 +91,18 @@ export function registerEventHandlers(io: AppServer): void {
     socket.on("/documents/snapshot", (args, callback) =>
       handleSnapshot(defaultDeps, socket, args, callback)
     );
+    socket.on("/documents/mirror-snapshot", (args, callback) =>
+      handleMirrorSnapshot(defaultDeps, socket, args, callback)
+    );
     socket.on("/documents/meta", (args, callback) =>
       handleSetDocumentMeta(defaultDeps, socket, args, callback)
     );
     socket.on("/documents/peers/list", (args, callback) => handlePeersList(io, socket, args, callback));
-    socket.on("/documents/awareness", (args) => handleAwareness(io, socket, args));
+    socket.on("/documents/awareness", (args) => handleAwareness(defaultDeps, io, socket, args));
     socket.on("/documents/terminate", (args, callback) =>
       handleTerminateSession(defaultDeps, io, socket, args, callback)
     );
+    socket.on("/session/epoch_loaded", (args, callback) => handleEpochLoaded(socket, args, callback));
 
     // Disconnection handling
     socket.on("disconnecting", () => handleDisconnecting(defaultDeps, socket));
@@ -140,12 +154,35 @@ export async function handleAuth(
       });
     }
 
-    const existingSession = await sessionManager.getSession(documentId, sessionDid);
+    let existingSession = await sessionManager.getSession(documentId, sessionDid);
 
     let role: "owner" | "editor";
     let sessionType: "new" | "existing";
     let roomInfo: string | undefined;
     let resolvedAppType: AppType;
+    let rail: "gp" | "workspace" | "public" | undefined = undefined;
+    let railKind: "gp-actor" | "workspace" | "public" | undefined = undefined;
+    let actorHandle: string | undefined = undefined;
+    let provenIdentityDid: string | null = null;
+
+    // joinOnly is strictly privilege-reducing: never create or bind a room on behalf of
+    // a joiner. A workspace member's valid SHARED ownerToken would otherwise create the
+    // session and bind THEIR identity as the room's root of trust (member-first-bind).
+    // Distinct code so clients can render read-only-until-creator-opens.
+    if (!existingSession && args.joinOnly === true) {
+      // Termination blocks WRITES only (state-based, enforced independently in
+      // createUpdate) — a rotated-away session's durable rows are still readable, so
+      // retry terminated-inclusive before giving up. See docs/architecture/gp-semaphore.md.
+      existingSession = await sessionManager.getSessionIncludingTerminated(documentId, sessionDid);
+      if (!existingSession) {
+        return callback({
+          status: false,
+          statusCode: 404,
+          error: "Room not established",
+          errorCode: ErrorCode.ROOM_NOT_ESTABLISHED,
+        });
+      }
+    }
 
     if (!existingSession && args.ownerToken) {
       // - Set up a new session (owner flow)
@@ -188,16 +225,11 @@ export async function handleAuth(
       // UCAN against the on-chain signingDid and bind THAT. Dsheets keep the legacy path
       // (no durable recovery / owner-op surface) — mirrors the ddoc-only join gate so a
       // dsheet owner is never rejected here.
-      let boundOwnerIdentityDid = args.ownerIdentityDid;
+      let boundOwnerIdentityDid: string | null = null;
       if (claimedAppType === "ddoc") {
-        const provenSigningDid =
-          args.identityToken && args.identityContractAddress
-            ? await authService.verifyIdentityToken(
-                args.identityToken,
-                args.identityContractAddress as Hex,
-                documentId
-              )
-            : null;
+        const provenSigningDid = args.identityToken
+          ? await authService.verifyIdentityToken(args.identityToken, documentId)
+          : null;
         if (!provenSigningDid) {
           return callback({
             status: false,
@@ -207,12 +239,47 @@ export async function handleAuth(
           });
         }
         boundOwnerIdentityDid = provenSigningDid;
+        provenIdentityDid = provenSigningDid;
+      }
+
+      // C1: pin documentId → portalAddress on the first owner bind, immutably (trust-on-first-use).
+      // This is bounded by the pre-first-durable-session race window, NOT by documentId secrecy —
+      // the portable share URL is /document/{id}#k=, so documentId is URL-path-visible (server/
+      // link-visible); only the key is in the fragment. The ownerToken proves membership of the
+      // claimed portal; thereafter no other portal can bind. Residual: a share-link holder can
+      // pin-hijack a documentId that has never had a durable owner session, permanently locking
+      // out durable collaboration for it — but content (fileKey-encrypted mirror) and the
+      // on-chain/IPFS artifact are unaffected, and nothing can be purged. A clean fix
+      // (pin-at-document-creation / an owner-authenticated reclaim path) is out of scope. The
+      // doc→portal *deletion* proof lives in the DeletedFile webhook (onlyCollaborator-gated).
+      // See docs/architecture/edit-permission.md.
+      if (claimedAppType === "ddoc") {
+        const { portalAddress: pinnedPortal } = await deps.mongodbStore.pinDocumentPortalIfAbsent({
+          documentId,
+          portalAddress: args.contractAddress as string,
+          ownerDid,
+          ownerIdentityDid: boundOwnerIdentityDid,
+          sessionDid,
+        });
+
+        if (
+          !pinnedPortal ||
+          pinnedPortal.toLowerCase() !== (args.contractAddress as string).toLowerCase()
+        ) {
+          return callback({
+            status: false,
+            statusCode: 403,
+            error: "Document is owned by a different portal",
+            errorCode: ErrorCode.AUTH_TOKEN_INVALID,
+          });
+        }
       }
 
       // Terminate other sessions with socket notification
       const otherSessions = await sessionManager.getOtherNonTerminatedSessions(
         documentId,
         ownerDid,
+        args.contractAddress ?? null,
         sessionDid
       );
       for (const oldSession of otherSessions) {
@@ -250,7 +317,7 @@ export async function handleAuth(
         documentId,
         sessionDid,
         ownerDid,
-        ownerIdentityDid: boundOwnerIdentityDid,
+        ownerIdentityDid: boundOwnerIdentityDid ?? undefined,
         portalAddress: args.contractAddress,
         collabJoinEnabled: false,
         roomInfo: args.roomInfo,
@@ -309,7 +376,69 @@ export async function handleAuth(
         );
       }
 
-      role = ownerDid === existingSession.ownerDid ? "owner" : "editor";
+      // Rotation heal: the chain is the root of trust for the portal collab
+      // DID; the stored session value is a cache of it. A verified ownerToken
+      // for the session's OWN portal that resolves to a different DID means
+      // the workspace rotated (member removal) — adopt it, or the whole team
+      // stays locked out of the established session. A foreign portal's owner
+      // fails the address guard; a removed member's stale token never
+      // verifies against the rotated chain slot.
+      if (
+        ownerDid &&
+        existingSession.portalAddress &&
+        args.contractAddress &&
+        existingSession.portalAddress.toLowerCase() ===
+          args.contractAddress.toLowerCase() &&
+        ownerDid !== existingSession.ownerDid
+      ) {
+        await sessionManager.updateSessionOwnerDid(
+          documentId,
+          existingSession.sessionDid,
+          ownerDid
+        );
+        existingSession.ownerDid = ownerDid;
+      }
+
+      // Identity-based role (ddoc-only): the shared team-portal
+      // DID cannot tell a member from the creator, but the per-person identity signingDid
+      // can. On a bound session a presented identityToken DECIDES the role — owner needs
+      // BOTH the proven identity match and the portal ownerToken match. An invalid token
+      // is a 401; a token-less join on a bound session is never owner (capped to editor) —
+      // a bound session already proved identity once, so a modern client always presents it.
+      const boundIdentityDid = existingSession.ownerIdentityDid ?? null;
+      if (storedAppType === "ddoc" && boundIdentityDid && args.identityToken) {
+        const provenDid = await authService.verifyIdentityToken(args.identityToken, documentId);
+        if (!provenDid) {
+          return callback({
+            status: false,
+            statusCode: 401,
+            error: "Invalid identity proof",
+            errorCode: ErrorCode.AUTH_TOKEN_INVALID,
+          });
+        }
+        role =
+          provenDid === boundIdentityDid && ownerDid === existingSession.ownerDid
+            ? "owner"
+            : "editor";
+        provenIdentityDid = provenDid;
+      } else if (
+        storedAppType === "ddoc" &&
+        boundIdentityDid &&
+        !args.identityToken
+      ) {
+        role = "editor";
+      } else {
+        role = ownerDid === existingSession.ownerDid ? "owner" : "editor";
+      }
+
+      // Captured pre-cap: whatever role resolution (above) already decided is "owner" —
+      // the same credentials would get full owner rights via the plain (non-joinOnly)
+      // path, so a joinOnly read for them is strictly privilege-reducing, never a new grant.
+      const ownerVerifiedPreCap = role === "owner";
+
+      // joinOnly caps the role: on an unbound/legacy session the shared-DID compare
+      // resolves a team member to owner — a join-only bearer never gets owner powers.
+      if (args.joinOnly === true && role === "owner") role = "editor";
 
       // R3 heal (ddoc-only): a session bound before identity proof was required (or
       // bound empty) is filled — once, atomically — by a proven owner, so the pre-fix
@@ -317,16 +446,13 @@ export async function handleAuth(
       if (
         storedAppType === "ddoc" &&
         role === "owner" &&
+        args.joinOnly !== true &&
         !existingSession.ownerIdentityDid &&
-        args.identityToken &&
-        args.identityContractAddress
+        args.identityToken
       ) {
-        const provenSigningDid = await authService.verifyIdentityToken(
-          args.identityToken,
-          args.identityContractAddress as Hex,
-          documentId
-        );
+        const provenSigningDid = await authService.verifyIdentityToken(args.identityToken, documentId);
         if (provenSigningDid) {
+          provenIdentityDid = provenSigningDid;
           await sessionManager.fillOwnerIdentityDidIfAbsent(
             documentId,
             existingSession.sessionDid,
@@ -336,19 +462,79 @@ export async function handleAuth(
         }
       }
 
-      // collabJoinEnabled gate (R5-b): ddoc-ONLY (dsheet must never break; new dsheet rooms also get
-      // collabJoinEnabled:false from createSession, so an unscoped gate would kill all dsheet collaboration).
-      // Read the flag FRESH FROM MONGO (HTTP process flips it in Task 13; in-memory copy can be stale).
-      // Only an explicit `false` closes a ddoc room to non-owners; undefined (legacy) stays open; owners bypass.
-      if (storedAppType === "ddoc" && role === "editor") {
-        const joinEnabled = await sessionManager.getCollabJoinEnabled(documentId, existingSession.sessionDid);
-        if (joinEnabled === false) {
-          return callback({
-            status: false,
-            statusCode: 403,
-            error: "Link sharing is disabled for this document",
-            errorCode: ErrorCode.JOIN_DISABLED,
-          });
+      // Rail-exclusive edit admission (ddoc-only, non-owner): resolved by the credential the
+      // client presents, never a sequential try-each. An editUcan join is GP-or-reject and must
+      // NEVER fall through to workspace/public — a demoted GP editor still holds the un-rotated
+      // roomKey, and falling through would let them re-enter as a lower-trust bearer.
+      //
+      // Owner-verified joinOnly bypasses this gate entirely (admission only — role stays
+      // capped to "editor" above): the gate exists to admit non-owner editors onto a grant
+      // rail, but an owner-shaped bearer already cleared a stricter bar. rail/railKind are
+      // left unset, so isStillAdmitted's default (checks collabJoinEnabled) fails closed for
+      // any later write attempt on a private doc — the headless read path never calls it.
+      if (storedAppType === "ddoc" && role === "editor" && !(args.joinOnly === true && ownerVerifiedPreCap)) {
+        if (args.editUcan) {
+          const gp = await authService.verifyEditUcan(args.editUcan, documentId);
+          if (gp?.kind === "actor") {
+            const minEpoch = await deps.mongodbStore.getMinEditEpoch(documentId);
+            if (gp.epoch < minEpoch) {
+              return callback({
+                status: false,
+                statusCode: 403,
+                error: "Edit access is not authorized for this document",
+                errorCode: ErrorCode.JOIN_DISABLED,
+              });
+            }
+            // Per-actor positive-state admission (keyed on editHandle = hash(C, docId)); fail-closed on
+            // cold/unbound. See docs/architecture/gp-semaphore.md.
+            const state = await deps.editBoundCache.check(documentId, gp.editHandle);
+            if (state === "bound" || state === "stale-bound") {
+              rail = "gp";
+              railKind = "gp-actor";
+              actorHandle = gp.editHandle;
+            } else {
+              return callback({
+                status: false,
+                statusCode: 403,
+                error: "Edit access is not authorized for this document",
+                errorCode: ErrorCode.JOIN_DISABLED,
+              });
+            }
+          } else {
+            return callback({
+              status: false,
+              statusCode: 403,
+              error: "Edit access is not authorized for this document",
+              errorCode: ErrorCode.JOIN_DISABLED,
+            });
+          }
+        } else if (
+          // Whole-team PrivateEdit: membership proof is the SHARED portal secret — the
+          // ownerToken must resolve to the session's own ownerDid (identity already told
+          // us this bearer is not the creator). A valid-but-DIFFERENT ownerToken is some
+          // other portal's owner and gets no workspace admission.
+          ownerDid &&
+          ownerDid === existingSession.ownerDid &&
+          (await sessionManager.getWorkspaceEditEnabled(documentId, existingSession.sessionDid)) === true
+        ) {
+          rail = "workspace";
+          railKind = "workspace";
+          actorHandle = args.ownerAddress?.toLowerCase();
+        } else {
+          // Read fresh from Mongo (an HTTP process can flip this; the in-memory copy may be
+          // stale). Only an explicit `true` opens a ddoc room to a non-GP, non-workspace bearer.
+          const joinEnabled = await sessionManager.getCollabJoinEnabled(documentId, existingSession.sessionDid);
+          if (joinEnabled !== true) {
+            return callback({
+              status: false,
+              statusCode: 403,
+              error: "Link sharing is disabled for this document",
+              errorCode: ErrorCode.JOIN_DISABLED,
+            });
+          }
+          rail = "public";
+          railKind = "public";
+          actorHandle = args.actorHandle;
         }
       }
 
@@ -373,15 +559,32 @@ export async function handleAuth(
       });
     }
 
+    // In-place re-auth on rotation cutover: capture the pre-rotation room membership
+    // BEFORE it's overwritten below, so the socket can be silently migrated off it.
+    const priorSessionDid = socket.data.sessionDid;
+
     // Set socket data
     socket.data.authenticated = true;
     socket.data.documentId = documentId;
     socket.data.sessionDid = sessionDid;
     socket.data.role = role;
     socket.data.appType = resolvedAppType;
+    socket.data.rail = rail;
+    socket.data.railKind = railKind;
+    socket.data.actorHandle = actorHandle;
+    socket.data.actorIdentityDid = provenIdentityDid ?? undefined;
 
     // Join the Socket.IO room
     const roomName = getRoomName(documentId, sessionDid);
+
+    if (args.rotationCutover && priorSessionDid && priorSessionDid !== sessionDid) {
+      // Silent migration — no user_left. The socket never disconnects, so the
+      // `disconnecting` sweep never fires for the pre-rotation sessionDid; do that
+      // cleanup here instead to keep the old session's client list honest.
+      socket.leave(getRoomName(documentId, priorSessionDid));
+      await sessionManager.removeClientFromSession(documentId, priorSessionDid, socket.id);
+    }
+
     socket.join(roomName);
 
     // Track in session manager (for session lifecycle / deactivation logic)
@@ -389,13 +592,22 @@ export async function handleAuth(
 
     console.log(sessionType === "new" ? "SETUP DONE" : "JOINED SESSION", documentId, role);
 
-    // Broadcast membership change to others in the room
-    const membershipPayload = {
-      action: "user_joined" as const,
-      user: { role },
-      roomId: documentId,
-    };
-    socket.to(roomName).emit("/room/membership_change", membershipPayload);
+    // Broadcast membership change to others in the room — suppressed on a rotation
+    // cutover re-auth so the surviving socket doesn't blip presence for itself.
+    if (!args.rotationCutover) {
+      const membershipPayload = {
+        action: "user_joined" as const,
+        user: { role },
+        roomId: documentId,
+      };
+      socket.to(roomName).emit("/room/membership_change", membershipPayload);
+    }
+
+    // Latest stored title beats the session-frozen roomInfo blob for joiners
+    // arriving after a mid-session rename.
+    const documentMeta = await deps.mongodbStore
+      .getDocumentMeta(documentId)
+      .catch(() => null);
 
     callback({
       status: true,
@@ -405,6 +617,7 @@ export async function handleAuth(
         role,
         sessionType,
         roomInfo,
+        title: documentMeta?.title ?? null,
       },
     });
   } catch (error) {
@@ -416,6 +629,20 @@ export async function handleAuth(
       errorCode: ErrorCode.INTERNAL_ERROR,
     });
   }
+}
+
+// Live per-actor edit-admission re-check against the ADMITTED context stamped at JOIN.
+// Fail-closed for the actor rail (cold/unbound → reject). See docs/architecture/gp-semaphore.md.
+export async function isStillAdmitted(socket: AppSocket, deps: SocketHandlerDeps): Promise<boolean> {
+  const { rail, railKind, documentId, sessionDid, actorHandle } = socket.data;
+  if (!documentId || !sessionDid) return false;
+  if (railKind === "gp-actor") {
+    if (!actorHandle) return false;
+    const s = await deps.editBoundCache.check(documentId, actorHandle);
+    return s === "bound" || s === "stale-bound";
+  }
+  if (rail === "workspace") return (await deps.sessionManager.getWorkspaceEditEnabled(documentId, sessionDid)) === true;
+  return (await deps.sessionManager.getCollabJoinEnabled(documentId, sessionDid)) === true;
 }
 
 export async function handleDocumentUpdate(
@@ -475,22 +702,52 @@ export async function handleDocumentUpdate(
       });
     }
 
+    if (socket.data.role !== "owner" && normalizeAppType(socket.data.appType) === "ddoc") {
+      const revoked = !(await isStillAdmitted(socket, deps));
+      if (revoked) {
+        // Ack the reason first, then drop the socket — the revoked actor must not
+        // keep presence/read on a session they can no longer write to.
+        callback({
+          status: false,
+          statusCode: 403,
+          error: "Edit access has been revoked",
+          errorCode: ErrorCode.EDIT_REVOKED,
+        });
+        socket.disconnect(true);
+        return;
+      }
+    }
+
     const updateId = uuidv4();
     const createdAt = Date.now();
 
     // Persist before broadcasting: a peer must never hold an update that is absent from
     // the durable seq stream. On write failure this fails safe — nothing is fanned out.
-    const update = await mongodbStore.createUpdate({
-      id: updateId,
-      documentId,
-      data,
-      updateType: "yjs_update",
-      committed: false,
-      commitCid: null,
-      createdAt,
-      sessionDid,
-      appType: socket.data.appType,
-    });
+    let update;
+    try {
+      update = await mongodbStore.createUpdate({
+        id: updateId,
+        documentId,
+        data,
+        updateType: "yjs_update",
+        committed: false,
+        commitCid: null,
+        createdAt,
+        sessionDid,
+        appType: socket.data.appType,
+      });
+    } catch (err) {
+      if (err instanceof SessionTerminatedError) {
+        callback({
+          status: false,
+          statusCode: 409,
+          error: "Session terminated",
+          errorCode: ErrorCode.SESSION_TERMINATED,
+        });
+        return;
+      }
+      throw err;
+    }
 
     const roomName = getRoomName(documentId, socket.data.sessionDid);
     socket.to(roomName).emit("/document/content_update", {
@@ -823,6 +1080,60 @@ export async function handleSnapshot(
   }
 }
 
+// fileKeyEpoch is a client-asserted rotation counter (0 until a private narrow rotates the
+// fileKey). The mirror read returns the highest epoch, so an out-of-range value would shadow
+// every legitimate write; bound it generously here, at the trust boundary.
+const MAX_FILE_KEY_EPOCH = 1_000_000;
+
+export async function handleMirrorSnapshot(
+  deps: SocketHandlerDeps,
+  socket: AppSocket,
+  args: MirrorSnapshotArgs,
+  callback: (response: AckResponse<{ ok: true }>) => void
+): Promise<void> {
+  try {
+    const { sessionManager, mongodbStore } = deps;
+    if (!requireAuth(socket)) {
+      return callback({ status: false, statusCode: 401, error: "Not authenticated", errorCode: ErrorCode.NOT_AUTHENTICATED });
+    }
+    // Any admitted editor may author the mirror: the owner, or a rail-admitted non-owner
+    // editor (socket.data.rail set at JOIN). Viewers never socket-connect (load-on-open).
+    if (socket.data.role !== "owner" && !socket.data.rail) {
+      return callback({ status: false, statusCode: 403, error: "Not an editor", errorCode: ErrorCode.COMMIT_UNAUTHORIZED });
+    }
+    // Live per-actor re-check: a demoted editor holding a stale socket must not author a mirror.
+    if (socket.data.role !== "owner" && !(await isStillAdmitted(socket, deps))) {
+      callback({ status: false, statusCode: 403, error: "Edit access has been revoked", errorCode: ErrorCode.EDIT_REVOKED });
+      socket.disconnect(true);
+      return;
+    }
+
+    const { data, fileKeyEpoch } = args;
+    const documentId = args.documentId || socket.data.documentId;
+    if (!data || !Number.isSafeInteger(fileKeyEpoch) || fileKeyEpoch < 0 || fileKeyEpoch > MAX_FILE_KEY_EPOCH) {
+      return callback({ status: false, statusCode: 400, error: "Mirror data and an in-range non-negative integer fileKeyEpoch are required", errorCode: ErrorCode.UPDATE_DATA_MISSING });
+    }
+
+    const session = await sessionManager.getRuntimeSession(documentId, socket.data.sessionDid);
+    if (!session) {
+      return callback({ status: false, statusCode: 404, error: "Session not found", errorCode: ErrorCode.SESSION_NOT_FOUND });
+    }
+
+    await mongodbStore.upsertMirrorSnapshot({
+      documentId,
+      data,
+      fileKeyEpoch,
+      sessionDid: session.sessionDid,
+      createdAt: Date.now(),
+    });
+
+    callback({ status: true, statusCode: 200, data: { ok: true } });
+  } catch (error) {
+    console.error("Error in mirror snapshot handler:", error);
+    callback({ status: false, statusCode: 500, error: "Internal server error", errorCode: ErrorCode.INTERNAL_ERROR });
+  }
+}
+
 export async function handleSetDocumentMeta(
   deps: SocketHandlerDeps,
   socket: AppSocket,
@@ -868,6 +1179,12 @@ export async function handleSetDocumentMeta(
       ownerIdentityDid: session.ownerIdentityDid ?? null,
       portalAddress: session.portalAddress ?? null,
       editLock: args.editLock,
+      title: args.title,
+    });
+
+    const roomName = getRoomName(documentId, socket.data.sessionDid);
+    socket.to(roomName).emit("/document/meta_update", {
+      roomId: documentId,
       title: args.title,
     });
 
@@ -926,6 +1243,7 @@ export async function handlePeersList(
 }
 
 export async function handleAwareness(
+  deps: SocketHandlerDeps,
   io: AppServer,
   socket: AppSocket,
   args: AwarenessArgs,
@@ -942,6 +1260,20 @@ export async function handleAwareness(
     const roomName = getRoomName(documentId, socket.data.sessionDid);
     const awarenessPayload = { data, roomId: documentId };
     socket.to(roomName).emit("/document/awareness_update", awarenessPayload);
+
+    // Post-broadcast, fire-and-forget: catches revoked-but-idle (reading, cursor-moving)
+    // actors that never hit the write chokepoints. Kicks are per-actor/rail-off only.
+    if (socket.data.role !== "owner" && normalizeAppType(socket.data.appType) === "ddoc") {
+      const now = Date.now();
+      if (now - (socket.data.lastAdmitRecheckAt ?? 0) >= ADMIT_RECHECK_INTERVAL_MS) {
+        socket.data.lastAdmitRecheckAt = now;
+        void isStillAdmitted(socket, deps)
+          .then((ok) => {
+            if (!ok) socket.disconnect(true);
+          })
+          .catch(() => undefined);
+      }
+    }
   } catch (error) {
     console.error("Error in awareness handler:", error);
   }
@@ -995,6 +1327,17 @@ export async function handleTerminateSession(
       ownerAddress
     );
 
+    if (
+      ownerDid &&
+      session.portalAddress &&
+      contractAddress &&
+      session.portalAddress.toLowerCase() === String(contractAddress).toLowerCase() &&
+      ownerDid !== session.ownerDid
+    ) {
+      await sessionManager.updateSessionOwnerDid(documentId, session.sessionDid, ownerDid);
+      session.ownerDid = ownerDid;
+    }
+
     if (ownerDid !== session.ownerDid) {
       return callback({
         status: false,
@@ -1039,6 +1382,23 @@ export async function handleTerminateSession(
       errorCode: ErrorCode.INTERNAL_ERROR,
     });
   }
+}
+
+export function handleEpochLoaded(
+  socket: AppSocket,
+  args: EpochLoadedArgs,
+  callback: (r: AckResponse<{ ok: true }>) => void
+): void {
+  if (!requireAuth(socket)) {
+    return callback({
+      status: false,
+      statusCode: 401,
+      error: "Not authenticated or session not found",
+      errorCode: ErrorCode.NOT_AUTHENTICATED,
+    });
+  }
+  rotationCoordinator.recordAck(args.documentId || socket.data.documentId, socket.id);
+  callback({ status: true, statusCode: 200, data: { ok: true } });
 }
 
 export async function handleDisconnecting(

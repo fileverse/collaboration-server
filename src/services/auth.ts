@@ -1,14 +1,20 @@
 import * as ucans from "@ucans/ucans";
-import { getIdentitySigningDid, getOwnerDid } from "../utils/contract";
+import { getIdentitySigningDid, getOwnerDid, refreshOwnerDid } from "../utils/contract";
 import { Hex } from "viem";
 import NodeCache from "node-cache";
+import { config } from "../config";
 
 export class AuthService {
   private serverDid: string;
+  private gateDid?: string;
   private collaborationTokenCache = new NodeCache({ stdTTL: 3600 });
+  // Rate-limits the mismatch-triggered fresh chain read so garbage tokens
+  // can't hammer the RPC.
+  private ownerDidRecheckMemo = new NodeCache({ stdTTL: 10 });
 
-  constructor(serverDid: string) {
+  constructor(serverDid: string, gateDid?: string) {
     this.serverDid = serverDid;
+    this.gateDid = gateDid;
   }
 
   getServerDid(): string {
@@ -17,30 +23,47 @@ export class AuthService {
 
   async verifyOwnerToken(token: string, contractAddress: Hex, collaboratorAddress: Hex) {
     try {
-      const ownerDid = await getOwnerDid(contractAddress, collaboratorAddress);
-      if (!ownerDid) return null;
-
-      const result = await ucans.verify(token, {
-        audience: this.serverDid,
-        requiredCapabilities: [
-          {
-            capability: {
-              with: { scheme: "storage", hierPart: contractAddress.toLowerCase() },
-              can: { namespace: "collaboration", segments: ["CREATE"] },
-            },
-            rootIssuer: ownerDid,
-          },
-        ],
-      });
-
-      if (result.ok) {
-        return ownerDid;
+      const cachedDid = await getOwnerDid(contractAddress, collaboratorAddress);
+      if (this.isDid(cachedDid) && (await this.ucanVerifiesAgainstOwner(token, contractAddress, cachedDid))) {
+        return cachedDid;
       }
-      return null;
+      // The cached DID may predate a workspace rotation (member removal
+      // re-registers the collab DID) — one rate-limited fresh chain read,
+      // then a single re-verify.
+      const memoKey = `recheck-${contractAddress}-${collaboratorAddress}`;
+      if (this.ownerDidRecheckMemo.get(memoKey)) return null;
+      this.ownerDidRecheckMemo.set(memoKey, true);
+      const freshDid = await refreshOwnerDid(contractAddress, collaboratorAddress);
+      if (!this.isDid(freshDid) || freshDid === cachedDid) return null;
+      return (await this.ucanVerifiesAgainstOwner(token, contractAddress, freshDid)) ? freshDid : null;
     } catch (error) {
       console.error("UCAN verification error:", error);
       return null;
     }
+  }
+
+  private isDid(value: unknown): value is string {
+    // Reject anything that isn't a DID string before it reaches ucans.verify
+    // (which throws a TypeError on a malformed rootIssuer instead of failing
+    // the verification) — an unregistered or mis-decoded collaborator must
+    // 401 cleanly.
+    return typeof value === "string" && value.startsWith("did:");
+  }
+
+  private async ucanVerifiesAgainstOwner(token: string, contractAddress: Hex, rootIssuer: string): Promise<boolean> {
+    const result = await ucans.verify(token, {
+      audience: this.serverDid,
+      requiredCapabilities: [
+        {
+          capability: {
+            with: { scheme: "storage", hierPart: contractAddress.toLowerCase() },
+            can: { namespace: "collaboration", segments: ["CREATE"] },
+          },
+          rootIssuer,
+        },
+      ],
+    });
+    return result.ok;
   }
 
   async verifyCollaborationToken(token: string, sessionDid: string, documentId: string) {
@@ -75,13 +98,59 @@ export class AuthService {
     }
   }
 
-  async verifyIdentityToken(
+  /**
+   * Verify a gate-minted edit-admission UCAN, rooted at the pinned gate DID. Returns the
+   * signed `editHandle` fact, or null. It comes from the token, never a client arg.
+   */
+  async verifyEditUcan(
     token: string,
-    identityContractAddress: Hex,
-    ddocId: string
-  ): Promise<string | null> {
+    documentId: string
+  ): Promise<{ kind: "actor"; editHandle: string; epoch: number } | null> {
+    if (!this.gateDid) return null; // GP editing disabled until GATE_DID is pinned
     try {
-      const signingDid = await getIdentitySigningDid(identityContractAddress);
+      const result = await ucans.verify(token, {
+        audience: this.serverDid,
+        requiredCapabilities: [
+          {
+            capability: {
+              with: { scheme: "collab", hierPart: documentId },
+              can: { namespace: "collab", segments: ["EDIT"] },
+            },
+            rootIssuer: this.gateDid,
+          },
+        ],
+      });
+      if (!result.ok) return null;
+
+      const parsed = await ucans.validate(token);
+      const fact = ((parsed.payload.fct ?? [])[0] ?? {}) as {
+        docId?: string;
+        editHandle?: string;
+        epoch?: number;
+      };
+      if (fact.docId !== documentId) return null;
+      if (typeof fact.editHandle === "string") {
+        return { kind: "actor", editHandle: fact.editHandle, epoch: typeof fact.epoch === "number" ? fact.epoch : 0 };
+      }
+      return null;
+    } catch (error) {
+      console.error("Edit UCAN verification error:", error);
+      return null;
+    }
+  }
+
+  // `hierPart` is the UCAN capability scope the token must be signed for: a documentId for
+  // per-document owner-ops, or a portalAddress for the list-my-documents discovery route.
+  async verifyIdentityToken(token: string, hierPart: string): Promise<string | null> {
+    try {
+      // Peek the signed fact (validate checks the token's own signature, not rootIssuer).
+      const parsed = await ucans.validate(token);
+      const fact = ((parsed.payload.fct ?? [])[0] ?? {}) as { identityContractAddress?: string };
+      const addr = fact.identityContractAddress;
+      if (!addr || !addr.startsWith("0x")) return null; // fail closed: no signed address
+
+      // The on-chain read is the anchor — do NOT trust the token's iss directly.
+      const signingDid = await getIdentitySigningDid(addr as Hex);
       if (!signingDid) return null;
 
       const result = await ucans.verify(token, {
@@ -89,7 +158,7 @@ export class AuthService {
         requiredCapabilities: [
           {
             capability: {
-              with: { scheme: "storage", hierPart: ddocId },
+              with: { scheme: "storage", hierPart },
               can: { namespace: "collaboration", segments: ["OWN"] },
             },
             rootIssuer: signingDid,
@@ -108,18 +177,13 @@ export class AuthService {
     boundOwnerIdentityDid: string | null;
     boundOwnerDid: string | null;
     identityToken?: string;
-    identityContractAddress?: Hex;
     ownerToken?: string;
     ownerAddress?: Hex;
     portalAddress?: Hex;
   }): Promise<boolean> {
     // Path 1 — bound identity (creator). The `=== boundOwnerIdentityDid` compare is MANDATORY.
-    if (params.identityToken && params.identityContractAddress && params.boundOwnerIdentityDid) {
-      const signingDid = await this.verifyIdentityToken(
-        params.identityToken,
-        params.identityContractAddress,
-        params.ddocId
-      );
+    if (params.identityToken && params.boundOwnerIdentityDid) {
+      const signingDid = await this.verifyIdentityToken(params.identityToken, params.ddocId);
       if (signingDid && signingDid === params.boundOwnerIdentityDid) return true;
     }
 
@@ -138,5 +202,6 @@ export class AuthService {
 }
 
 export const authService = new AuthService(
-  process.env.SERVER_DID || "did:key:z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK"
+  process.env.SERVER_DID || "did:key:z6MkhaXgBZDvotDkL5257faiztiGiC2QtKLGpbnnEGta2doK",
+  config.gate.did
 );

@@ -7,7 +7,7 @@ import compression from "compression";
 import { createServer } from "http";
 import { config } from "./config";
 import { authService } from "./services/auth";
-import { registerEventHandlers } from "./services/socket-handlers";
+import { registerEventHandlers, getRoomName } from "./services/socket-handlers";
 import { authMiddleware } from "./services/auth-middleware";
 import { sessionManager } from "./services/session-manager";
 import { mongodbStore } from "./services/mongodb-store";
@@ -15,10 +15,19 @@ import { createRedisAdapter } from "./redis";
 import { databaseService } from "./database";
 import {
   createCollabJoinEnabledHandler,
+  createWorkspaceEditTierHandler,
+  createEvictEditActorsHandler,
+  createEvictWorkspaceMemberHandler,
   createListMyDocumentsHandler,
   createDeleteDocumentHandler,
+  createMirrorReadHandler,
+  createShareContextHandler,
 } from "./services/owner-op-routes";
+import { createRotateSessionHandler } from "./services/rotate-route";
+import { rotationCoordinator } from "./services/rotation-coordinator";
+import { editBoundCache } from "./services/gate-epoch";
 import { createFlushHandler } from "./services/flush-route";
+import { createDeletedFileWebhookHandler } from "./services/deleted-file-webhook";
 import { createLightNode } from "@waku/sdk";
 import protobuf from "protobufjs";
 import { generateKeyPairFromSeed } from "@libp2p/crypto/keys";
@@ -95,6 +104,58 @@ class CollaborationServer {
       "/documents/:documentId/collab-join-enabled",
       createCollabJoinEnabledHandler({ authService, sessionManager }, this.io)
     );
+    this.app.post(
+      "/documents/:documentId/workspace-edit-tier",
+      createWorkspaceEditTierHandler({ authService, sessionManager }, this.io)
+    );
+    this.app.post(
+      "/documents/:documentId/evict-edit-actors",
+      createEvictEditActorsHandler({ authService, sessionManager, editBoundCache, mongodbStore }, this.io)
+    );
+    this.app.post(
+      "/workspaces/:portalAddress/evict-member",
+      createEvictWorkspaceMemberHandler({ authService, sessionManager }, this.io)
+    );
+    this.app.post(
+      "/documents/:documentId/rotate-session",
+      createRotateSessionHandler({
+        authService, sessionManager, mongodbStore, rotationCoordinator,
+        terminateOldSession: async (documentId, sessionDid, appType) => {
+          const room = getRoomName(documentId, sessionDid);
+          const sockets = await this.io!.in(room).fetchSockets();
+          // Laggard sockets stay AUTHED: their next write must reach createUpdate and get the
+          // D-11 SESSION_TERMINATED 409 — that ack is their self-heal signal.
+          // De-authing here would surface a 401 first and strand them frozen.
+          // See docs/architecture/gp-semaphore.md.
+          for (const s of sockets) { s.leave(room); }
+          await sessionManager.deactivateSession(documentId, sessionDid);
+          await sessionManager.terminateSession(documentId, sessionDid, appType);
+        },
+      }, this.io)
+    );
+    this.app.get(
+      "/documents/:documentId/mirror",
+      createMirrorReadHandler({ mongodbStore })
+    );
+    this.app.get(
+      "/documents/:documentId/share-context",
+      createShareContextHandler({ mongodbStore, sessionManager })
+    );
+    this.app.post(
+      "/webhooks/file-deleted",
+      createDeletedFileWebhookHandler({
+        mongodbStore,
+        onTombstoned: async (documentId) => {
+          const sessions = await sessionManager.getNonTerminatedSessionsForDocument(documentId);
+          for (const s of sessions) {
+            const room = getRoomName(documentId, s.sessionDid);
+            this.io!.to(room).emit("/session/terminated", { roomId: documentId });
+            for (const sock of await this.io!.in(room).fetchSockets()) sock.leave(room);
+            await sessionManager.terminateSession(documentId, s.sessionDid, s.appType ?? "ddoc");
+          }
+        },
+      })
+    );
     this.app.post("/flush", createFlushHandler({ authService, mongodbStore }));
     this.app.post("/list-my-documents", createListMyDocumentsHandler({ authService, mongodbStore }));
     this.app.delete(
@@ -124,6 +185,18 @@ class CollaborationServer {
 
   async start() {
     try {
+      if (!config.gate.did) {
+        console.warn(
+          "[startup] GATE_DID is not set — GP (private/group) live editing is DISABLED; only owner/workspace/public rails admit writes."
+        );
+      } else if (!config.gate.url) {
+        // GATE_DID without GATE_URL: verifyEditUcan admits GP joins but the edit-bound cache
+        // can never reach the gate, so every revocation (demote/revoke) is a permanent silent no-op.
+        throw new Error(
+          "[startup] GATE_DID is set but GATE_URL is not — GP edit revocation would never take effect. Set GATE_URL to the gate origin, or unset GATE_DID to disable GP editing."
+        );
+      }
+
       // Initialize database connection
       await databaseService.connect();
 

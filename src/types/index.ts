@@ -81,6 +81,8 @@ export enum ErrorCode {
   NOT_AUTHENTICATED = "NOT_AUTHENTICATED",
   APP_MISMATCH = "APP_MISMATCH",
   JOIN_DISABLED = "JOIN_DISABLED",
+  EDIT_REVOKED = "EDIT_REVOKED",
+  ROOM_NOT_ESTABLISHED = "ROOM_NOT_ESTABLISHED",
   DB_ERROR = "DB_ERROR",
   INTERNAL_ERROR = "INTERNAL_ERROR",
 }
@@ -110,9 +112,14 @@ export interface AuthArgs {
   contractAddress?: string;
   roomInfo?: string;
   appType?: AppType;
-  ownerIdentityDid?: string;
   identityToken?: string;
-  identityContractAddress?: string;
+  editUcan?: string;
+  actorHandle?: string;
+  /** Privilege-reducing join mode (workspace member): the server must never create or
+   *  bind a session for this connection, and the role is capped at editor. */
+  joinOnly?: boolean;
+  // in-place re-auth into the post-rotation sessionDid — suppress the membership blip and leave the old room silently.
+  rotationCutover?: boolean;
 }
 
 export interface AuthResponseData {
@@ -120,6 +127,9 @@ export interface AuthResponseData {
   role: "owner" | "editor";
   sessionType: "new" | "existing";
   roomInfo?: string;
+  /** Latest stored roomKey-encrypted title (DocumentMeta) — fresher than the
+   *  session-frozen roomInfo blob after a mid-session rename. */
+  title?: string | null;
 }
 
 export interface DocumentUpdateArgs {
@@ -145,6 +155,12 @@ export interface SnapshotArgs {
   // The author's contiguous range-read floor at authorship time — the seq up to which
   // this full-state snapshot is provably complete. Hydration cuts the tail here.
   floorSeq: number;
+}
+
+export interface MirrorSnapshotArgs {
+  documentId?: string;
+  data: string;
+  fileKeyEpoch: number;
 }
 
 export interface DocumentMetaArgs {
@@ -251,6 +267,12 @@ export interface MembershipChangePayload {
   roomId: string;
 }
 
+export interface MetaUpdatePayload {
+  roomId: string;
+  /** roomKey-encrypted; the server never sees the plaintext title. */
+  title: string | null;
+}
+
 export interface SessionTerminatedPayload {
   roomId: string;
 }
@@ -259,6 +281,24 @@ export interface ServerErrorPayload {
   errorCode: ErrorCode;
   message: string;
   roomId: string;
+}
+
+export interface EpochAvailablePayload {
+  roomId: string;
+  epoch: number;
+  /** opaque, double-wrapped: inner = blob/appLock wrap (excludes the removed actor),
+   *  outer = roomKey_e (excludes the server). The server never unwraps it. */
+  payload: string;
+}
+
+export interface CutoverPayload {
+  roomId: string;
+  epoch: number;
+}
+
+export interface EpochLoadedArgs {
+  documentId: string;
+  epoch: number;
 }
 
 // ***************************************
@@ -277,10 +317,12 @@ export interface ClientToServerEvents {
   "/documents/commit/history": ClientEventHandler<CommitHistoryArgs, CommitHistoryResponseData>;
   "/documents/update/history": ClientEventHandler<UpdateHistoryArgs, UpdateHistoryResponseData>;
   "/documents/snapshot": ClientEventHandler<SnapshotArgs, { id: string; seq: number }>;
+  "/documents/mirror-snapshot": ClientEventHandler<MirrorSnapshotArgs, { ok: true }>;
   "/documents/meta": ClientEventHandler<DocumentMetaArgs, { ok: true }>;
   "/documents/peers/list": ClientEventHandler<PeersListArgs, PeersListResponseData>;
   "/documents/awareness": ClientEventHandler<AwarenessArgs, MessageResponseData>;
   "/documents/terminate": ClientEventHandler<TerminateSessionArgs, MessageResponseData>;
+  "/session/epoch_loaded": ClientEventHandler<EpochLoadedArgs, { ok: true }>;
 }
 
 export interface ServerToClientEvents {
@@ -288,8 +330,11 @@ export interface ServerToClientEvents {
   "/server/error": (data: ServerErrorPayload) => void;
   "/document/content_update": (data: ContentUpdatePayload) => void;
   "/document/awareness_update": (data: AwarenessUpdatePayload) => void;
+  "/document/meta_update": (data: MetaUpdatePayload) => void;
   "/room/membership_change": (data: MembershipChangePayload) => void;
   "/session/terminated": (data: SessionTerminatedPayload) => void;
+  "/session/epoch_available": (data: EpochAvailablePayload) => void;
+  "/session/cutover": (data: CutoverPayload) => void;
 }
 
 export interface InterServerEvents {
@@ -302,6 +347,11 @@ export interface SocketData {
   role: "owner" | "editor";
   authenticated: boolean;
   appType: AppType;
+  rail?: "gp" | "workspace" | "public";
+  railKind?: "gp-actor" | "workspace" | "public";
+  actorHandle?: string;
+  actorIdentityDid?: string;
+  lastAdmitRecheckAt?: number;
 }
 
 // ***************************************
@@ -352,6 +402,10 @@ export interface ServerConfig {
     serverDid: string;
     serverKeyPair?: any;
   };
+  gate: {
+    url: string | undefined;
+    did: string | undefined;
+  };
   rateLimit: {
     windowMs: number;
     max: number;
@@ -363,7 +417,15 @@ export interface ServerConfig {
     interval: string;
     batchSize: number;
   };
+  deleteGrace: {
+    windowMs: number;
+    interval: string;
+    batchSize: number;
+  };
   agenda: {
     concurrency: number;
+  };
+  webhook: {
+    apiKey?: string;
   };
 }

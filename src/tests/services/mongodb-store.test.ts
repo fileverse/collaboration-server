@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { DocumentUpdateModel } from "../../database/models/document-update";
 import { CounterModel } from "../../database/models/counter";
-import { MongoDBStore } from "../../services/mongodb-store";
+import { MongoDBStore, SessionTerminatedError } from "../../services/mongodb-store";
 
 vi.mock("../../database/models", () => {
   const save = vi.fn().mockResolvedValue(undefined);
@@ -21,7 +21,13 @@ vi.mock("../../database/models", () => {
     DocumentCommitModel,
     CounterModel: { findOneAndUpdate: vi.fn(), deleteOne: vi.fn().mockResolvedValue(undefined) },
     SessionModel: { findOne: vi.fn(), find: vi.fn(), deleteMany: vi.fn().mockResolvedValue(undefined) },
-    DocumentMetaModel: { findOneAndUpdate: vi.fn(), find: vi.fn(), findById: vi.fn(), updateMany: vi.fn().mockResolvedValue(undefined), deleteOne: vi.fn().mockResolvedValue(undefined) },
+    DocumentMetaModel: { findOneAndUpdate: vi.fn(), find: vi.fn(), findById: vi.fn(), updateMany: vi.fn().mockResolvedValue(undefined), updateOne: vi.fn(), deleteOne: vi.fn().mockResolvedValue(undefined) },
+    DocumentMirrorModel: {
+      findOneAndUpdate: vi.fn().mockResolvedValue(undefined),
+      findOne: vi.fn(),
+      deleteMany: vi.fn().mockResolvedValue(undefined),
+    },
+    DocumentEditEpochModel: { deleteOne: vi.fn().mockResolvedValue(undefined) },
   };
 });
 
@@ -59,19 +65,22 @@ describe("createUpdate: durable-write gate", () => {
     (SessionModel.findOne as any).mockResolvedValue({ state: "active", ownerDid: "did:o" });
   });
 
-  it("relays without persisting when no non-terminated session backs the room", async () => {
-    const { SessionModel, DocumentUpdateModel } = await import("../../database/models");
+  it("relays without persisting when no session row backs the room (missing row is NOT terminated — D-11 is terminated-only)", async () => {
+    const { CounterModel, SessionModel, DocumentUpdateModel } = await import("../../database/models");
     (SessionModel.findOne as any).mockResolvedValue(null);
     const save = vi.fn();
     (DocumentUpdateModel as any).mockImplementation((doc: any) => ({ ...doc, save }));
 
     const store = new MongoDBStore();
-    const result = await store.createUpdate({
-      id: "u1", documentId: "doc-1", data: "ct", updateType: "yjs_update",
-      committed: false, commitCid: null, createdAt: 1, sessionDid: "room-did", appType: "ddoc",
-    });
+    const input = {
+      id: "u1", documentId: "doc-1", data: "ct", updateType: "yjs_update" as const,
+      committed: false, commitCid: null, createdAt: 1, sessionDid: "room-did", appType: "ddoc" as const,
+    };
+    const result = await store.createUpdate(input);
 
+    expect(result).toEqual(input);
     expect(save).not.toHaveBeenCalled();
+    expect(CounterModel.findOneAndUpdate).not.toHaveBeenCalled();
     expect(result.seq).toBeUndefined();
   });
 
@@ -84,18 +93,19 @@ describe("createUpdate: durable-write gate", () => {
     expect(result.seq).toBe(1);
   });
 
-  it("relays without persisting when the backing session is terminated", async () => {
+  it("rejects with SessionTerminatedError when the backing session is terminated (D-11: terminated-only, no ephemeral relay)", async () => {
     const { CounterModel, SessionModel } = await import("../../database/models");
     (SessionModel.findOne as any).mockResolvedValue({ state: "terminated" });
 
     const store = new MongoDBStore();
-    const result = await store.createUpdate({
-      id: "u1", documentId: "doc-1", data: "ct", updateType: "yjs_update",
-      committed: false, commitCid: null, createdAt: 1, sessionDid: "room-did", appType: "ddoc",
-    });
+    await expect(
+      store.createUpdate({
+        id: "u1", documentId: "doc-1", data: "ct", updateType: "yjs_update",
+        committed: false, commitCid: null, createdAt: 1, sessionDid: "room-did", appType: "ddoc",
+      })
+    ).rejects.toThrow(SessionTerminatedError);
 
     expect(CounterModel.findOneAndUpdate).not.toHaveBeenCalled();
-    expect(result.seq).toBeUndefined();
   });
 });
 
@@ -151,6 +161,40 @@ describe("createSnapshot: keep-latest", () => {
   });
 });
 
+describe("mirror lane", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it("upserts keyed by (documentId, fileKeyEpoch), overwrite-in-place with NO destructive prune", async () => {
+    const { DocumentMirrorModel } = await import("../../database/models");
+    const store = new MongoDBStore();
+    await store.upsertMirrorSnapshot({ documentId: "doc-1", data: "ct", fileKeyEpoch: 4, sessionDid: "sess-1", createdAt: 111 });
+
+    expect(DocumentMirrorModel.findOneAndUpdate).toHaveBeenCalledWith(
+      { documentId: "doc-1", fileKeyEpoch: 4 },
+      { $set: { data: "ct", createdAt: 111, authorSessionDid: "sess-1" } },
+      { upsert: true }
+    );
+    // A client-asserted epoch must NEVER trigger a delete of other rows.
+    expect(DocumentMirrorModel.deleteMany).not.toHaveBeenCalled();
+  });
+
+  it("getLatestMirror returns the most recent row (by createdAt) or null", async () => {
+    const { DocumentMirrorModel } = await import("../../database/models");
+    const lean = vi.fn().mockResolvedValue({ documentId: "doc-1", fileKeyEpoch: 9, data: "ct", createdAt: 222 });
+    const sort = vi.fn().mockReturnValue({ lean });
+    (DocumentMirrorModel.findOne as any).mockReturnValue({ sort });
+    const store = new MongoDBStore();
+    expect(await store.getLatestMirror("doc-1")).toEqual({ data: "ct", fileKeyEpoch: 9, createdAt: 222 });
+    expect(DocumentMirrorModel.findOne).toHaveBeenCalledWith({ documentId: "doc-1" });
+    expect(sort).toHaveBeenCalledWith({ createdAt: -1 });
+
+    (DocumentMirrorModel.findOne as any).mockReturnValue({ sort: vi.fn().mockReturnValue({ lean: vi.fn().mockResolvedValue(null) }) });
+    expect(await store.getLatestMirror("doc-1")).toBeNull();
+  });
+});
+
 describe("upsertDocumentMeta", () => {
   beforeEach(() => {
     vi.clearAllMocks();
@@ -169,9 +213,12 @@ describe("upsertDocumentMeta", () => {
     expect(DocumentMetaModel.findOneAndUpdate).toHaveBeenCalledWith(
       { _id: "doc-1" },
       expect.objectContaining({
+        // Binding fields are first-writer-immutable (C1) — pinned on insert only.
+        $setOnInsert: expect.objectContaining({
+          ownerDid: "od", ownerIdentityDid: "oid", portalAddress: "0xP",
+        }),
         $set: expect.objectContaining({
-          sessionDid: "room-did", ownerDid: "od", ownerIdentityDid: "oid",
-          portalAddress: "0xP", editLock: "el", title: "t",
+          sessionDid: "room-did", editLock: "el", title: "t",
         }),
       }),
       expect.objectContaining({ upsert: true, writeConcern: { w: "majority", j: true } })
@@ -369,8 +416,8 @@ describe("purgeDocument", () => {
     vi.clearAllMocks();
   });
 
-  it("wipes all five collections for the documentId", async () => {
-    const { DocumentUpdateModel, DocumentCommitModel, DocumentMetaModel, SessionModel, CounterModel } =
+  it("wipes all seven collections for the documentId", async () => {
+    const { DocumentUpdateModel, DocumentCommitModel, DocumentMetaModel, SessionModel, CounterModel, DocumentMirrorModel, DocumentEditEpochModel } =
       await import("../../database/models");
 
     const store = new MongoDBStore();
@@ -381,6 +428,8 @@ describe("purgeDocument", () => {
     expect(DocumentMetaModel.deleteOne).toHaveBeenCalledWith({ _id: "doc-1" });
     expect(SessionModel.deleteMany).toHaveBeenCalledWith({ documentId: "doc-1" });
     expect(CounterModel.deleteOne).toHaveBeenCalledWith({ _id: "doc-1" });
+    expect(DocumentMirrorModel.deleteMany).toHaveBeenCalledWith({ documentId: "doc-1" });
+    expect(DocumentEditEpochModel.deleteOne).toHaveBeenCalledWith({ _id: "doc-1" });
   });
 });
 
@@ -427,6 +476,49 @@ describe("collectOrphans", () => {
     expect(SessionModel.deleteMany).not.toHaveBeenCalled();
     expect(CounterModel.deleteOne).not.toHaveBeenCalled();
     expect(n).toBe(0);
+  });
+});
+
+describe("getShareContext", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it("reports existence and isPublished", async () => {
+    const { DocumentMetaModel } = await import("../../database/models");
+    (DocumentMetaModel.findById as any).mockReturnValue({
+      select: vi.fn().mockReturnValue({
+        lean: vi.fn()
+          .mockResolvedValueOnce(null)
+          .mockResolvedValueOnce({ isPublished: false }),
+      }),
+    });
+
+    const store = new MongoDBStore();
+    expect(await store.getShareContext("doc-sc-none")).toEqual({
+      exists: false, isPublished: false,
+    });
+    expect(DocumentMetaModel.findById).toHaveBeenCalledWith("doc-sc-none");
+
+    expect(await store.getShareContext("doc-sc-2")).toEqual({
+      exists: true, isPublished: false,
+    });
+  });
+
+  it("reports isPublished true only for a strict boolean", async () => {
+    const { DocumentMetaModel } = await import("../../database/models");
+    (DocumentMetaModel.findById as any).mockReturnValue({
+      select: vi.fn().mockReturnValue({
+        lean: vi.fn()
+          .mockResolvedValueOnce({ isPublished: true })
+          .mockResolvedValueOnce({}),
+      }),
+    });
+
+    const store = new MongoDBStore();
+    expect((await store.getShareContext("doc-sc-pub")).isPublished).toBe(true);
+    // legacy row with no isPublished field normalizes to false
+    expect((await store.getShareContext("doc-sc-legacy")).isPublished).toBe(false);
   });
 });
 

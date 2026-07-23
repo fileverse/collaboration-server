@@ -43,6 +43,7 @@ describe("commitHistory", () => {
     authService: {} as any,
     sessionManager: {} as any,
     mongodbStore: fakeMongodbStore as any,
+    editBoundCache: {} as any,
   };
 
   it("returns early when not authenticated", async () => {

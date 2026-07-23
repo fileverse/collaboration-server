@@ -11,6 +11,7 @@ export interface ISession extends MongooseDocument {
   ownerIdentityDid: string | null;
   portalAddress: string | null;
   collabJoinEnabled?: boolean;
+  workspaceEditEnabled?: boolean;
 }
 
 const SessionSchema = new Schema({
@@ -26,6 +27,7 @@ const SessionSchema = new Schema({
   ownerIdentityDid: { type: String, default: null },
   portalAddress: { type: String, default: null },
   collabJoinEnabled: { type: Boolean }, // intentionally no default
+  workspaceEditEnabled: { type: Boolean }, // intentionally no default
 });
 
 SessionSchema.index({ documentId: 1, createdAt: 1, sessionDid: 1 });

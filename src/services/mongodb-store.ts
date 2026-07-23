@@ -1,5 +1,9 @@
 import { DocumentUpdate, DocumentCommit } from "../types/index";
-import { DocumentUpdateModel, DocumentCommitModel, CounterModel, SessionModel, DocumentMetaModel } from "../database/models";
+import { DocumentUpdateModel, DocumentCommitModel, CounterModel, SessionModel, DocumentMetaModel, DocumentMirrorModel, DocumentEditEpochModel } from "../database/models";
+
+export class SessionTerminatedError extends Error {
+  constructor() { super("session terminated"); this.name = "SessionTerminatedError"; }
+}
 
 export class MongoDBStore {
   // Update management
@@ -9,7 +13,10 @@ export class MongoDBStore {
         documentId: update.documentId,
         sessionDid: update.sessionDid,
       });
-      if (!session || session.state === "terminated") {
+      if (session?.state === "terminated") {
+        throw new SessionTerminatedError();
+      }
+      if (!session) {
         return update; // ephemeral relay — no durable row, no seq burned
       }
 
@@ -36,7 +43,9 @@ export class MongoDBStore {
       await mongoUpdate.save();
       return { ...update, seq };
     } catch (error) {
-      console.error("Error creating update:", error);
+      if (!(error instanceof SessionTerminatedError)) {
+        console.error("Error creating update:", error);
+      }
       throw error;
     }
   }
@@ -161,6 +170,34 @@ export class MongoDBStore {
     return { ...snapshot, seq, updateType: "snapshot" };
   }
 
+  /**
+   * View-plane keep-latest: one row per (documentId, fileKeyEpoch), overwritten in place.
+   * fileKeyEpoch is client-asserted, so it never drives a destructive prune — recency comes
+   * from the server-stamped createdAt at read time.
+   */
+  async upsertMirrorSnapshot(mirror: {
+    documentId: string;
+    data: string;
+    fileKeyEpoch: number;
+    sessionDid: string;
+    createdAt: number;
+  }): Promise<void> {
+    await DocumentMirrorModel.findOneAndUpdate(
+      { documentId: mirror.documentId, fileKeyEpoch: mirror.fileKeyEpoch },
+      { $set: { data: mirror.data, createdAt: mirror.createdAt, authorSessionDid: mirror.sessionDid } },
+      { upsert: true }
+    );
+  }
+
+  /** The most recently written mirror snapshot (server-stamped createdAt), or null. Open read. */
+  async getLatestMirror(
+    documentId: string
+  ): Promise<{ data: string; fileKeyEpoch: number; createdAt: number } | null> {
+    const row: any = await DocumentMirrorModel.findOne({ documentId }).sort({ createdAt: -1 }).lean();
+    if (!row) return null;
+    return { data: row.data, fileKeyEpoch: row.fileKeyEpoch, createdAt: row.createdAt };
+  }
+
   async getHydrationRange(
     documentId: string,
     sessionDid: string,
@@ -214,11 +251,13 @@ export class MongoDBStore {
     await DocumentMetaModel.findOneAndUpdate(
       { _id: meta.documentId },
       {
-        $set: {
-          sessionDid: meta.sessionDid,
+        $setOnInsert: {
           ownerDid: meta.ownerDid,
           ownerIdentityDid: meta.ownerIdentityDid,
           portalAddress: meta.portalAddress,
+        },
+        $set: {
+          sessionDid: meta.sessionDid,
           editLock: meta.editLock,
           title: meta.title,
           updatedAt: Date.now(),
@@ -226,6 +265,66 @@ export class MongoDBStore {
       },
       { upsert: true, new: true, writeConcern: { w: "majority", j: true } }
     );
+  }
+
+  // First-writer-immutable document->owner binding (see docs/architecture/edit-permission.md).
+  // The pin closes C1: a colliding appFileId minted on another portal can never rebind an
+  // already-pinned documentId. Returns the EFFECTIVE portalAddress so the caller can reject
+  // a mismatch atomically (no read-modify-write race). Two steps so a LEGACY row that predates
+  // the pin (portalAddress null/absent) gets backfilled instead of locking its real owner out —
+  // a filter-guarded upsert would dup-key on an already-pinned _id, so the ensure-then-backfill
+  // split is deliberate. Mirrors session-manager.fillOwnerIdentityDidIfAbsent.
+  async pinDocumentPortalIfAbsent(p: {
+    documentId: string;
+    portalAddress: string;
+    ownerDid: string | null;
+    ownerIdentityDid: string | null;
+    sessionDid: string;
+  }): Promise<{ portalAddress: string | null }> {
+    // 1. Ensure the row exists; pin all binding fields on INSERT only.
+    await DocumentMetaModel.findOneAndUpdate(
+      { _id: p.documentId },
+      {
+        $setOnInsert: {
+          portalAddress: p.portalAddress,
+          ownerDid: p.ownerDid,
+          ownerIdentityDid: p.ownerIdentityDid,
+          sessionDid: p.sessionDid,
+          updatedAt: Date.now(),
+          isPublished: false,
+        },
+      },
+      { upsert: true, writeConcern: { w: "majority", j: true } }
+    );
+    // 2. Backfill a legacy null/absent portal — never overwrites an existing real pin.
+    await DocumentMetaModel.updateOne(
+      { _id: p.documentId, $or: [{ portalAddress: null }, { portalAddress: { $exists: false } }] },
+      { $set: { portalAddress: p.portalAddress } }
+    );
+    // 3. Read the effective pin.
+    const doc: any = await DocumentMetaModel.findById(p.documentId).select("portalAddress").lean();
+    return { portalAddress: doc?.portalAddress ?? null };
+  }
+
+  async getDocumentMeta(
+    documentId: string
+  ): Promise<{ editLock: string | null; title: string | null } | null> {
+    const meta: any = await DocumentMetaModel.findById(documentId).select("editLock title").lean();
+    if (!meta) return null;
+    return { editLock: meta.editLock ?? null, title: meta.title ?? null };
+  }
+
+  async setMinEditEpoch(documentId: string, epoch: number): Promise<void> {
+    await DocumentEditEpochModel.findOneAndUpdate(
+      { _id: documentId },
+      { $max: { minEditEpoch: epoch } },
+      { upsert: true }
+    );
+  }
+
+  async getMinEditEpoch(documentId: string): Promise<number> {
+    const row: any = await DocumentEditEpochModel.findById(documentId).lean();
+    return row?.minEditEpoch ?? 0;
   }
 
   // Discovery: docs bound to the proven owner (identity DID or portal owner DID) — recovery for a wiped device.
@@ -269,6 +368,21 @@ export class MongoDBStore {
       { _id: { $in: documentIds } },
       { $set: { isPublished: true } }
     );
+  }
+
+  /** Open existence probe: lets the client distinguish "created but not yet
+   *  published" (meta row exists from the owner's session) from a real 404. */
+  async getShareContext(
+    documentId: string
+  ): Promise<{ exists: boolean; isPublished: boolean }> {
+    const meta: any = await DocumentMetaModel.findById(documentId)
+      .select("isPublished")
+      .lean();
+    if (!meta) return { exists: false, isPublished: false };
+    return {
+      exists: true,
+      isPublished: meta.isPublished === true,
+    };
   }
 
   // Commit management
@@ -411,7 +525,38 @@ export class MongoDBStore {
       DocumentMetaModel.deleteOne({ _id: documentId }),
       SessionModel.deleteMany({ documentId }),
       CounterModel.deleteOne({ _id: documentId }),
+      DocumentMirrorModel.deleteMany({ documentId }),
+      DocumentEditEpochModel.deleteOne({ _id: documentId }),
     ]);
+  }
+
+  // Reversible tombstone driven by the on-chain DeletedFile webhook (see
+  // docs/architecture/edit-permission.md). Idempotent: a second call against an
+  // already-tombstoned doc still returns true instead of erroring.
+  async tombstoneDocument(documentId: string, reason: string): Promise<boolean> {
+    const res = await DocumentMetaModel.updateOne(
+      { _id: documentId, tombstonedAt: null },
+      { $set: { tombstonedAt: Date.now(), tombstoneReason: reason } }
+    );
+    if (res.matchedCount > 0) return true;
+    const existing: any = await DocumentMetaModel.findById(documentId).select("tombstonedAt").lean();
+    return !!existing?.tombstonedAt;
+  }
+
+  async isTombstoned(documentId: string): Promise<boolean> {
+    const m: any = await DocumentMetaModel.findById(documentId).select("tombstonedAt").lean();
+    return !!m?.tombstonedAt;
+  }
+
+  // Grace-window irreversible purge. Reuses the existing collection deletes.
+  async purgeTombstonedBefore(cutoffMs: number, batchSize: number): Promise<string[]> {
+    const rows: any[] = await DocumentMetaModel.find({ tombstonedAt: { $ne: null, $lte: cutoffMs } })
+      .select("_id")
+      .limit(batchSize)
+      .lean();
+    const ids = rows.map((r) => String(r._id));
+    for (const id of ids) await this.purgeDocument(id);
+    return ids;
   }
 
   // Conservative orphan GC: terminated ddoc streams with no editLock and no snapshot row.
