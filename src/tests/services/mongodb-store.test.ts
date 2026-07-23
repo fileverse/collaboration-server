@@ -409,6 +409,27 @@ describe("getHydrationRange", () => {
     expect(res.hasMore).toBe(true);
     expect(res.nextSeq).toBe(1);
   });
+
+  it("serves a budget-filling snapshot alone, with the cursor resuming at the floor", async () => {
+    const { DocumentUpdateModel } = await import("../../database/models");
+    (DocumentUpdateModel.findOne as any).mockReturnValue({
+      sort: vi.fn().mockReturnValue({ lean: vi.fn().mockResolvedValue({ _id: "s1", documentId: "doc-1", seq: 12, floorSeq: 10, updateType: "snapshot", data: "x".repeat(200), sessionDid: "room-did" }) }),
+    });
+    (DocumentUpdateModel.find as any).mockReturnValue(mockFind([
+      { _id: "u11", documentId: "doc-1", seq: 11, data: "x".repeat(100), updateType: "yjs_update", sessionDid: "room-did" },
+    ]));
+
+    const store = new MongoDBStore();
+    const res = await store.getHydrationRange("doc-1", "room-did", { maxBytes: 150 });
+
+    // Snapshot (200B) alone exceeds the budget — force-including u11 could push the emit
+    // past the socket buffer. Serve the snapshot by itself; the next page (sinceSeq = 10)
+    // suppresses the snapshot and starts from a zero byte count.
+    expect(res.snapshot?.seq).toBe(12);
+    expect(res.updates).toEqual([]);
+    expect(res.hasMore).toBe(true);
+    expect(res.nextSeq).toBe(10);
+  });
 });
 
 describe("purgeDocument", () => {

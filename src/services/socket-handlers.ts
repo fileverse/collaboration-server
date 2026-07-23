@@ -990,13 +990,20 @@ export async function handleSnapshot(
       });
     }
 
-    if (socket.data.role !== "owner") {
-      return callback({
-        status: false,
-        statusCode: 403,
-        error: "Only owners can write snapshots",
-        errorCode: ErrorCode.COMMIT_UNAUTHORIZED,
-      });
+    // Any admitted editor may author a compacting snapshot, not just the owner: an editor
+    // can already rewrite the full content through ordinary updates, so authorship grants
+    // no new power — and it is what keeps an owner-absent document's log bounded. Same
+    // per-op revocation check as the update path.
+    if (socket.data.role !== "owner" && normalizeAppType(socket.data.appType) === "ddoc") {
+      const revoked = !(await isStillAdmitted(socket, deps));
+      if (revoked) {
+        return callback({
+          status: false,
+          statusCode: 403,
+          error: "Edit access has been revoked",
+          errorCode: ErrorCode.EDIT_REVOKED,
+        });
+      }
     }
 
     const { data, collaborationToken, publishedMarker, floorSeq } = args;
@@ -1047,6 +1054,19 @@ export async function handleSnapshot(
         statusCode: 401,
         error: "Authentication failed",
         errorCode: ErrorCode.AUTH_TOKEN_INVALID,
+      });
+    }
+
+    // floorSeq is client-asserted; an honest client's floor comes from served rows, so it
+    // can never exceed the document's seq counter. A floor ahead of the counter would hide
+    // every update row up to it from hydration — reject rather than store a hiding floor.
+    const currentSeq = await mongodbStore.getCurrentSeq(documentId);
+    if (floorSeq > currentSeq) {
+      return callback({
+        status: false,
+        statusCode: 400,
+        error: "Snapshot floorSeq is ahead of the document's update log",
+        errorCode: ErrorCode.UPDATE_DATA_MISSING,
       });
     }
 

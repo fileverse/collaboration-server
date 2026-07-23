@@ -198,6 +198,11 @@ export class MongoDBStore {
     return { data: row.data, fileKeyEpoch: row.fileKeyEpoch, createdAt: row.createdAt };
   }
 
+  async getCurrentSeq(documentId: string): Promise<number> {
+    const counter: any = await CounterModel.findById(documentId).lean();
+    return counter?.seq ?? 0;
+  }
+
   async getHydrationRange(
     documentId: string,
     sessionDid: string,
@@ -222,9 +227,16 @@ export class MongoDBStore {
     }).sort({ seq: 1 }).lean();
 
     const updates: DocumentUpdate[] = [];
-    let bytes = includeSnapshot && snapshotDoc ? (snapshotDoc.data?.length ?? 0) : 0;
+    const snapshotBytes = includeSnapshot && snapshotDoc ? (snapshotDoc.data?.length ?? 0) : 0;
+    let bytes = snapshotBytes;
     let hasMore = false;
     let nextSeq: number | null = null;
+    if (snapshotBytes >= maxBytes) {
+      // A snapshot that alone fills the page budget is served by itself — the loop below
+      // force-includes one update per page, which here could push the emit past the socket
+      // buffer. The cursor resumes at the floor, where the snapshot is no longer included.
+      if (rows.length > 0) { hasMore = true; nextSeq = fromSeq; }
+    } else
     for (const r of rows) {
       bytes += r.data?.length ?? 0;
       if (updates.length > 0 && bytes > maxBytes) { hasMore = true; nextSeq = updates[updates.length - 1].seq!; break; }
