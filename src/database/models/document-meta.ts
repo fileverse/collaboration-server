@@ -10,6 +10,8 @@ interface IDocumentMeta extends MongooseDocument {
   title: string | null; // roomKey-encrypted
   updatedAt: number;
   isPublished: boolean; // set by the publish reconciler once the doc is on-chain
+  tombstonedAt: number | null; // set by the DeletedFile webhook; grace window runs from here
+  tombstoneReason: string | null;
 }
 
 const DocumentMetaSchema = new Schema<IDocumentMeta>({
@@ -22,6 +24,8 @@ const DocumentMetaSchema = new Schema<IDocumentMeta>({
   title: { type: String, default: null },
   updatedAt: { type: Number, required: true },
   isPublished: { type: Boolean, default: false },
+  tombstonedAt: { type: Number, default: null },
+  tombstoneReason: { type: String, default: null },
 });
 
 // Discovery: "all docs bound to this identity / portal owner" for list-my-documents.
@@ -29,6 +33,8 @@ const DocumentMetaSchema = new Schema<IDocumentMeta>({
 // reconciler's candidate scan are index-served.
 DocumentMetaSchema.index({ ownerIdentityDid: 1, isPublished: 1 }, { background: true });
 DocumentMetaSchema.index({ ownerDid: 1 }, { background: true });
+// Grace-window sweep: docs eligible for irreversible purge (see docs/architecture/edit-permission.md).
+DocumentMetaSchema.index({ tombstonedAt: 1 }, { background: true });
 
 export const DocumentMetaModel = mongoose.model<IDocumentMeta>("DocumentMeta", DocumentMetaSchema);
 export type { IDocumentMeta };

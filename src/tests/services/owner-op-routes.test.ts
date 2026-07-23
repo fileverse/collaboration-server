@@ -199,7 +199,7 @@ describe("POST /list-my-documents", () => {
     deps.authService.verifyIdentityToken.mockResolvedValue("did:key:zOwner");
     const r = res();
     await createListMyDocumentsHandler(deps)(
-      { body: { identityToken: "it", identityContractAddress: "0xI", portalAddress: "0xP" } } as any, r
+      { body: { identityToken: "it", portalAddress: "0xP" } } as any, r
     );
     expect(deps.mongodbStore.listDocumentsForOwner).toHaveBeenCalledWith({ ownerIdentityDid: "did:key:zOwner" });
     expect(r.status).toHaveBeenCalledWith(200);
@@ -217,7 +217,7 @@ describe("POST /list-my-documents", () => {
     deps.authService.verifyIdentityToken.mockResolvedValue(null);
     const r = res();
     await createListMyDocumentsHandler(deps)(
-      { body: { identityToken: "it", identityContractAddress: "0xI", portalAddress: "0xP" } } as any, r
+      { body: { identityToken: "it", portalAddress: "0xP" } } as any, r
     );
     expect(r.status).toHaveBeenCalledWith(401);
     expect(deps.mongodbStore.listDocumentsForOwner).not.toHaveBeenCalled();
@@ -230,7 +230,7 @@ describe("DELETE /documents/:id", () => {
     deps = {
       authService: { verifyOwnerOp: vi.fn() },
       sessionManager: { getSession: vi.fn() },
-      mongodbStore: { purgeDocument: vi.fn() },
+      mongodbStore: { tombstoneDocument: vi.fn(), purgeDocument: vi.fn() },
     };
   });
 
@@ -239,15 +239,16 @@ describe("DELETE /documents/:id", () => {
     const r = res();
     await createDeleteDocumentHandler(deps)({ params: { documentId: "d" }, body: { sessionDid: "s" } } as any, r);
     expect(r.status).toHaveBeenCalledWith(403);
-    expect(deps.mongodbStore.purgeDocument).not.toHaveBeenCalled();
+    expect(deps.mongodbStore.tombstoneDocument).not.toHaveBeenCalled();
   });
 
-  it("purges everything for the two-proof owner", async () => {
+  it("tombstones (never purges) for the two-proof owner", async () => {
     deps.sessionManager.getSession.mockResolvedValue({ sessionDid: "s", ownerDid: "od", ownerIdentityDid: "oid" });
     deps.authService.verifyOwnerOp.mockResolvedValue(true);
     const r = res();
     await createDeleteDocumentHandler(deps)({ params: { documentId: "d" }, body: { sessionDid: "s" } } as any, r);
-    expect(deps.mongodbStore.purgeDocument).toHaveBeenCalledWith("d");
+    expect(deps.mongodbStore.tombstoneDocument).toHaveBeenCalledWith("d", "owner-delete");
+    expect(deps.mongodbStore.purgeDocument).not.toHaveBeenCalled();
     expect(r.status).toHaveBeenCalledWith(200);
   });
 
@@ -257,7 +258,7 @@ describe("DELETE /documents/:id", () => {
     const r = res();
     await createDeleteDocumentHandler(deps)({ params: { documentId: "d" }, body: { sessionDid: "s" } } as any, r);
     expect(r.status).toHaveBeenCalledWith(403);
-    expect(deps.mongodbStore.purgeDocument).not.toHaveBeenCalled();
+    expect(deps.mongodbStore.tombstoneDocument).not.toHaveBeenCalled();
   });
 
   it("404s when there is no session for the document", async () => {
@@ -265,13 +266,18 @@ describe("DELETE /documents/:id", () => {
     const r = res();
     await createDeleteDocumentHandler(deps)({ params: { documentId: "d" }, body: { sessionDid: "s" } } as any, r);
     expect(r.status).toHaveBeenCalledWith(404);
-    expect(deps.mongodbStore.purgeDocument).not.toHaveBeenCalled();
+    expect(deps.mongodbStore.tombstoneDocument).not.toHaveBeenCalled();
   });
 });
 
 describe("GET /documents/:id/mirror", () => {
   it("returns the latest mirror snapshot", async () => {
-    const deps: any = { mongodbStore: { getLatestMirror: vi.fn().mockResolvedValue({ data: "ct", fileKeyEpoch: 3, createdAt: 9 }) } };
+    const deps: any = {
+      mongodbStore: {
+        getLatestMirror: vi.fn().mockResolvedValue({ data: "ct", fileKeyEpoch: 3, createdAt: 9 }),
+        isTombstoned: vi.fn().mockResolvedValue(false),
+      },
+    };
     const r = res();
     await createMirrorReadHandler(deps)({ params: { documentId: "doc-1" } } as any, r);
     expect(deps.mongodbStore.getLatestMirror).toHaveBeenCalledWith("doc-1");
@@ -280,10 +286,37 @@ describe("GET /documents/:id/mirror", () => {
   });
 
   it("404s when there is no mirror yet", async () => {
-    const deps: any = { mongodbStore: { getLatestMirror: vi.fn().mockResolvedValue(null) } };
+    const deps: any = {
+      mongodbStore: { getLatestMirror: vi.fn().mockResolvedValue(null), isTombstoned: vi.fn().mockResolvedValue(false) },
+    };
     const r = res();
     await createMirrorReadHandler(deps)({ params: { documentId: "doc-1" } } as any, r);
     expect(r.status).toHaveBeenCalledWith(404);
+  });
+
+  it("404s a tombstoned doc without touching the mirror fetch", async () => {
+    const deps: any = {
+      mongodbStore: { getLatestMirror: vi.fn(), isTombstoned: vi.fn().mockResolvedValue(true) },
+    };
+    const r = res();
+    await createMirrorReadHandler(deps)({ params: { documentId: "doc-1" } } as any, r);
+    expect(deps.mongodbStore.isTombstoned).toHaveBeenCalledWith("doc-1");
+    expect(deps.mongodbStore.getLatestMirror).not.toHaveBeenCalled();
+    expect(r.status).toHaveBeenCalledWith(404);
+    expect(r.json).toHaveBeenCalledWith({ error: "Not found" });
+  });
+
+  it("proceeds to the normal read when the doc is not tombstoned", async () => {
+    const deps: any = {
+      mongodbStore: {
+        getLatestMirror: vi.fn().mockResolvedValue({ data: "ct", fileKeyEpoch: 1, createdAt: 1 }),
+        isTombstoned: vi.fn().mockResolvedValue(false),
+      },
+    };
+    const r = res();
+    await createMirrorReadHandler(deps)({ params: { documentId: "doc-1" } } as any, r);
+    expect(deps.mongodbStore.getLatestMirror).toHaveBeenCalledWith("doc-1");
+    expect(r.status).toHaveBeenCalledWith(200);
   });
 });
 

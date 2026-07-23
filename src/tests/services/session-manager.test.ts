@@ -219,11 +219,11 @@ describe("SessionManager", () => {
 
   // getNonTerminatedSessionsForDocument
 
-  it("returns every non-terminated sessionDid for a document regardless of owner", async () => {
+  it("returns every non-terminated sessionDid (with appType) for a document regardless of owner", async () => {
     vi.mocked(SessionModel.find).mockReturnValue({
       lean: vi.fn().mockResolvedValue([
-        { sessionDid: "s-1" },
-        { sessionDid: "s-2" },
+        { sessionDid: "s-1", appType: "ddoc" },
+        { sessionDid: "s-2", appType: "dsheet" },
       ]),
     } as any);
 
@@ -231,9 +231,12 @@ describe("SessionManager", () => {
 
     expect(SessionModel.find).toHaveBeenCalledWith(
       { documentId: "doc-1", state: { $ne: "terminated" } },
-      { sessionDid: 1 }
+      { sessionDid: 1, appType: 1 }
     );
-    expect(sessions).toEqual([{ sessionDid: "s-1" }, { sessionDid: "s-2" }]);
+    expect(sessions).toEqual([
+      { sessionDid: "s-1", appType: "ddoc" },
+      { sessionDid: "s-2", appType: "dsheet" },
+    ]);
   });
 
   // getActiveSessionsCount

@@ -42,12 +42,14 @@ describe("verifyIdentityToken", () => {
   });
 
   it("verifies the UCAN with rootIssuer = on-chain signingDid and a ddocId-bound capability", async () => {
+    (ucans.validate as any).mockResolvedValue({ payload: { fct: [{ identityContractAddress: "0xIdentity" }] } });
     (getIdentitySigningDid as any).mockResolvedValue("did:key:zOwner");
     (ucans.verify as any).mockResolvedValue({ ok: true });
     const auth = new AuthService("did:server");
 
-    const did = await auth.verifyIdentityToken("tok", "0xIdentity" as any, "ddoc-A");
+    const did = await auth.verifyIdentityToken("tok", "ddoc-A");
 
+    expect(getIdentitySigningDid).toHaveBeenCalledWith("0xIdentity");
     expect(ucans.verify).toHaveBeenCalledWith("tok", expect.objectContaining({
       audience: "did:server",
       requiredCapabilities: [expect.objectContaining({
@@ -62,9 +64,10 @@ describe("verifyIdentityToken", () => {
   });
 
   it("returns null when the on-chain DID cannot be resolved", async () => {
+    (ucans.validate as any).mockResolvedValue({ payload: { fct: [{ identityContractAddress: "0xIdentity" }] } });
     (getIdentitySigningDid as any).mockResolvedValue(null);
     const auth = new AuthService("did:server");
-    expect(await auth.verifyIdentityToken("tok", "0xIdentity" as any, "ddoc-A")).toBeNull();
+    expect(await auth.verifyIdentityToken("tok", "ddoc-A")).toBeNull();
   });
 });
 
@@ -125,7 +128,7 @@ describe("verifyOwnerOp (OR of two bound proofs)", () => {
     vi.spyOn(auth, "verifyIdentityToken").mockResolvedValue("did:key:zOwner");
     const ok = await auth.verifyOwnerOp({
       ddocId: "ddoc-A", boundOwnerIdentityDid: "did:key:zOwner", boundOwnerDid: "did:portal:owner",
-      identityToken: "it", identityContractAddress: "0xIdentity" as any,
+      identityToken: "it",
     });
     expect(ok).toBe(true);
   });
@@ -147,7 +150,7 @@ describe("verifyOwnerOp (OR of two bound proofs)", () => {
     vi.spyOn(auth, "verifyIdentityToken").mockResolvedValue("did:key:zAttacker"); // validly signed, wrong identity
     const ok = await auth.verifyOwnerOp({
       ddocId: "ddoc-A", boundOwnerIdentityDid: "did:key:zOwner", boundOwnerDid: "did:portal:owner",
-      identityToken: "it", identityContractAddress: "0xAttacker" as any,
+      identityToken: "it",
     });
     expect(ok).toBe(false);
   });
@@ -157,9 +160,9 @@ describe("verifyOwnerOp (OR of two bound proofs)", () => {
     const spy = vi.spyOn(auth, "verifyIdentityToken").mockResolvedValue(null);
     await auth.verifyOwnerOp({
       ddocId: "ddoc-A", boundOwnerIdentityDid: "did:key:zOwner", boundOwnerDid: "did:portal:owner",
-      identityToken: "it", identityContractAddress: "0xIdentity" as any,
+      identityToken: "it",
     });
-    expect(spy).toHaveBeenCalledWith("it", "0xIdentity", "ddoc-A");
+    expect(spy).toHaveBeenCalledWith("it", "ddoc-A");
   });
 });
 

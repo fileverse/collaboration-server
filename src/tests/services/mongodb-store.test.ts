@@ -213,9 +213,12 @@ describe("upsertDocumentMeta", () => {
     expect(DocumentMetaModel.findOneAndUpdate).toHaveBeenCalledWith(
       { _id: "doc-1" },
       expect.objectContaining({
+        // Binding fields are first-writer-immutable (C1) — pinned on insert only.
+        $setOnInsert: expect.objectContaining({
+          ownerDid: "od", ownerIdentityDid: "oid", portalAddress: "0xP",
+        }),
         $set: expect.objectContaining({
-          sessionDid: "room-did", ownerDid: "od", ownerIdentityDid: "oid",
-          portalAddress: "0xP", editLock: "el", title: "t",
+          sessionDid: "room-did", editLock: "el", title: "t",
         }),
       }),
       expect.objectContaining({ upsert: true, writeConcern: { w: "majority", j: true } })

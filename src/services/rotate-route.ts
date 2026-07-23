@@ -22,7 +22,7 @@ export function createRotateSessionHandler(deps: RotateDeps, io: AppServer) {
     const documentId = req.params.documentId;
     const {
       oldSessionDid, newSessionDid, payload, gateEpoch,
-      identityToken, identityContractAddress, ownerToken, ownerAddress, portalAddress,
+      identityToken, ownerToken, ownerAddress, portalAddress,
     } = req.body || {};
 
     if (
@@ -53,7 +53,7 @@ export function createRotateSessionHandler(deps: RotateDeps, io: AppServer) {
       ddocId: documentId,
       boundOwnerIdentityDid: (oldSession as any).ownerIdentityDid ?? null,
       boundOwnerDid: oldSession.ownerDid ?? null,
-      identityToken, identityContractAddress: identityContractAddress as Hex,
+      identityToken,
       ownerToken, ownerAddress: ownerAddress as Hex, portalAddress: portalAddress as Hex,
     });
     if (!authorized) {

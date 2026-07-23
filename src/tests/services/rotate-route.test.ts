@@ -52,7 +52,6 @@ describe("POST /documents/:id/rotate-session", () => {
       payload: "opaque-ct",
       gateEpoch: 5,
       identityToken: "it",
-      identityContractAddress: "0xI",
       ownerToken: "ot",
       ownerAddress: "0xO",
       portalAddress: "0xP",

@@ -112,9 +112,7 @@ export interface AuthArgs {
   contractAddress?: string;
   roomInfo?: string;
   appType?: AppType;
-  ownerIdentityDid?: string;
   identityToken?: string;
-  identityContractAddress?: string;
   editUcan?: string;
   actorHandle?: string;
   /** Privilege-reducing join mode (workspace member): the server must never create or
@@ -419,7 +417,15 @@ export interface ServerConfig {
     interval: string;
     batchSize: number;
   };
+  deleteGrace: {
+    windowMs: number;
+    interval: string;
+    batchSize: number;
+  };
   agenda: {
     concurrency: number;
+  };
+  webhook: {
+    apiKey?: string;
   };
 }

@@ -251,11 +251,13 @@ export class MongoDBStore {
     await DocumentMetaModel.findOneAndUpdate(
       { _id: meta.documentId },
       {
-        $set: {
-          sessionDid: meta.sessionDid,
+        $setOnInsert: {
           ownerDid: meta.ownerDid,
           ownerIdentityDid: meta.ownerIdentityDid,
           portalAddress: meta.portalAddress,
+        },
+        $set: {
+          sessionDid: meta.sessionDid,
           editLock: meta.editLock,
           title: meta.title,
           updatedAt: Date.now(),
@@ -263,6 +265,45 @@ export class MongoDBStore {
       },
       { upsert: true, new: true, writeConcern: { w: "majority", j: true } }
     );
+  }
+
+  // First-writer-immutable document->owner binding (see docs/architecture/edit-permission.md).
+  // The pin closes C1: a colliding appFileId minted on another portal can never rebind an
+  // already-pinned documentId. Returns the EFFECTIVE portalAddress so the caller can reject
+  // a mismatch atomically (no read-modify-write race). Two steps so a LEGACY row that predates
+  // the pin (portalAddress null/absent) gets backfilled instead of locking its real owner out —
+  // a filter-guarded upsert would dup-key on an already-pinned _id, so the ensure-then-backfill
+  // split is deliberate. Mirrors session-manager.fillOwnerIdentityDidIfAbsent.
+  async pinDocumentPortalIfAbsent(p: {
+    documentId: string;
+    portalAddress: string;
+    ownerDid: string | null;
+    ownerIdentityDid: string | null;
+    sessionDid: string;
+  }): Promise<{ portalAddress: string | null }> {
+    // 1. Ensure the row exists; pin all binding fields on INSERT only.
+    await DocumentMetaModel.findOneAndUpdate(
+      { _id: p.documentId },
+      {
+        $setOnInsert: {
+          portalAddress: p.portalAddress,
+          ownerDid: p.ownerDid,
+          ownerIdentityDid: p.ownerIdentityDid,
+          sessionDid: p.sessionDid,
+          updatedAt: Date.now(),
+          isPublished: false,
+        },
+      },
+      { upsert: true, writeConcern: { w: "majority", j: true } }
+    );
+    // 2. Backfill a legacy null/absent portal — never overwrites an existing real pin.
+    await DocumentMetaModel.updateOne(
+      { _id: p.documentId, $or: [{ portalAddress: null }, { portalAddress: { $exists: false } }] },
+      { $set: { portalAddress: p.portalAddress } }
+    );
+    // 3. Read the effective pin.
+    const doc: any = await DocumentMetaModel.findById(p.documentId).select("portalAddress").lean();
+    return { portalAddress: doc?.portalAddress ?? null };
   }
 
   async getDocumentMeta(
@@ -487,6 +528,35 @@ export class MongoDBStore {
       DocumentMirrorModel.deleteMany({ documentId }),
       DocumentEditEpochModel.deleteOne({ _id: documentId }),
     ]);
+  }
+
+  // Reversible tombstone driven by the on-chain DeletedFile webhook (see
+  // docs/architecture/edit-permission.md). Idempotent: a second call against an
+  // already-tombstoned doc still returns true instead of erroring.
+  async tombstoneDocument(documentId: string, reason: string): Promise<boolean> {
+    const res = await DocumentMetaModel.updateOne(
+      { _id: documentId, tombstonedAt: null },
+      { $set: { tombstonedAt: Date.now(), tombstoneReason: reason } }
+    );
+    if (res.matchedCount > 0) return true;
+    const existing: any = await DocumentMetaModel.findById(documentId).select("tombstonedAt").lean();
+    return !!existing?.tombstonedAt;
+  }
+
+  async isTombstoned(documentId: string): Promise<boolean> {
+    const m: any = await DocumentMetaModel.findById(documentId).select("tombstonedAt").lean();
+    return !!m?.tombstonedAt;
+  }
+
+  // Grace-window irreversible purge. Reuses the existing collection deletes.
+  async purgeTombstonedBefore(cutoffMs: number, batchSize: number): Promise<string[]> {
+    const rows: any[] = await DocumentMetaModel.find({ tombstonedAt: { $ne: null, $lte: cutoffMs } })
+      .select("_id")
+      .limit(batchSize)
+      .lean();
+    const ids = rows.map((r) => String(r._id));
+    for (const id of ids) await this.purgeDocument(id);
+    return ids;
   }
 
   // Conservative orphan GC: terminated ddoc streams with no editLock and no snapshot row.

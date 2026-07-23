@@ -225,16 +225,11 @@ export async function handleAuth(
       // UCAN against the on-chain signingDid and bind THAT. Dsheets keep the legacy path
       // (no durable recovery / owner-op surface) — mirrors the ddoc-only join gate so a
       // dsheet owner is never rejected here.
-      let boundOwnerIdentityDid = args.ownerIdentityDid;
+      let boundOwnerIdentityDid: string | null = null;
       if (claimedAppType === "ddoc") {
-        const provenSigningDid =
-          args.identityToken && args.identityContractAddress
-            ? await authService.verifyIdentityToken(
-                args.identityToken,
-                args.identityContractAddress as Hex,
-                documentId
-              )
-            : null;
+        const provenSigningDid = args.identityToken
+          ? await authService.verifyIdentityToken(args.identityToken, documentId)
+          : null;
         if (!provenSigningDid) {
           return callback({
             status: false,
@@ -245,6 +240,39 @@ export async function handleAuth(
         }
         boundOwnerIdentityDid = provenSigningDid;
         provenIdentityDid = provenSigningDid;
+      }
+
+      // C1: pin documentId → portalAddress on the first owner bind, immutably (trust-on-first-use).
+      // This is bounded by the pre-first-durable-session race window, NOT by documentId secrecy —
+      // the portable share URL is /document/{id}#k=, so documentId is URL-path-visible (server/
+      // link-visible); only the key is in the fragment. The ownerToken proves membership of the
+      // claimed portal; thereafter no other portal can bind. Residual: a share-link holder can
+      // pin-hijack a documentId that has never had a durable owner session, permanently locking
+      // out durable collaboration for it — but content (fileKey-encrypted mirror) and the
+      // on-chain/IPFS artifact are unaffected, and nothing can be purged. A clean fix
+      // (pin-at-document-creation / an owner-authenticated reclaim path) is out of scope. The
+      // doc→portal *deletion* proof lives in the DeletedFile webhook (onlyCollaborator-gated).
+      // See docs/architecture/edit-permission.md.
+      if (claimedAppType === "ddoc") {
+        const { portalAddress: pinnedPortal } = await deps.mongodbStore.pinDocumentPortalIfAbsent({
+          documentId,
+          portalAddress: args.contractAddress as string,
+          ownerDid,
+          ownerIdentityDid: boundOwnerIdentityDid,
+          sessionDid,
+        });
+
+        if (
+          !pinnedPortal ||
+          pinnedPortal.toLowerCase() !== (args.contractAddress as string).toLowerCase()
+        ) {
+          return callback({
+            status: false,
+            statusCode: 403,
+            error: "Document is owned by a different portal",
+            errorCode: ErrorCode.AUTH_TOKEN_INVALID,
+          });
+        }
       }
 
       // Terminate other sessions with socket notification
@@ -289,7 +317,7 @@ export async function handleAuth(
         documentId,
         sessionDid,
         ownerDid,
-        ownerIdentityDid: boundOwnerIdentityDid,
+        ownerIdentityDid: boundOwnerIdentityDid ?? undefined,
         portalAddress: args.contractAddress,
         collabJoinEnabled: false,
         roomInfo: args.roomInfo,
@@ -379,13 +407,7 @@ export async function handleAuth(
       // a bound session already proved identity once, so a modern client always presents it.
       const boundIdentityDid = existingSession.ownerIdentityDid ?? null;
       if (storedAppType === "ddoc" && boundIdentityDid && args.identityToken) {
-        const provenDid = args.identityContractAddress
-          ? await authService.verifyIdentityToken(
-              args.identityToken,
-              args.identityContractAddress as Hex,
-              documentId
-            )
-          : null;
+        const provenDid = await authService.verifyIdentityToken(args.identityToken, documentId);
         if (!provenDid) {
           return callback({
             status: false,
@@ -426,14 +448,9 @@ export async function handleAuth(
         role === "owner" &&
         args.joinOnly !== true &&
         !existingSession.ownerIdentityDid &&
-        args.identityToken &&
-        args.identityContractAddress
+        args.identityToken
       ) {
-        const provenSigningDid = await authService.verifyIdentityToken(
-          args.identityToken,
-          args.identityContractAddress as Hex,
-          documentId
-        );
+        const provenSigningDid = await authService.verifyIdentityToken(args.identityToken, documentId);
         if (provenSigningDid) {
           provenIdentityDid = provenSigningDid;
           await sessionManager.fillOwnerIdentityDidIfAbsent(

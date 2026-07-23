@@ -349,13 +349,13 @@ export class SessionManager {
   // rooms — a stale client-supplied sessionDid must not leave the current room open.
   async getNonTerminatedSessionsForDocument(
     documentId: string
-  ): Promise<Array<{ sessionDid: string }>> {
+  ): Promise<Array<{ sessionDid: string; appType?: "ddoc" | "dsheet" }>> {
     try {
       const sessions = await SessionModel.find(
         { documentId, state: { $ne: "terminated" } },
-        { sessionDid: 1 }
+        { sessionDid: 1, appType: 1 }
       ).lean();
-      return sessions.map((s: any) => ({ sessionDid: s.sessionDid }));
+      return sessions.map((s: any) => ({ sessionDid: s.sessionDid, appType: s.appType }));
     } catch (error) {
       console.error("Error getting non-terminated sessions for document:", error);
       return [];

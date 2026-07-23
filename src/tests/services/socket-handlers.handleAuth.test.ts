@@ -67,6 +67,13 @@ describe("handleAuth", () => {
   const fakeMongoDBStore = {
     getDocumentMeta: vi.fn().mockResolvedValue(null),
     getMinEditEpoch: vi.fn().mockResolvedValue(0),
+    // Echoes the requested portal back, so unrelated owner-bind tests pass regardless
+    // of their contractAddress. Mismatch tests override with mockResolvedValueOnce.
+    pinDocumentPortalIfAbsent: vi
+      .fn()
+      .mockImplementation(async (p: { portalAddress: string }) => ({
+        portalAddress: p.portalAddress,
+      })),
   } as any;
 
   const deps: SocketHandlerDeps = {
@@ -152,7 +159,6 @@ describe("handleAuth", () => {
       ownerAddress: "0x0000000000000000000000000000000000000001",
       contractAddress: "0x0000000000000000000000000000000000000002",
       identityToken: "identity-token",
-      identityContractAddress: "0x0000000000000000000000000000000000000003",
       roomInfo: "room-info",
     };
     const callback = vi.fn();
@@ -226,6 +232,112 @@ describe("handleAuth", () => {
     });
   });
 
+  describe("owner session portal pin (C1)", () => {
+    const pinArgs: AuthArgs = {
+      documentId: "doc-1",
+      sessionDid: "session-1",
+      collaborationToken: "collab-token",
+      ownerToken: "owner-token",
+      ownerAddress: "0x0000000000000000000000000000000000000001",
+      contractAddress: "0x0000000000000000000000000000000000000002",
+      identityToken: "identity-token",
+      roomInfo: "room-info",
+    };
+
+    function ownerBindHappyPath() {
+      fakeSessionManager.getSession.mockResolvedValue(undefined);
+      fakeAuthService.verifyOwnerToken.mockResolvedValue("owner-did");
+      fakeAuthService.verifyIdentityToken.mockResolvedValue("owner-identity-did");
+      fakeSessionManager.getOtherNonTerminatedSessions.mockResolvedValue([]);
+      fakeSessionManager.createSession.mockResolvedValue(undefined);
+      fakeSessionManager.addClientToSession.mockResolvedValue(undefined);
+    }
+
+    it("(a) pins the portal on the first owner bind of an unpinned doc and creates the session", async () => {
+      ownerBindHappyPath();
+      // Default mock echoes the requested portal back (first-writer-wins with no prior pin).
+      const callback = vi.fn();
+
+      await handleAuth(deps, createFakeIO(), createFakeSocket(), pinArgs, callback);
+
+      expect(fakeMongoDBStore.pinDocumentPortalIfAbsent).toHaveBeenCalledWith({
+        documentId: pinArgs.documentId,
+        portalAddress: pinArgs.contractAddress,
+        ownerDid: "owner-did",
+        ownerIdentityDid: "owner-identity-did",
+        sessionDid: pinArgs.sessionDid,
+      });
+      expect(fakeSessionManager.createSession).toHaveBeenCalled();
+      expect(callback).toHaveBeenCalledWith(
+        expect.objectContaining({ status: true, statusCode: 200 })
+      );
+    });
+
+    it("(b) succeeds when the bind's portal equals the existing pin", async () => {
+      ownerBindHappyPath();
+      fakeMongoDBStore.pinDocumentPortalIfAbsent.mockResolvedValueOnce({
+        portalAddress: pinArgs.contractAddress,
+      });
+      const callback = vi.fn();
+
+      await handleAuth(deps, createFakeIO(), createFakeSocket(), pinArgs, callback);
+
+      expect(fakeSessionManager.createSession).toHaveBeenCalled();
+      expect(callback).toHaveBeenCalledWith(
+        expect.objectContaining({ status: true, statusCode: 200 })
+      );
+    });
+
+    it("(c) rejects 403/AUTH_TOKEN_INVALID when the bind's portal differs from the pin, without creating a session", async () => {
+      ownerBindHappyPath();
+      fakeMongoDBStore.pinDocumentPortalIfAbsent.mockResolvedValueOnce({
+        portalAddress: "0x9999999999999999999999999999999999999999",
+      });
+      const callback = vi.fn();
+
+      await handleAuth(deps, createFakeIO(), createFakeSocket(), pinArgs, callback);
+
+      expect(callback).toHaveBeenCalledWith({
+        status: false,
+        statusCode: 403,
+        error: "Document is owned by a different portal",
+        errorCode: ErrorCode.AUTH_TOKEN_INVALID,
+      });
+      expect(fakeSessionManager.createSession).not.toHaveBeenCalled();
+    });
+
+    it("(d) the mismatch reject precedes the terminate-other-sessions loop", async () => {
+      ownerBindHappyPath();
+      fakeMongoDBStore.pinDocumentPortalIfAbsent.mockResolvedValueOnce({
+        portalAddress: "0x9999999999999999999999999999999999999999",
+      });
+      const callback = vi.fn();
+
+      await handleAuth(deps, createFakeIO(), createFakeSocket(), pinArgs, callback);
+
+      expect(fakeSessionManager.getOtherNonTerminatedSessions).not.toHaveBeenCalled();
+      expect(fakeSessionManager.terminateSession).not.toHaveBeenCalled();
+    });
+
+    it("(e) rejects 403/AUTH_TOKEN_INVALID when the pin read fails (portalAddress: null), without creating a session", async () => {
+      ownerBindHappyPath();
+      fakeMongoDBStore.pinDocumentPortalIfAbsent.mockResolvedValueOnce({
+        portalAddress: null,
+      });
+      const callback = vi.fn();
+
+      await handleAuth(deps, createFakeIO(), createFakeSocket(), pinArgs, callback);
+
+      expect(callback).toHaveBeenCalledWith({
+        status: false,
+        statusCode: 403,
+        error: "Document is owned by a different portal",
+        errorCode: ErrorCode.AUTH_TOKEN_INVALID,
+      });
+      expect(fakeSessionManager.createSession).not.toHaveBeenCalled();
+    });
+  });
+
   it("returns the latest stored DocumentMeta title in the ack", async () => {
     const fakeIO = createFakeIO();
     const fakeSocket = createFakeSocket();
@@ -237,7 +349,6 @@ describe("handleAuth", () => {
       ownerAddress: "0x0000000000000000000000000000000000000001",
       contractAddress: "0x0000000000000000000000000000000000000002",
       identityToken: "identity-token",
-      identityContractAddress: "0x0000000000000000000000000000000000000003",
       roomInfo: "room-info",
     };
     const callback = vi.fn();
@@ -270,7 +381,6 @@ describe("handleAuth", () => {
       ownerAddress: "0x0000000000000000000000000000000000000001",
       contractAddress: "0x0000000000000000000000000000000000000002",
       identityToken: "identity-token",
-      identityContractAddress: "0x0000000000000000000000000000000000000003",
       roomInfo: "room-info",
     };
     const callback = vi.fn();
@@ -306,7 +416,6 @@ describe("handleAuth", () => {
       ownerAddress: "0x0000000000000000000000000000000000000001",
       contractAddress: "0x0000000000000000000000000000000000000002",
       identityToken: "identity-token",
-      identityContractAddress: "0x0000000000000000000000000000000000000003",
       roomInfo: "room-info",
     };
     const callback = vi.fn();
@@ -1097,7 +1206,7 @@ describe("handleAuth", () => {
       ownerToken: "owner-token",
       ownerAddress: "0x0000000000000000000000000000000000000001",
       contractAddress: "0x0000000000000000000000000000000000000002",
-      // no identityToken / identityContractAddress
+      // no identityToken
     };
     const callback = vi.fn();
 
@@ -1127,7 +1236,6 @@ describe("handleAuth", () => {
       ownerAddress: "0x0000000000000000000000000000000000000001",
       contractAddress: "0x0000000000000000000000000000000000000002",
       identityToken: "bad-identity-token",
-      identityContractAddress: "0x0000000000000000000000000000000000000003",
     };
     const callback = vi.fn();
 
@@ -1137,11 +1245,7 @@ describe("handleAuth", () => {
 
     await handleAuth(deps, fakeIO, fakeSocket, fakeArgs, callback);
 
-    expect(fakeAuthService.verifyIdentityToken).toHaveBeenCalledWith(
-      "bad-identity-token",
-      "0x0000000000000000000000000000000000000003",
-      "doc-1"
-    );
+    expect(fakeAuthService.verifyIdentityToken).toHaveBeenCalledWith("bad-identity-token", "doc-1");
     expect(fakeSessionManager.createSession).not.toHaveBeenCalled();
     expect(callback).toHaveBeenCalledWith({
       status: false,
@@ -1162,7 +1266,6 @@ describe("handleAuth", () => {
       ownerAddress: "0x0000000000000000000000000000000000000001",
       contractAddress: "0x0000000000000000000000000000000000000002",
       identityToken: "identity-token",
-      identityContractAddress: "0x0000000000000000000000000000000000000003",
     };
     const callback = vi.fn();
 
@@ -1183,11 +1286,7 @@ describe("handleAuth", () => {
 
     await handleAuth(deps, fakeIO, fakeSocket, fakeArgs, callback);
 
-    expect(fakeAuthService.verifyIdentityToken).toHaveBeenCalledWith(
-      "identity-token",
-      "0x0000000000000000000000000000000000000003",
-      "doc-1"
-    );
+    expect(fakeAuthService.verifyIdentityToken).toHaveBeenCalledWith("identity-token", "doc-1");
     expect(fakeSessionManager.fillOwnerIdentityDidIfAbsent).toHaveBeenCalledWith(
       "doc-1",
       "session-1",
@@ -1239,7 +1338,6 @@ describe("handleAuth", () => {
       ownerAddress: "0x1111111111111111111111111111111111111111",
       contractAddress: "0x2222222222222222222222222222222222222222",
       identityToken: "identity-token",
-      identityContractAddress: "0x3333333333333333333333333333333333333333",
       joinOnly: true,
     };
 
@@ -1339,7 +1437,6 @@ describe("handleAuth", () => {
       ownerAddress: "0x1111111111111111111111111111111111111111",
       contractAddress: "0x2222222222222222222222222222222222222222",
       identityToken: "member-identity-token",
-      identityContractAddress: "0x3333333333333333333333333333333333333333",
       joinOnly: true,
     }, callback);
 
@@ -1372,7 +1469,6 @@ describe("handleAuth", () => {
     ownerAddress: "0x1111111111111111111111111111111111111111",
     contractAddress: "0x2222222222222222222222222222222222222222",
     identityToken: "identity-token",
-    identityContractAddress: "0x3333333333333333333333333333333333333333",
   };
 
   it("role: proven identity == bound + matching ownerToken → owner", async () => {
@@ -1427,7 +1523,7 @@ describe("handleAuth", () => {
     fakeAuthService.verifyCollaborationToken.mockResolvedValue("did:key:collab");
     fakeAuthService.verifyOwnerToken.mockResolvedValue("did:key:shared-portal");
     fakeSessionManager.getWorkspaceEditEnabled.mockResolvedValue(true);
-    const { identityToken, identityContractAddress, ...tokenless } = boundJoinArgs;
+    const { identityToken, ...tokenless } = boundJoinArgs;
     const callback = vi.fn();
 
     await handleAuth(deps, createFakeIO(), createFakeSocket(), tokenless as any, callback);
@@ -1577,7 +1673,6 @@ describe("handleAuth", () => {
           ...rotatedJoinArgs,
           joinOnly: false,
           identityToken: "identity-token",
-          identityContractAddress: "0x3333333333333333333333333333333333333333",
         },
         callback
       );
@@ -1612,7 +1707,7 @@ describe("handleAuth", () => {
       fakeSessionManager.getSession.mockResolvedValue({ ...boundSession });
       fakeAuthService.verifyCollaborationToken.mockResolvedValue("did:key:collab");
       fakeAuthService.verifyOwnerToken.mockResolvedValue("did:key:shared-portal");
-      const { identityToken, identityContractAddress, ...tokenless } = boundJoinArgs;
+      const { identityToken, ...tokenless } = boundJoinArgs;
       const fakeSocket = createFakeSocket();
       const callback = vi.fn();
 
@@ -1724,7 +1819,6 @@ describe("handleAuth — edit-claim admission (existing session, non-owner)", ()
         ownerAddress: "0x1111111111111111111111111111111111111111",
         contractAddress: "0x2222222222222222222222222222222222222222",
         identityToken: "it",
-        identityContractAddress: "0x3333333333333333333333333333333333333333",
       }),
       cb
     );

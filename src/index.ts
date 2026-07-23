@@ -27,6 +27,7 @@ import { createRotateSessionHandler } from "./services/rotate-route";
 import { rotationCoordinator } from "./services/rotation-coordinator";
 import { editBoundCache } from "./services/gate-epoch";
 import { createFlushHandler } from "./services/flush-route";
+import { createDeletedFileWebhookHandler } from "./services/deleted-file-webhook";
 import { createLightNode } from "@waku/sdk";
 import protobuf from "protobufjs";
 import { generateKeyPairFromSeed } from "@libp2p/crypto/keys";
@@ -139,6 +140,21 @@ class CollaborationServer {
     this.app.get(
       "/documents/:documentId/share-context",
       createShareContextHandler({ mongodbStore, sessionManager })
+    );
+    this.app.post(
+      "/webhooks/file-deleted",
+      createDeletedFileWebhookHandler({
+        mongodbStore,
+        onTombstoned: async (documentId) => {
+          const sessions = await sessionManager.getNonTerminatedSessionsForDocument(documentId);
+          for (const s of sessions) {
+            const room = getRoomName(documentId, s.sessionDid);
+            this.io!.to(room).emit("/session/terminated", { roomId: documentId });
+            for (const sock of await this.io!.in(room).fetchSockets()) sock.leave(room);
+            await sessionManager.terminateSession(documentId, s.sessionDid, s.appType ?? "ddoc");
+          }
+        },
+      })
     );
     this.app.post("/flush", createFlushHandler({ authService, mongodbStore }));
     this.app.post("/list-my-documents", createListMyDocumentsHandler({ authService, mongodbStore }));

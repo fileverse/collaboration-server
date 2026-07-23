@@ -46,7 +46,7 @@ async function logSessionNotFound(
 export function createCollabJoinEnabledHandler(deps: OwnerOpDeps, io: AppServer) {
   return async (req: Request, res: Response): Promise<void> => {
     const documentId = req.params.documentId;
-    const { sessionDid, enabled, identityToken, identityContractAddress, ownerToken, ownerAddress, portalAddress } = req.body || {};
+    const { sessionDid, enabled, identityToken, ownerToken, ownerAddress, portalAddress } = req.body || {};
 
     const session = await deps.sessionManager.getSession(documentId, sessionDid);
     if (!session) {
@@ -59,7 +59,7 @@ export function createCollabJoinEnabledHandler(deps: OwnerOpDeps, io: AppServer)
       ddocId: documentId,
       boundOwnerIdentityDid: (session as any).ownerIdentityDid ?? null,
       boundOwnerDid: session.ownerDid ?? null,
-      identityToken, identityContractAddress: identityContractAddress as Hex,
+      identityToken,
       ownerToken, ownerAddress: ownerAddress as Hex, portalAddress: portalAddress as Hex,
     });
     if (!authorized) {
@@ -100,7 +100,7 @@ export function createCollabJoinEnabledHandler(deps: OwnerOpDeps, io: AppServer)
 export function createWorkspaceEditTierHandler(deps: OwnerOpDeps, io: AppServer) {
   return async (req: Request, res: Response): Promise<void> => {
     const documentId = req.params.documentId;
-    const { sessionDid, enabled, identityToken, identityContractAddress, ownerToken, ownerAddress, portalAddress } = req.body || {};
+    const { sessionDid, enabled, identityToken, ownerToken, ownerAddress, portalAddress } = req.body || {};
 
     const session = await deps.sessionManager.getSession(documentId, sessionDid);
     if (!session) {
@@ -113,7 +113,7 @@ export function createWorkspaceEditTierHandler(deps: OwnerOpDeps, io: AppServer)
       ddocId: documentId,
       boundOwnerIdentityDid: (session as any).ownerIdentityDid ?? null,
       boundOwnerDid: session.ownerDid ?? null,
-      identityToken, identityContractAddress: identityContractAddress as Hex,
+      identityToken,
       ownerToken, ownerAddress: ownerAddress as Hex, portalAddress: portalAddress as Hex,
     });
     if (!authorized) {
@@ -156,7 +156,7 @@ export function createEvictEditActorsHandler(
 ) {
   return async (req: Request, res: Response): Promise<void> => {
     const documentId = req.params.documentId;
-    const { sessionDid, handles, identityToken, identityContractAddress, ownerToken, ownerAddress, portalAddress } = req.body || {};
+    const { sessionDid, handles, identityToken, ownerToken, ownerAddress, portalAddress } = req.body || {};
 
     const session = await deps.sessionManager.getSession(documentId, sessionDid);
     if (!session) {
@@ -169,7 +169,7 @@ export function createEvictEditActorsHandler(
       ddocId: documentId,
       boundOwnerIdentityDid: (session as any).ownerIdentityDid ?? null,
       boundOwnerDid: session.ownerDid ?? null,
-      identityToken, identityContractAddress: identityContractAddress as Hex,
+      identityToken,
       ownerToken, ownerAddress: ownerAddress as Hex, portalAddress: portalAddress as Hex,
     });
     if (!authorized) {
@@ -215,11 +215,11 @@ export interface ListMyDocumentsDeps {
 
 export function createListMyDocumentsHandler(deps: ListMyDocumentsDeps) {
   return async (req: Request, res: Response): Promise<void> => {
-    const { identityToken, identityContractAddress, portalAddress } = req.body || {};
+    const { identityToken, portalAddress } = req.body || {};
 
     // Path 1 — identity: the capability binds the portalAddress (a discovery scope, not a single ddocId).
-    if (identityToken && identityContractAddress && portalAddress) {
-      const signingDid = await deps.authService.verifyIdentityToken(identityToken, identityContractAddress, portalAddress);
+    if (identityToken && portalAddress) {
+      const signingDid = await deps.authService.verifyIdentityToken(identityToken, portalAddress);
       if (signingDid) {
         const documents = await deps.mongodbStore.listDocumentsForOwner({ ownerIdentityDid: signingDid });
         res.status(200).json({ documents });
@@ -239,11 +239,11 @@ export function createListMyDocumentsHandler(deps: ListMyDocumentsDeps) {
 export function createDeleteDocumentHandler(deps: {
   authService: Pick<AuthService, "verifyOwnerOp">;
   sessionManager: Pick<SessionManager, "getSession">;
-  mongodbStore: Pick<MongoDBStore, "purgeDocument">;
+  mongodbStore: Pick<MongoDBStore, "tombstoneDocument">;
 }) {
   return async (req: Request, res: Response): Promise<void> => {
     const documentId = req.params.documentId;
-    const { sessionDid, identityToken, identityContractAddress, ownerToken, ownerAddress, portalAddress } = req.body || {};
+    const { sessionDid, identityToken, ownerToken, ownerAddress, portalAddress } = req.body || {};
 
     const session = await deps.sessionManager.getSession(documentId, sessionDid);
     if (!session) {
@@ -262,23 +262,30 @@ export function createDeleteDocumentHandler(deps: {
       ddocId: documentId,
       boundOwnerIdentityDid: session.ownerIdentityDid ?? null,
       boundOwnerDid: session.ownerDid ?? null,
-      identityToken, identityContractAddress, ownerToken, ownerAddress, portalAddress,
+      identityToken, ownerToken, ownerAddress, portalAddress,
     });
     if (!authorized) {
       res.status(403).json({ error: "Not the document owner" });
       return;
     }
 
-    await deps.mongodbStore.purgeDocument(documentId);
+    // Reversible tombstone, not a purge — see docs/architecture/edit-permission.md.
+    // Irreversible purge is driven only by the on-chain webhook + grace job.
+    await deps.mongodbStore.tombstoneDocument(documentId, "owner-delete");
     res.status(200).json({ ok: true });
   };
 }
 
-export function createMirrorReadHandler(deps: { mongodbStore: Pick<MongoDBStore, "getLatestMirror"> }) {
+export function createMirrorReadHandler(deps: { mongodbStore: Pick<MongoDBStore, "getLatestMirror" | "isTombstoned"> }) {
   return async (req: Request, res: Response): Promise<void> => {
     // Open read: the payload is fileKey-ciphertext, useless without the key (public → linkKey;
     // private → gate/appLock). Access control is the key, not this endpoint.
     const documentId = req.params.documentId;
+    // Tombstoned docs serve 404 — see docs/architecture/edit-permission.md.
+    if (await deps.mongodbStore.isTombstoned(documentId)) {
+      res.status(404).json({ error: "Not found" });
+      return;
+    }
     const mirror = await deps.mongodbStore.getLatestMirror(documentId);
     if (!mirror) {
       res.status(404).json({ error: "No mirror snapshot" });

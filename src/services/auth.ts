@@ -139,13 +139,18 @@ export class AuthService {
     }
   }
 
-  async verifyIdentityToken(
-    token: string,
-    identityContractAddress: Hex,
-    ddocId: string
-  ): Promise<string | null> {
+  // `hierPart` is the UCAN capability scope the token must be signed for: a documentId for
+  // per-document owner-ops, or a portalAddress for the list-my-documents discovery route.
+  async verifyIdentityToken(token: string, hierPart: string): Promise<string | null> {
     try {
-      const signingDid = await getIdentitySigningDid(identityContractAddress);
+      // Peek the signed fact (validate checks the token's own signature, not rootIssuer).
+      const parsed = await ucans.validate(token);
+      const fact = ((parsed.payload.fct ?? [])[0] ?? {}) as { identityContractAddress?: string };
+      const addr = fact.identityContractAddress;
+      if (!addr || !addr.startsWith("0x")) return null; // fail closed: no signed address
+
+      // The on-chain read is the anchor — do NOT trust the token's iss directly.
+      const signingDid = await getIdentitySigningDid(addr as Hex);
       if (!signingDid) return null;
 
       const result = await ucans.verify(token, {
@@ -153,7 +158,7 @@ export class AuthService {
         requiredCapabilities: [
           {
             capability: {
-              with: { scheme: "storage", hierPart: ddocId },
+              with: { scheme: "storage", hierPart },
               can: { namespace: "collaboration", segments: ["OWN"] },
             },
             rootIssuer: signingDid,
@@ -172,18 +177,13 @@ export class AuthService {
     boundOwnerIdentityDid: string | null;
     boundOwnerDid: string | null;
     identityToken?: string;
-    identityContractAddress?: Hex;
     ownerToken?: string;
     ownerAddress?: Hex;
     portalAddress?: Hex;
   }): Promise<boolean> {
     // Path 1 — bound identity (creator). The `=== boundOwnerIdentityDid` compare is MANDATORY.
-    if (params.identityToken && params.identityContractAddress && params.boundOwnerIdentityDid) {
-      const signingDid = await this.verifyIdentityToken(
-        params.identityToken,
-        params.identityContractAddress,
-        params.ddocId
-      );
+    if (params.identityToken && params.boundOwnerIdentityDid) {
+      const signingDid = await this.verifyIdentityToken(params.identityToken, params.ddocId);
       if (signingDid && signingDid === params.boundOwnerIdentityDid) return true;
     }
 
