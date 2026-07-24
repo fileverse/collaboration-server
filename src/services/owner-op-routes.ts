@@ -3,7 +3,6 @@ import type { AppServer } from "../types/index";
 import type { AuthService } from "./auth";
 import type { SessionManager } from "./session-manager";
 import type { MongoDBStore } from "./mongodb-store";
-import type { EditBoundCache } from "./gate-epoch";
 import { getRoomName } from "./socket-handlers";
 import { Hex, isAddress } from "viem";
 import { getPortalOwnerAddress, bustOwnerDidCacheForPortal } from "../utils/contract";
@@ -147,11 +146,11 @@ export function createWorkspaceEditTierHandler(deps: OwnerOpDeps, io: AppServer)
   };
 }
 
-/** Targeted eviction of specific gp-actor handles: bust the per-actor edit-bound cache,
- *  then drop the matching live sockets across every session room of the doc. Co-editors
- *  with other handles are untouched. */
+/** Targeted eviction of specific gp-actor handles: stamp the epoch floor, then drop the
+ *  matching live sockets across every session room of the doc. Co-editors with other handles
+ *  are untouched. The offline minEditEpoch floor (plus rotation) supersedes the removed cache. */
 export function createEvictEditActorsHandler(
-  deps: OwnerOpDeps & { editBoundCache: EditBoundCache; mongodbStore: Pick<MongoDBStore, "setMinEditEpoch"> },
+  deps: OwnerOpDeps & { mongodbStore: Pick<MongoDBStore, "setMinEditEpoch"> },
   io: AppServer
 ) {
   return async (req: Request, res: Response): Promise<void> => {
@@ -185,7 +184,6 @@ export function createEvictEditActorsHandler(
     }
 
     const list = Array.isArray(handles) ? handles.filter((h) => typeof h === "string") : [];
-    deps.editBoundCache.evict(documentId, list);
 
     let dropped = 0;
     if (list.length > 0) {

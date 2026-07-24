@@ -46,7 +46,6 @@ export const config: ServerConfig = {
     concurrency: parseInt(process.env.AGENDA_DEFAULT_CONCURRENCY || "1"),
   },
   gate: {
-    url: process.env.GATE_URL,
     did: process.env.GATE_DID,
   },
   webhook: {

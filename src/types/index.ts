@@ -351,6 +351,7 @@ export interface SocketData {
   railKind?: "gp-actor" | "workspace" | "public";
   actorHandle?: string;
   actorIdentityDid?: string;
+  editEpoch?: number;
   lastAdmitRecheckAt?: number;
 }
 
@@ -403,7 +404,6 @@ export interface ServerConfig {
     serverKeyPair?: any;
   };
   gate: {
-    url: string | undefined;
     did: string | undefined;
   };
   rateLimit: {

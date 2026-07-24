@@ -21,7 +21,6 @@ describe("handleSnapshot", () => {
     authService: { verifyCollaborationToken } as any,
     sessionManager: { getRuntimeSession, getCollabJoinEnabled } as any,
     mongodbStore: { createSnapshot, getCurrentSeq } as any,
-    editBoundCache: { check: vi.fn() } as any,
   };
 
   beforeEach(() => {

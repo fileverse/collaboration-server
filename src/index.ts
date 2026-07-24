@@ -25,7 +25,6 @@ import {
 } from "./services/owner-op-routes";
 import { createRotateSessionHandler } from "./services/rotate-route";
 import { rotationCoordinator } from "./services/rotation-coordinator";
-import { editBoundCache } from "./services/gate-epoch";
 import { createFlushHandler } from "./services/flush-route";
 import { createDeletedFileWebhookHandler } from "./services/deleted-file-webhook";
 import { createLightNode } from "@waku/sdk";
@@ -110,7 +109,7 @@ class CollaborationServer {
     );
     this.app.post(
       "/documents/:documentId/evict-edit-actors",
-      createEvictEditActorsHandler({ authService, sessionManager, editBoundCache, mongodbStore }, this.io)
+      createEvictEditActorsHandler({ authService, sessionManager, mongodbStore }, this.io)
     );
     this.app.post(
       "/workspaces/:portalAddress/evict-member",
@@ -188,12 +187,6 @@ class CollaborationServer {
       if (!config.gate.did) {
         console.warn(
           "[startup] GATE_DID is not set — GP (private/group) live editing is DISABLED; only owner/workspace/public rails admit writes."
-        );
-      } else if (!config.gate.url) {
-        // GATE_DID without GATE_URL: verifyEditUcan admits GP joins but the edit-bound cache
-        // can never reach the gate, so every revocation (demote/revoke) is a permanent silent no-op.
-        throw new Error(
-          "[startup] GATE_DID is set but GATE_URL is not — GP edit revocation would never take effect. Set GATE_URL to the gate origin, or unset GATE_DID to disable GP editing."
         );
       }
 

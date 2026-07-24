@@ -456,23 +456,21 @@ describe("createEvictWorkspaceMemberHandler", () => {
 });
 
 describe("createEvictEditActorsHandler", () => {
-  let deps: any, io: any, editBoundCache: any;
+  let deps: any, io: any;
   beforeEach(() => {
     vi.clearAllMocks();
-    editBoundCache = { evict: vi.fn() };
     deps = {
       authService: { verifyOwnerOp: vi.fn() },
       sessionManager: {
         getSession: vi.fn().mockResolvedValue({ sessionDid: "s", ownerDid: "od", ownerIdentityDid: "oid" }),
         getNonTerminatedSessionsForDocument: vi.fn().mockResolvedValue([{ sessionDid: "s" }]),
       },
-      editBoundCache,
       mongodbStore: { setMinEditEpoch: vi.fn() },
     };
     io = { in: vi.fn(() => ({ fetchSockets: vi.fn().mockResolvedValue([]) })) };
   });
 
-  it("busts the cache and disconnects ONLY matching gp-actor sockets", async () => {
+  it("disconnects ONLY matching gp-actor sockets", async () => {
     deps.authService.verifyOwnerOp.mockResolvedValue(true);
     const target: any = { data: { role: "editor", railKind: "gp-actor", actorHandle: "h1" }, disconnect: vi.fn() };
     const otherActor: any = { data: { role: "editor", railKind: "gp-actor", actorHandle: "h2" }, disconnect: vi.fn() };
@@ -483,7 +481,6 @@ describe("createEvictEditActorsHandler", () => {
     await createEvictEditActorsHandler(deps, io)(
       { params: { documentId: "doc-1" }, body: { sessionDid: "s", handles: ["h1"] } } as any, r
     );
-    expect(editBoundCache.evict).toHaveBeenCalledWith("doc-1", ["h1"]);
     expect(target.disconnect).toHaveBeenCalledWith(true);
     expect(otherActor.disconnect).not.toHaveBeenCalled();
     expect(ws.disconnect).not.toHaveBeenCalled();
@@ -523,13 +520,12 @@ describe("createEvictEditActorsHandler", () => {
     expect(r.json).toHaveBeenCalledWith({ ok: true, evicted: 0, dropped: 0 });
   });
 
-  it("403s a non-owner without touching cache or sockets", async () => {
+  it("403s a non-owner without touching sockets", async () => {
     deps.authService.verifyOwnerOp.mockResolvedValue(false);
     const r = res();
     await createEvictEditActorsHandler(deps, io)(
       { params: { documentId: "doc-1" }, body: { sessionDid: "s", handles: ["h1"] } } as any, r
     );
-    expect(editBoundCache.evict).not.toHaveBeenCalled();
     expect(io.in).not.toHaveBeenCalled();
     expect(r.status).toHaveBeenCalledWith(403);
   });
@@ -552,14 +548,13 @@ describe("createEvictEditActorsHandler", () => {
     expect(deps.mongodbStore.setMinEditEpoch).not.toHaveBeenCalled();
   });
 
-  it("does not stamp minEditEpoch when gateEpoch is NaN, but the evict still proceeds", async () => {
+  it("does not stamp minEditEpoch when gateEpoch is NaN, but the drop still proceeds", async () => {
     deps.authService.verifyOwnerOp.mockResolvedValue(true);
     const r = res();
     await createEvictEditActorsHandler(deps, io)(
       { params: { documentId: "doc-1" }, body: { sessionDid: "s", handles: ["h1"], gateEpoch: NaN } } as any, r
     );
     expect(deps.mongodbStore.setMinEditEpoch).not.toHaveBeenCalled();
-    expect(editBoundCache.evict).toHaveBeenCalledWith("doc-1", ["h1"]);
     expect(r.status).toHaveBeenCalledWith(200);
   });
 
