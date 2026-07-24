@@ -29,11 +29,10 @@ export function createFlushHandler(deps: FlushDeps) {
       return;
     }
 
-    // H3(a) belt: when the beacon carries a gp-actor editUcan (the same value sent at JOIN), re-run
-    // JOIN's offline admission here so a below-floor/revoked claim is refused on the durable-write
-    // path too — covering the rotation-deferred and pre-cutover window. Honest-client defense in
-    // depth; the hard gate stays rotation + session-termination. Rails without a claim (public/
-    // workspace/owner) skip it, mirroring JOIN's `if (args.editUcan)` branch.
+    // When the beacon carries a gp-actor editUcan (the same value sent at JOIN), re-run JOIN's
+    // offline admission here so a below-floor or revoked claim is refused on the durable-write
+    // path too. Rails without a claim (public/workspace/owner) skip it, mirroring JOIN's
+    // `if (args.editUcan)` branch.
     if (typeof editUcan === "string" && editUcan) {
       const admission = await resolveEditAdmission(deps, editUcan, documentId);
       if (!admission.ok) {

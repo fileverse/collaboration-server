@@ -475,7 +475,7 @@ export async function handleAuth(
         if (args.editUcan) {
           // Offline gp-actor admission: valid editUcan + epoch at/above the minEditEpoch floor.
           // No gate poll — rotation bumps the floor and terminates the old session, confining a
-          // removed actor. See docs/architecture/edit-permission.md §6.2.
+          // removed actor.
           const admission = await resolveEditAdmission(deps, args.editUcan, documentId);
           if (admission.ok) {
             rail = "gp";
@@ -623,8 +623,7 @@ export type EditAdmissionDeps = {
 
 // Offline per-actor edit admission: a valid gate-signed editUcan whose epoch is at/above the
 // doc's minEditEpoch floor. No gate network call — rotation bumps the floor and terminates the
-// old session, so a removed actor's stale editUcan is rejected offline. See
-// docs/architecture/edit-permission.md §6.2 (epoch-floor admission).
+// old session, so a removed actor's stale editUcan is rejected offline.
 export async function resolveEditAdmission(
   deps: EditAdmissionDeps,
   editUcan: string,
@@ -1063,9 +1062,9 @@ export async function handleSnapshot(
       });
     }
 
-    // floorSeq is client-asserted; an honest client's floor comes from served rows, so it
-    // can never exceed the document's seq counter. A floor ahead of the counter would hide
-    // every update row up to it from hydration — reject rather than store a hiding floor.
+    // floorSeq is client-supplied and derived from served rows, so it can never legitimately
+    // exceed the document's seq counter. A floor ahead of the counter would hide every update
+    // row up to it from hydration — reject rather than store a hiding floor.
     const currentSeq = await mongodbStore.getCurrentSeq(documentId);
     if (floorSeq > currentSeq) {
       return callback({

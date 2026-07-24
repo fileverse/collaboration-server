@@ -51,9 +51,9 @@ describe("POST /flush", () => {
     expect(r.status).toHaveBeenCalledWith(200);
   });
 
-  // H3(a) belt: when the beacon carries a gp-actor editUcan, the durable-write path re-runs the
-  // same offline admission JOIN does — a revoked/demoted claim (below the floor, or no longer an
-  // actor claim) is refused here too, covering the rotation-deferred / pre-cutover window.
+  // When the beacon carries a gp-actor editUcan, the durable-write path re-runs the same offline
+  // admission JOIN does — a revoked/demoted claim (below the floor, or no longer an actor claim)
+  // is refused here too.
   it("403s a gp-actor editUcan whose epoch is below the doc's minEditEpoch floor", async () => {
     deps.authService.verifyCollaborationToken.mockResolvedValue(true);
     deps.authService.verifyEditUcan.mockResolvedValue({ kind: "actor", editHandle: "h1", epoch: 1 });
