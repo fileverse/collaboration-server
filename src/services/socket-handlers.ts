@@ -614,12 +614,19 @@ export async function handleAuth(
   }
 }
 
+// The slice of deps offline edit-admission needs. Narrower than SocketHandlerDeps so the /flush
+// route can reuse resolveEditAdmission without carrying the full socket-handler dependency set.
+export type EditAdmissionDeps = {
+  authService: Pick<SocketHandlerDeps["authService"], "verifyEditUcan">;
+  mongodbStore: Pick<SocketHandlerDeps["mongodbStore"], "getMinEditEpoch">;
+};
+
 // Offline per-actor edit admission: a valid gate-signed editUcan whose epoch is at/above the
 // doc's minEditEpoch floor. No gate network call — rotation bumps the floor and terminates the
 // old session, so a removed actor's stale editUcan is rejected offline. See
 // docs/architecture/edit-permission.md §6.2 (epoch-floor admission).
 export async function resolveEditAdmission(
-  deps: Pick<SocketHandlerDeps, "authService" | "mongodbStore">,
+  deps: EditAdmissionDeps,
   editUcan: string,
   documentId: string
 ): Promise<{ ok: true; editHandle: string; epoch: number } | { ok: false }> {
