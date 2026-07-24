@@ -16,8 +16,10 @@ describe("handleMirrorSnapshot", () => {
     vi.clearAllMocks();
     deps = {
       sessionManager: { getRuntimeSession: vi.fn().mockResolvedValue({ sessionDid: "sess-1" }) },
-      mongodbStore: { upsertMirrorSnapshot: vi.fn().mockResolvedValue(undefined) },
-      editBoundCache: { check: vi.fn() },
+      mongodbStore: {
+        upsertMirrorSnapshot: vi.fn().mockResolvedValue(undefined),
+        getMinEditEpoch: vi.fn().mockResolvedValue(0),
+      },
     };
   });
 
@@ -58,9 +60,10 @@ describe("handleMirrorSnapshot", () => {
   });
 
   it("disconnects the socket after the EDIT_REVOKED 403", async () => {
-    deps.editBoundCache.check.mockResolvedValue("unbound");
+    // A rotation advanced the floor past this socket's admitted editEpoch → not admitted.
+    deps.mongodbStore.getMinEditEpoch.mockResolvedValue(2);
     const cb = vi.fn();
-    const s = socket({ role: "editor", rail: "gp", railKind: "gp-actor", actorHandle: "h1" });
+    const s = socket({ role: "editor", rail: "gp", railKind: "gp-actor", editEpoch: 1 });
     await handleMirrorSnapshot(deps, s, { data: "ct", fileKeyEpoch: 1 } as any, cb);
     expect(cb).toHaveBeenCalledWith(
       expect.objectContaining({ statusCode: 403, errorCode: ErrorCode.EDIT_REVOKED })
@@ -70,9 +73,9 @@ describe("handleMirrorSnapshot", () => {
   });
 
   it("does not disconnect an admitted editor", async () => {
-    deps.editBoundCache.check.mockResolvedValue("bound");
+    deps.mongodbStore.getMinEditEpoch.mockResolvedValue(2);
     const cb = vi.fn();
-    const s = socket({ role: "editor", rail: "gp", railKind: "gp-actor", actorHandle: "h1" });
+    const s = socket({ role: "editor", rail: "gp", railKind: "gp-actor", editEpoch: 2 });
     await handleMirrorSnapshot(deps, s, { data: "ct", fileKeyEpoch: 1 } as any, cb);
     expect((s as any).disconnect).not.toHaveBeenCalled();
     expect(deps.mongodbStore.upsertMirrorSnapshot).toHaveBeenCalled();

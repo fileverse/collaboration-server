@@ -27,7 +27,6 @@ import { requireAuth } from "./auth-middleware";
 import { authService } from "./auth";
 import { mongodbStore, SessionTerminatedError } from "./mongodb-store";
 import { sessionManager } from "./session-manager";
-import { editBoundCache } from "./gate-epoch";
 import { rotationCoordinator } from "./rotation-coordinator";
 import { Hex, isAddress } from "viem";
 import type { SocketHandlerDeps } from "./socket-handlers.deps";
@@ -37,7 +36,6 @@ const defaultDeps: SocketHandlerDeps = {
   authService,
   sessionManager,
   mongodbStore,
-  editBoundCache,
 };
 
 function validateHexAddress(address: string | undefined, fieldName: string): address is Hex {
@@ -163,6 +161,7 @@ export async function handleAuth(
     let rail: "gp" | "workspace" | "public" | undefined = undefined;
     let railKind: "gp-actor" | "workspace" | "public" | undefined = undefined;
     let actorHandle: string | undefined = undefined;
+    let admittedEditEpoch: number | undefined = undefined;
     let provenIdentityDid: string | null = null;
 
     // joinOnly is strictly privilege-reducing: never create or bind a room on behalf of
@@ -474,32 +473,15 @@ export async function handleAuth(
       // any later write attempt on a private doc — the headless read path never calls it.
       if (storedAppType === "ddoc" && role === "editor" && !(args.joinOnly === true && ownerVerifiedPreCap)) {
         if (args.editUcan) {
-          const gp = await authService.verifyEditUcan(args.editUcan, documentId);
-          if (gp?.kind === "actor") {
-            const minEpoch = await deps.mongodbStore.getMinEditEpoch(documentId);
-            if (gp.epoch < minEpoch) {
-              return callback({
-                status: false,
-                statusCode: 403,
-                error: "Edit access is not authorized for this document",
-                errorCode: ErrorCode.JOIN_DISABLED,
-              });
-            }
-            // Per-actor positive-state admission (keyed on editHandle = hash(C, docId)); fail-closed on
-            // cold/unbound. See docs/architecture/gp-semaphore.md.
-            const state = await deps.editBoundCache.check(documentId, gp.editHandle);
-            if (state === "bound" || state === "stale-bound") {
-              rail = "gp";
-              railKind = "gp-actor";
-              actorHandle = gp.editHandle;
-            } else {
-              return callback({
-                status: false,
-                statusCode: 403,
-                error: "Edit access is not authorized for this document",
-                errorCode: ErrorCode.JOIN_DISABLED,
-              });
-            }
+          // Offline gp-actor admission: valid editUcan + epoch at/above the minEditEpoch floor.
+          // No gate poll — rotation bumps the floor and terminates the old session, confining a
+          // removed actor. See docs/architecture/edit-permission.md §6.2.
+          const admission = await resolveEditAdmission(deps, args.editUcan, documentId);
+          if (admission.ok) {
+            rail = "gp";
+            railKind = "gp-actor";
+            actorHandle = admission.editHandle;
+            admittedEditEpoch = admission.epoch;
           } else {
             return callback({
               status: false,
@@ -573,6 +555,7 @@ export async function handleAuth(
     socket.data.railKind = railKind;
     socket.data.actorHandle = actorHandle;
     socket.data.actorIdentityDid = provenIdentityDid ?? undefined;
+    socket.data.editEpoch = admittedEditEpoch;
 
     // Join the Socket.IO room
     const roomName = getRoomName(documentId, sessionDid);
@@ -631,15 +614,31 @@ export async function handleAuth(
   }
 }
 
-// Live per-actor edit-admission re-check against the ADMITTED context stamped at JOIN.
-// Fail-closed for the actor rail (cold/unbound → reject). See docs/architecture/gp-semaphore.md.
+// Offline per-actor edit admission: a valid gate-signed editUcan whose epoch is at/above the
+// doc's minEditEpoch floor. No gate network call — rotation bumps the floor and terminates the
+// old session, so a removed actor's stale editUcan is rejected offline. See
+// docs/architecture/edit-permission.md §6.2 (epoch-floor admission).
+export async function resolveEditAdmission(
+  deps: Pick<SocketHandlerDeps, "authService" | "mongodbStore">,
+  editUcan: string,
+  documentId: string
+): Promise<{ ok: true; editHandle: string; epoch: number } | { ok: false }> {
+  const gp = await deps.authService.verifyEditUcan(editUcan, documentId);
+  if (gp?.kind !== "actor") return { ok: false };
+  const minEpoch = await deps.mongodbStore.getMinEditEpoch(documentId);
+  if (gp.epoch < minEpoch) return { ok: false };
+  return { ok: true, editHandle: gp.editHandle, epoch: gp.epoch };
+}
+
+// Live per-actor edit-admission re-check against the ADMITTED context stamped at JOIN. For the
+// gp-actor rail this is the offline epoch-floor: a rotation that advanced minEditEpoch strands the
+// stale socket (its admitted editEpoch < floor); session-termination also confines it. No gate poll.
 export async function isStillAdmitted(socket: AppSocket, deps: SocketHandlerDeps): Promise<boolean> {
-  const { rail, railKind, documentId, sessionDid, actorHandle } = socket.data;
+  const { rail, railKind, documentId, sessionDid, editEpoch } = socket.data;
   if (!documentId || !sessionDid) return false;
   if (railKind === "gp-actor") {
-    if (!actorHandle) return false;
-    const s = await deps.editBoundCache.check(documentId, actorHandle);
-    return s === "bound" || s === "stale-bound";
+    if (editEpoch === undefined) return false;
+    return editEpoch >= (await deps.mongodbStore.getMinEditEpoch(documentId));
   }
   if (rail === "workspace") return (await deps.sessionManager.getWorkspaceEditEnabled(documentId, sessionDid)) === true;
   return (await deps.sessionManager.getCollabJoinEnabled(documentId, sessionDid)) === true;

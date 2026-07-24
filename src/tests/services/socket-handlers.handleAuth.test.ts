@@ -80,7 +80,6 @@ describe("handleAuth", () => {
     authService: fakeAuthService as any,
     sessionManager: fakeSessionManager as any,
     mongodbStore: fakeMongoDBStore,
-    editBoundCache: { check: vi.fn() } as any,
   };
 
   beforeEach(() => {
@@ -1746,7 +1745,6 @@ describe("handleAuth — edit-claim admission (existing session, non-owner)", ()
     authService: fakeAuthService as any,
     sessionManager: fakeSessionManager as any,
     mongodbStore: fakeMongoDBStore,
-    editBoundCache: { check: vi.fn() } as any,
   };
 
   beforeEach(() => {
@@ -1839,7 +1837,6 @@ describe("handleAuth — edit-claim admission (existing session, non-owner)", ()
       expect(cb).toHaveBeenCalledWith(
         expect.objectContaining({ status: false, statusCode: 403, errorCode: ErrorCode.JOIN_DISABLED })
       );
-      expect(deps.editBoundCache.check).not.toHaveBeenCalled();
       expect(socket.data.rail).toBeUndefined();
     });
 
@@ -1847,7 +1844,6 @@ describe("handleAuth — edit-claim admission (existing session, non-owner)", ()
       existingSessionSetup();
       fakeAuthService.verifyEditUcan.mockResolvedValue({ kind: "actor", editHandle: "h1", epoch: 2 });
       fakeMongoDBStore.getMinEditEpoch.mockResolvedValue(2);
-      (deps.editBoundCache.check as ReturnType<typeof vi.fn>).mockResolvedValue("bound");
       const socket = createFakeSocket();
       const cb = vi.fn();
       await handleAuth(deps, createFakeIO(), socket, baseArgs({ editUcan: "gp-token" }), cb);
@@ -1855,6 +1851,7 @@ describe("handleAuth — edit-claim admission (existing session, non-owner)", ()
       expect(socket.data.rail).toBe("gp");
       expect(socket.data.railKind).toBe("gp-actor");
       expect(socket.data.actorHandle).toBe("h1");
+      expect(socket.data.editEpoch).toBe(2);
     });
   });
 
