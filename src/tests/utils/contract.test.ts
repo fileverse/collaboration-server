@@ -85,3 +85,55 @@ describe("getPortalOwnerAddress", () => {
     );
   });
 });
+
+describe("getOwnerDid negative caching", () => {
+  beforeEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it("caches a confirmed non-collaborator (empty result) so repeat lookups skip the RPC", async () => {
+    const spy = vi.spyOn(contract.publicClient, "readContract").mockResolvedValue("" as any);
+    const portal = "0x9a11000000000000000000000000000000000001" as any;
+    const addr = "0x9a11000000000000000000000000000000000002" as any;
+
+    const first = await contract.getOwnerDid(portal, addr);
+    const second = await contract.getOwnerDid(portal, addr);
+
+    expect(first).toBe("");
+    expect(second).toBe("");
+    // One miss reads the chain (legacy + v2 = 2 reads); the cached "" serves the rest.
+    expect(spy).toHaveBeenCalledTimes(2);
+  });
+
+  it("does NOT cache an RPC failure — the next lookup retries the chain", async () => {
+    const spy = vi
+      .spyOn(contract.publicClient, "readContract")
+      .mockRejectedValue(new Error("rate limited"));
+    const portal = "0x9b22000000000000000000000000000000000003" as any;
+    const addr = "0x9b22000000000000000000000000000000000004" as any;
+
+    const first = await contract.getOwnerDid(portal, addr);
+    const second = await contract.getOwnerDid(portal, addr);
+
+    expect(first).toBeNull();
+    expect(second).toBeNull();
+    // A caught read returns null (indistinguishable from a transient blip), so it
+    // must never be cached — both misses re-read the chain (2 reads each).
+    expect(spy).toHaveBeenCalledTimes(4);
+  });
+
+  it("refreshOwnerDid also does NOT persist a null — the recheck path must not lock the owner out", async () => {
+    const spy = vi
+      .spyOn(contract.publicClient, "readContract")
+      .mockRejectedValue(new Error("rate limited"));
+    const portal = "0x9c33000000000000000000000000000000000005" as any;
+    const addr = "0x9c33000000000000000000000000000000000006" as any;
+
+    const refreshed = await contract.refreshOwnerDid(portal, addr);
+    expect(refreshed).toBeNull();
+    // The null was not cached, so a follow-up getOwnerDid re-reads the chain
+    // (recovers as soon as the RPC heals) instead of serving a stale null.
+    await contract.getOwnerDid(portal, addr);
+    expect(spy).toHaveBeenCalledTimes(4);
+  });
+});
