@@ -40,4 +40,34 @@ describe("minEditEpoch store", () => {
     findById.mockReturnValue({ lean: () => Promise.resolve(null) });
     expect(await store.getMinEditEpoch("doc-x")).toBe(0);
   });
+
+  it("setEvictedHandles $max-stamps each handle under a dotted subpath (poseidon decimal keys are field-safe)", async () => {
+    findOneAndUpdate.mockResolvedValue({});
+    await store.setEvictedHandles("doc-1", ["123", "456"], 4);
+    expect(findOneAndUpdate).toHaveBeenCalledWith(
+      { _id: "doc-1" },
+      { $max: { "evictedHandles.123": 4, "evictedHandles.456": 4 } },
+      { upsert: true }
+    );
+  });
+
+  it("setEvictedHandles no-ops for an empty handle list", async () => {
+    await store.setEvictedHandles("doc-1", [], 4);
+    expect(findOneAndUpdate).not.toHaveBeenCalled();
+  });
+
+  it("getEvictedHandleEpoch returns the handle's evict epoch", async () => {
+    findById.mockReturnValue({ lean: () => Promise.resolve({ evictedHandles: { "123": 6 } }) });
+    expect(await store.getEvictedHandleEpoch("doc-1", "123")).toBe(6);
+  });
+
+  it("getEvictedHandleEpoch returns undefined for a never-evicted handle", async () => {
+    findById.mockReturnValue({ lean: () => Promise.resolve({ evictedHandles: { "123": 6 } }) });
+    expect(await store.getEvictedHandleEpoch("doc-1", "999")).toBeUndefined();
+  });
+
+  it("getEvictedHandleEpoch returns undefined when the doc has no denylist", async () => {
+    findById.mockReturnValue({ lean: () => Promise.resolve(null) });
+    expect(await store.getEvictedHandleEpoch("doc-x", "123")).toBeUndefined();
+  });
 });

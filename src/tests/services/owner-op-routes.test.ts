@@ -465,7 +465,7 @@ describe("createEvictEditActorsHandler", () => {
         getSession: vi.fn().mockResolvedValue({ sessionDid: "s", ownerDid: "od", ownerIdentityDid: "oid" }),
         getNonTerminatedSessionsForDocument: vi.fn().mockResolvedValue([{ sessionDid: "s" }]),
       },
-      mongodbStore: { setMinEditEpoch: vi.fn() },
+      mongodbStore: { setMinEditEpoch: vi.fn(), setEvictedHandles: vi.fn() },
     };
     io = { in: vi.fn(() => ({ fetchSockets: vi.fn().mockResolvedValue([]) })) };
   });
@@ -530,22 +530,24 @@ describe("createEvictEditActorsHandler", () => {
     expect(r.status).toHaveBeenCalledWith(403);
   });
 
-  it("stamps minEditEpoch when the client sends a gateEpoch", async () => {
+  it("stamps minEditEpoch and denylists the evicted handles when the client sends a gateEpoch", async () => {
     deps.authService.verifyOwnerOp.mockResolvedValue(true);
     const r = res();
     await createEvictEditActorsHandler(deps, io)(
       { params: { documentId: "doc-1" }, body: { sessionDid: "s", handles: ["h1"], gateEpoch: 4 } } as any, r
     );
     expect(deps.mongodbStore.setMinEditEpoch).toHaveBeenCalledWith("doc-1", 4);
+    expect(deps.mongodbStore.setEvictedHandles).toHaveBeenCalledWith("doc-1", ["h1"], 4);
   });
 
-  it("does not stamp minEditEpoch when gateEpoch is absent", async () => {
+  it("does not stamp minEditEpoch or denylist when gateEpoch is absent", async () => {
     deps.authService.verifyOwnerOp.mockResolvedValue(true);
     const r = res();
     await createEvictEditActorsHandler(deps, io)(
       { params: { documentId: "doc-1" }, body: { sessionDid: "s", handles: ["h1"] } } as any, r
     );
     expect(deps.mongodbStore.setMinEditEpoch).not.toHaveBeenCalled();
+    expect(deps.mongodbStore.setEvictedHandles).not.toHaveBeenCalled();
   });
 
   it("does not stamp minEditEpoch when gateEpoch is NaN, but the drop still proceeds", async () => {

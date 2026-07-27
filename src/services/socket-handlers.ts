@@ -637,19 +637,20 @@ export async function resolveEditAdmission(
 }
 
 // Live per-actor edit-admission re-check against the ADMITTED context stamped at JOIN. For the
-// gp-actor rail this is the offline epoch-floor: a rotation that advanced minEditEpoch strands the
-// stale socket (its admitted editEpoch < floor); session-termination also confines it. No gate poll.
+// gp-actor rail this is per-handle: a socket is kicked iff ITS OWN handle was evicted at an epoch
+// above the one it joined under. The doc-wide minEditEpoch floor is consulted ONLY at JOIN
+// (resolveEditAdmission) — never here, so bumping it (evict/rotation) can never kick a surviving
+// co-editor. This is the offline dual of the old per-handle edit-bound poll. No gate poll.
 export async function isStillAdmitted(socket: AppSocket, deps: SocketHandlerDeps): Promise<boolean> {
-  const { rail, railKind, documentId, sessionDid, editEpoch } = socket.data;
+  const { rail, railKind, documentId, sessionDid, editEpoch, actorHandle } = socket.data;
   if (!documentId || !sessionDid) return false;
   if (railKind === "gp-actor") {
-    if (editEpoch === undefined) return false;
-    if (editEpoch >= (await deps.mongodbStore.getMinEditEpoch(documentId))) return true;
-    // Below the floor: tolerate ONLY while a make-before-break rotation for this doc is in flight.
-    // The survivor is re-issued a fresh-epoch editUcan at cutover and must not be kicked in the gap
-    // (a kick drops it from the room, so it misses the one-shot cutover). The removed actor was
-    // already dropped by evict's targeted sweep and cannot rejoin — JOIN admission stays strict.
-    return rotationCoordinator.isActive(documentId);
+    if (editEpoch === undefined || !actorHandle) return false;
+    const evictedAt = await deps.mongodbStore.getEvictedHandleEpoch(documentId, actorHandle);
+    // Kicked only if MY handle was evicted at an epoch above my admitted one. A survivor's handle
+    // is never evicted → always admitted; a re-added actor joins at epoch >= its evict epoch →
+    // admitted. Session-termination + JOIN-floor confine the removed actor's stale editUcan.
+    return !(evictedAt !== undefined && editEpoch < evictedAt);
   }
   if (rail === "workspace") return (await deps.sessionManager.getWorkspaceEditEnabled(documentId, sessionDid)) === true;
   return (await deps.sessionManager.getCollabJoinEnabled(documentId, sessionDid)) === true;

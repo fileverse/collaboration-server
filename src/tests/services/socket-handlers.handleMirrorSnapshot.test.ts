@@ -18,7 +18,7 @@ describe("handleMirrorSnapshot", () => {
       sessionManager: { getRuntimeSession: vi.fn().mockResolvedValue({ sessionDid: "sess-1" }) },
       mongodbStore: {
         upsertMirrorSnapshot: vi.fn().mockResolvedValue(undefined),
-        getMinEditEpoch: vi.fn().mockResolvedValue(0),
+        getEvictedHandleEpoch: vi.fn().mockResolvedValue(undefined),
       },
     };
   });
@@ -60,10 +60,10 @@ describe("handleMirrorSnapshot", () => {
   });
 
   it("disconnects the socket after the EDIT_REVOKED 403", async () => {
-    // A rotation advanced the floor past this socket's admitted editEpoch → not admitted.
-    deps.mongodbStore.getMinEditEpoch.mockResolvedValue(2);
+    // This socket's own handle was evicted at an epoch above its admitted one → not admitted.
+    deps.mongodbStore.getEvictedHandleEpoch.mockResolvedValue(2);
     const cb = vi.fn();
-    const s = socket({ role: "editor", rail: "gp", railKind: "gp-actor", editEpoch: 1 });
+    const s = socket({ role: "editor", rail: "gp", railKind: "gp-actor", editEpoch: 1, actorHandle: "removed-handle" });
     await handleMirrorSnapshot(deps, s, { data: "ct", fileKeyEpoch: 1 } as any, cb);
     expect(cb).toHaveBeenCalledWith(
       expect.objectContaining({ statusCode: 403, errorCode: ErrorCode.EDIT_REVOKED })
@@ -72,10 +72,10 @@ describe("handleMirrorSnapshot", () => {
     expect(deps.mongodbStore.upsertMirrorSnapshot).not.toHaveBeenCalled();
   });
 
-  it("does not disconnect an admitted editor", async () => {
-    deps.mongodbStore.getMinEditEpoch.mockResolvedValue(2);
+  it("does not disconnect a surviving editor whose handle was not evicted", async () => {
+    // Default mock: getEvictedHandleEpoch → undefined. Even below any doc-wide floor, a survivor stays.
     const cb = vi.fn();
-    const s = socket({ role: "editor", rail: "gp", railKind: "gp-actor", editEpoch: 2 });
+    const s = socket({ role: "editor", rail: "gp", railKind: "gp-actor", editEpoch: 1, actorHandle: "survivor-handle" });
     await handleMirrorSnapshot(deps, s, { data: "ct", fileKeyEpoch: 1 } as any, cb);
     expect((s as any).disconnect).not.toHaveBeenCalled();
     expect(deps.mongodbStore.upsertMirrorSnapshot).toHaveBeenCalled();

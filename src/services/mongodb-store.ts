@@ -339,6 +339,27 @@ export class MongoDBStore {
     return row?.minEditEpoch ?? 0;
   }
 
+  // Record the epoch each evicted handle was removed at (monotonic $max, so a re-eviction only
+  // raises it). Consulted by the LIVE per-actor re-check — see isStillAdmitted.
+  async setEvictedHandles(documentId: string, handles: string[], epoch: number): Promise<void> {
+    const update: Record<string, number> = {};
+    for (const h of handles) update[`evictedHandles.${h}`] = epoch;
+    if (Object.keys(update).length === 0) return;
+    await DocumentEditEpochModel.findOneAndUpdate(
+      { _id: documentId },
+      { $max: update },
+      { upsert: true }
+    );
+  }
+
+  // The epoch a specific handle was evicted at, or undefined if it was never evicted. The LIVE
+  // re-check kicks a socket iff its admitted editEpoch is below this — never a non-evicted handle.
+  async getEvictedHandleEpoch(documentId: string, handle: string): Promise<number | undefined> {
+    const row: any = await DocumentEditEpochModel.findById(documentId).lean();
+    const v = row?.evictedHandles?.[handle];
+    return typeof v === "number" ? v : undefined;
+  }
+
   // Discovery: docs bound to the proven owner (identity DID or portal owner DID) — recovery for a wiped device.
   async listDocumentsForOwner(
     by: { ownerIdentityDid?: string; ownerDid?: string }

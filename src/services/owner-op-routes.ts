@@ -150,7 +150,7 @@ export function createWorkspaceEditTierHandler(deps: OwnerOpDeps, io: AppServer)
  *  matching live sockets across every session room of the doc. Co-editors with other handles
  *  are untouched. The offline minEditEpoch floor (plus rotation) supersedes the removed cache. */
 export function createEvictEditActorsHandler(
-  deps: OwnerOpDeps & { mongodbStore: Pick<MongoDBStore, "setMinEditEpoch"> },
+  deps: OwnerOpDeps & { mongodbStore: Pick<MongoDBStore, "setMinEditEpoch" | "setEvictedHandles"> },
   io: AppServer
 ) {
   return async (req: Request, res: Response): Promise<void> => {
@@ -176,14 +176,17 @@ export function createEvictEditActorsHandler(
       return;
     }
 
+    const list = Array.isArray(handles) ? handles.filter((h) => typeof h === "string") : [];
+
     // Stamp the floor even when rotation is deferred, so a stale-UCAN rejoin is blocked
     // immediately rather than waiting on the next epoch bump to propagate. gateEpoch is
     // optional here — an invalid value is silently skipped rather than failing the evict.
     if (Number.isInteger(req.body?.gateEpoch) && req.body.gateEpoch >= 0) {
       await deps.mongodbStore.setMinEditEpoch(documentId, req.body.gateEpoch);
+      // Denylist the evicted handles at this epoch so the LIVE per-actor re-check kicks any of
+      // their sockets the targeted sweep below missed — without touching surviving co-editors.
+      if (list.length > 0) await deps.mongodbStore.setEvictedHandles(documentId, list, req.body.gateEpoch);
     }
-
-    const list = Array.isArray(handles) ? handles.filter((h) => typeof h === "string") : [];
 
     let dropped = 0;
     if (list.length > 0) {

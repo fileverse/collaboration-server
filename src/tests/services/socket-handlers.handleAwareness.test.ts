@@ -37,7 +37,7 @@ function createDeps() {
       getWorkspaceEditEnabled: vi.fn().mockResolvedValue(true),
       getCollabJoinEnabled: vi.fn().mockResolvedValue(true),
     } as any,
-    mongodbStore: { getMinEditEpoch: vi.fn().mockResolvedValue(0) } as any,
+    mongodbStore: { getEvictedHandleEpoch: vi.fn().mockResolvedValue(undefined) } as any,
   };
 }
 
@@ -102,8 +102,8 @@ describe('handleAwareness', () => {
 
   it("disconnects a revoked gp-actor editor on awareness traffic", async () => {
     const deps = createDeps();
-    deps.mongodbStore.getMinEditEpoch.mockResolvedValue(2); // floor advanced past the socket's editEpoch
-    const socket = createFakeSocket(undefined, { role: "editor", rail: "gp", railKind: "gp-actor", editEpoch: 1 });
+    deps.mongodbStore.getEvictedHandleEpoch.mockResolvedValue(2); // this handle was evicted above its epoch
+    const socket = createFakeSocket(undefined, { role: "editor", rail: "gp", railKind: "gp-actor", editEpoch: 1, actorHandle: "removed-handle" });
     await handleAwareness(deps as any, createFakeIO(), socket, { documentId: "test-document-id", data: "x" } as any);
     await flush();
     expect((socket as any).to).toHaveBeenCalled(); // broadcast always goes out
@@ -115,22 +115,22 @@ describe('handleAwareness', () => {
     const socket = createFakeSocket(undefined, { role: "owner" });
     await handleAwareness(deps as any, createFakeIO(), socket, { documentId: "test-document-id", data: "x" } as any);
     await flush();
-    expect(deps.mongodbStore.getMinEditEpoch).not.toHaveBeenCalled();
+    expect(deps.mongodbStore.getEvictedHandleEpoch).not.toHaveBeenCalled();
     expect((socket as any).disconnect).not.toHaveBeenCalled();
   });
 
   it("throttles: a second call within the interval does not re-check", async () => {
     const deps = createDeps();
-    const socket = createFakeSocket(undefined, { role: "editor", rail: "gp", railKind: "gp-actor", editEpoch: 2 });
+    const socket = createFakeSocket(undefined, { role: "editor", rail: "gp", railKind: "gp-actor", editEpoch: 2, actorHandle: "h1" });
     await handleAwareness(deps as any, createFakeIO(), socket, { documentId: "test-document-id", data: "x" } as any);
     await handleAwareness(deps as any, createFakeIO(), socket, { documentId: "test-document-id", data: "x" } as any);
     await flush();
-    expect(deps.mongodbStore.getMinEditEpoch).toHaveBeenCalledTimes(1);
+    expect(deps.mongodbStore.getEvictedHandleEpoch).toHaveBeenCalledTimes(1);
   });
 
-  it("leaves an admitted editor connected", async () => {
+  it("leaves a surviving editor (handle not evicted) connected", async () => {
     const deps = createDeps();
-    const socket = createFakeSocket(undefined, { role: "editor", rail: "gp", railKind: "gp-actor", editEpoch: 2 });
+    const socket = createFakeSocket(undefined, { role: "editor", rail: "gp", railKind: "gp-actor", editEpoch: 2, actorHandle: "survivor-handle" });
     await handleAwareness(deps as any, createFakeIO(), socket, { documentId: "test-document-id", data: "x" } as any);
     await flush();
     expect((socket as any).disconnect).not.toHaveBeenCalled();
