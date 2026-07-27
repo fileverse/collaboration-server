@@ -1,31 +1,33 @@
-# RTC Node (with Waku Support)
+# RTC Node (and Bring Your Own Server)
 
-This repo covers how Real-time Collaboration(RTC) with end-to-end encryption is achieved via the Fileverse middleware on [ddocs.new](ddocs.new). Our approach offers both privacy and security via client-side encryption and by offering decentralized ways of enabling RTC on one's own documents.
+This repo covers how Real-time Collaboration (RTC) with end-to-end encryption is achieved via the Fileverse middleware on [ddocs.new](https://ddocs.new), [dsheets.new](https://dsheets.new) and Fileverse Workspace. Our approach offers both privacy and security via client-side encryption and by offering decentralized ways of enabling private multiplayer collaboration for one's own documents, spreadsheets and workspaces.
 
-**Tl;dr** By default, RTC v0.2 on dDocs is facilitated by a stateless web-socket server (v0.1 was WebRTC) that deletes all the encrypted data it stores about a RTC session once the latest state of the document is pushed on IPFS and added to the document creator’s personal onchain content registry.
-All data touching the stateless web-socket server is stored only ephemerally and is first encrypted client-side.
+**Tl;dr** By default, RTC v0.2 is facilitated by a stateless web-socket server (v0.1 was WebRTC) that deletes all the encrypted data it stores about a RTC session once the latest state of the file is pushed on IPFS and added to the creator’s personal onchain content registry. All data touching the stateless web-socket server is stored only ephemerally and is first encrypted client-side.
 
-**Update:** The server has since evolved from the stateless relay described above into a durable collaboration backend. Encrypted document updates are now persisted instead of held only in memory, so an editing session survives everyone going offline and the latest state of a document can always be recovered from the server — while everything stored remains encrypted client-side, so the server still cannot read any content. The server also now enforces who may write: before accepting edits it verifies that the connecting user was granted edit access to that document, and when access is revoked the affected user is disconnected and the remaining editors move to a fresh room key. Presence (who is currently in a document) is tracked server-side as well, and long sessions are periodically compacted into snapshots to keep rooms small and fast to load.
+**Update:** RTC Node has improved from the stateless relay described above into a durable collaboration backend. Encrypted file updates are now persisted instead of held only in memory, an editing session survives everyone going offline and the latest state of a file can always be recovered from the server, while everything stored remains encrypted client-side. The server cannot read any content. The server also enforces edit access permissions: to be admitted as an editor, a collaborator first proves to the access gate (a separate service, hosted in the [voprf-server](https://github.com/fileverse/voprf-server) repo) that they were granted edit access on that file, using a [Semaphore](https://semaphore.pse.dev) Zero-Knowledge Proof; the gate then mints a signed edit credential (a UCAN), and this server verifies that credential against the gate's pinned DID before accepting any edits. When access is revoked the affected peer is disconnected and the remaining editors move to a new room key. Presence (who is currently in a file session) is server-side as well, and long sessions are periodically compacted into snapshots to keep rooms small and fast to load.
 
 Self-hosting and Decentralization:
-- Bring your own Server: RTC on ddocs.new can also work by self-hosting your own web-socket server and enabling your collaboration session through it.
-- Decentralisation explorations: People using dDocs can also turn on the Waku servers discovery feature, which lets them discover and connect to community-hosted servers for RTC via Waku. This feature is still in early Alpha and highly experimental :warning:. Please use at your own risk. Thank you team Waku and Vàclav san for all the insights in helping us add this first version on dDocs! For the waku enabled version check this branch: feat/waku
+
+- Bring Your Own Server: RTC on ddocs.new and Fileverse Workspace can also work by self-hosting your own web-socket server and enabling your collaboration session through it.
+- Decentralisation explorations: People using ddocs can also turn on the Waku servers discovery feature, which lets them discover and connect to community-hosted servers for RTC via Waku. This feature is still in early Alpha and highly experimental. Please use at your own risk. Thank you team Waku and Vàclav san for all the insights in helping us add this first version on ddocs! For the waku enabled version check this branch: feat/waku.
 
 This repo was audited by [Dédalo](https://www.dedalo.io) in Q3 2025 as part of a broader security assessment of dDocs, with this collaboration server explicitly in scope. The full report (September 2025, revised October 2025) is available here: [Dédalo audit report](./audits/dedalo-ddocs-audit-2025-q3.pdf). Note that the audit covered the stateless relay described at the top of this README — the durable-edit and edit-access changes described in the update above landed after the audit.
 
 ## Features
 
-- ✅ **Real-time Collaboration**: WebSocket-based communication for instant updates
+- ✅ **Real-time Collaboration**: Socket.IO-based communication for instant updates
 - ✅ **Y.js Integration**: CRDT-based conflict resolution for collaborative editing
 - ✅ **Awareness Protocol**: Real-time cursor and selection sharing
 - ✅ **UCAN Authentication**: Decentralized authentication using cryptographic capabilities
-- ✅ **In-Memory Storage**: Fast, ephemeral storage for development and testing
-- ✅ **Room Management**: Multi-user document rooms with role-based access
+- ✅ **Edit-Access Enforcement**: Writes require an edit credential minted by the access gate after a Semaphore zero-knowledge proof
+- ✅ **Durable Storage**: Encrypted updates and snapshots persisted in MongoDB, so sessions survive everyone going offline
+- ✅ **Room Management & Presence**: Multi-user rooms with a server-side roster, revocation kicks, and room-key rotation
 - ✅ **TypeScript**: Full type safety and excellent developer experience
 
 ## Quick Start
 
 #### Prerequisites
+
 - Redis server should be running and listening on port `:6379`
 - Create a configuration file which will contain the environment variables.
   - Run `cp env.example .env`
@@ -43,6 +45,7 @@ This repo was audited by [Dédalo](https://www.dedalo.io) in Q3 2025 as part of 
   - Here's a guide on how to generate values for some of the env variables.
     - `SERVER_DID`
       - Run the below script `node <filename>.js`
+
         ```js
         const UCAN = require("@ucans/ucans");
 
@@ -54,6 +57,7 @@ This repo was audited by [Dédalo](https://www.dedalo.io) in Q3 2025 as part of 
           console.log("Generated DID from private key:", did);
         })();
         ```
+
     - `RPC_URL`
       - Create an account on [QuickNode](https://www.quicknode.com/).
       - Sign in to create an endpoint (this should appear under Getting started)
@@ -65,6 +69,7 @@ This repo was audited by [Dédalo](https://www.dedalo.io) in Q3 2025 as part of 
       - For production, this should be the url of your web-socket server `wss://your-domain/path`
 
 #### Next steps
+
 - Clone the repository and `cd` into it
   ```bash
   git clone https://github.com/fileverse/collaboration-server.git && cd collaboration-server`
@@ -73,11 +78,12 @@ This repo was audited by [Dédalo](https://www.dedalo.io) in Q3 2025 as part of 
   ```bash
   npm install
   ```
-- To start the development server run 
+- To start the development server run
   ```bash
   npm run dev
   ```
 - For production,
+
   ```bash
   # Build the project
   npm run build
@@ -85,7 +91,6 @@ This repo was audited by [Dédalo](https://www.dedalo.io) in Q3 2025 as part of 
   # Start the production server
   npm start
   ```
-
 
 ## Waku Support
 
