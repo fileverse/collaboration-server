@@ -602,7 +602,7 @@ describe("share-context", () => {
     const getSession = vi.fn().mockResolvedValueOnce({ sessionDid: "did-live" }).mockResolvedValueOnce(undefined);
     const shareDeps: any = {
       mongodbStore: { getShareContext: vi.fn().mockResolvedValue({ exists: true, isPublished: false }) },
-      sessionManager: { getSession },
+      sessionManager: { getSession, getLegacyRtcVerdict: vi.fn().mockResolvedValue(undefined) },
     };
     const r1 = res();
     await createShareContextHandler(shareDeps)(
@@ -616,5 +616,51 @@ describe("share-context", () => {
       { params: { documentId: "doc-1" }, query: { sessionDid: "did-stale" } } as any, r2
     );
     expect(r2.json).toHaveBeenCalledWith({ exists: true, isPublished: false, sessionExists: false });
+  });
+
+  it("GET with ?sessionDid surfaces the legacy-RTC verdict only when computed", async () => {
+    const mk = (verdict: boolean | undefined) => {
+      const shareDeps: any = {
+        mongodbStore: { getShareContext: vi.fn().mockResolvedValue({ exists: true, isPublished: false }) },
+        sessionManager: {
+          getSession: vi.fn().mockResolvedValue({ sessionDid: "did-live" }),
+          getLegacyRtcVerdict: vi.fn().mockResolvedValue(verdict),
+        },
+      };
+      return shareDeps;
+    };
+
+    const rTrue = res();
+    await createShareContextHandler(mk(true))(
+      { params: { documentId: "doc-1" }, query: { sessionDid: "did-live" } } as any, rTrue
+    );
+    expect(rTrue.json).toHaveBeenCalledWith({ exists: true, isPublished: false, sessionExists: true, legacyRtc: true });
+
+    const rFalse = res();
+    await createShareContextHandler(mk(false))(
+      { params: { documentId: "doc-1" }, query: { sessionDid: "did-live" } } as any, rFalse
+    );
+    expect(rFalse.json).toHaveBeenCalledWith({ exists: true, isPublished: false, sessionExists: true, legacyRtc: false });
+
+    // undefined verdict (nothing stamped yet) must omit the key, not send legacyRtc: undefined.
+    const rUnknown = res();
+    await createShareContextHandler(mk(undefined))(
+      { params: { documentId: "doc-1" }, query: { sessionDid: "did-live" } } as any, rUnknown
+    );
+    expect(rUnknown.json).toHaveBeenCalledWith({ exists: true, isPublished: false, sessionExists: true });
+  });
+
+  it("GET with ?sessionDid skips the verdict lookup when no session exists", async () => {
+    const getLegacyRtcVerdict = vi.fn();
+    const shareDeps: any = {
+      mongodbStore: { getShareContext: vi.fn().mockResolvedValue({ exists: true, isPublished: false }) },
+      sessionManager: { getSession: vi.fn().mockResolvedValue(undefined), getLegacyRtcVerdict },
+    };
+    const r = res();
+    await createShareContextHandler(shareDeps)(
+      { params: { documentId: "doc-1" }, query: { sessionDid: "did-gone" } } as any, r
+    );
+    expect(getLegacyRtcVerdict).not.toHaveBeenCalled();
+    expect(r.json).toHaveBeenCalledWith({ exists: true, isPublished: false, sessionExists: false });
   });
 });

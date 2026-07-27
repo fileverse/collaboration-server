@@ -299,7 +299,7 @@ export function createMirrorReadHandler(deps: { mongodbStore: Pick<MongoDBStore,
 /** Open read: existence only (same trust model as the mirror GET). */
 export function createShareContextHandler(deps: {
   mongodbStore: Pick<MongoDBStore, "getShareContext">;
-  sessionManager?: Pick<SessionManager, "getSession">;
+  sessionManager?: Pick<SessionManager, "getSession" | "getLegacyRtcVerdict">;
 }) {
   return async (req: Request, res: Response): Promise<void> => {
     // Express 4 doesn't catch async rejections — an unhandled store error
@@ -311,7 +311,16 @@ export function createShareContextHandler(deps: {
       const sessionDid = req.query?.sessionDid;
       if (typeof sessionDid === "string" && sessionDid && deps.sessionManager) {
         const session = await deps.sessionManager.getSession(req.params.documentId, sessionDid);
-        res.status(200).json({ ...ctx, sessionExists: !!session });
+        // Omitted (not false) when unknowable — the client treats absence as
+        // "not legacy" so old servers and fresh deployments fail closed.
+        const legacyRtc = session
+          ? await deps.sessionManager.getLegacyRtcVerdict(req.params.documentId, sessionDid)
+          : undefined;
+        res.status(200).json({
+          ...ctx,
+          sessionExists: !!session,
+          ...(legacyRtc !== undefined ? { legacyRtc } : {}),
+        });
         return;
       }
       res.status(200).json(ctx);
