@@ -28,18 +28,22 @@ This repo was audited by [Dédalo](https://www.dedalo.io) in Q3 2025 as part of 
 
 #### Prerequisites
 
-- Redis server should be running and listening on port `:6379`
-- Create a configuration file which will contain the environment variables.
-  - Run `cp env.example .env`
+- MongoDB should be running (encrypted updates and snapshots are persisted there)
+- Redis is optional — enable it with `REDIS_ENABLED=true` if you run one
+- Create a `.env` file at the repo root which will contain the environment variables.
   - Below are the values that go into it
     ```bash
-    PORT # Server port (default: 5000)
+    PORT # Server port (default: 5001)
     HOST # Server host (default: 0.0.0.0)
     NODE_ENV # Environment mode (development/production)
     CORS_ORIGINS # Comma-separated list of allowed origins
     SERVER_DID # Server's DID for UCAN authentication
-    MONGODB_URI # MongoDB URI where you want your updates to be saved temporarily
+    MONGODB_URI # MongoDB URI where encrypted updates and snapshots are persisted
+    REDIS_ENABLED # "true" to use Redis (default: false)
+    REDISCLOUD_URL # Redis URL (default: redis://localhost:6379)
     RPC_URL # RPC URL to query onchain state and only allow people with relevant access to create rooms related to DDocs
+    GATE_DID # DID of the access gate (see the voprf-server repo); gate-based edit admission stays disabled until this is set
+    COLLAB_WEBHOOK_API_KEY # API key protecting the /webhooks/file-deleted endpoint
     WS_URL # Optional env vars if you want your node to participate in the waku discovery
     ```
   - Here's a guide on how to generate values for some of the env variables.
@@ -65,14 +69,14 @@ This repo was audited by [Dédalo](https://www.dedalo.io) in Q3 2025 as part of 
       - Select your plan and finalize.
       - In the endpoint dashboard, copy the HTTPS RPC endpoint (It should appear on the right) and put that value in the .env for `RPC_URL`
     - `WS_URL`
-      - For local development, this should be `ws://localhost:5000/`
+      - For local development, this should be `ws://localhost:5001/`
       - For production, this should be the url of your web-socket server `wss://your-domain/path`
 
 #### Next steps
 
 - Clone the repository and `cd` into it
   ```bash
-  git clone https://github.com/fileverse/collaboration-server.git && cd collaboration-server`
+  git clone https://github.com/fileverse/collaboration-server.git && cd collaboration-server
   ```
 - Install the dependencies
   ```bash
@@ -101,113 +105,83 @@ For this you just need to start the server with WS_URL set as the wss url that i
 ### HTTP Endpoints
 
 - `GET /health` - Health check and server stats
+- `GET /documents/:documentId/mirror` - Read the latest encrypted state the server holds for a document
+- `GET /documents/:documentId/share-context` - Read the context a client needs to open a shared document
+- `POST /flush` - Push a final encrypted state for a document outside a live socket session
+- `POST /list-my-documents` - List the documents the server holds state for (authenticated)
+- `DELETE /documents/:documentId` - Delete the server-held state for a document
+- `POST /documents/:documentId/collab-join-enabled` - Owner action: allow or stop collaborators joining live editing
+- `POST /documents/:documentId/workspace-edit-tier` - Owner action: turn workspace-wide editing on or off
+- `POST /documents/:documentId/evict-edit-actors` - Owner action: disconnect editors whose access was revoked
+- `POST /workspaces/:portalAddress/evict-member` - Owner action: disconnect a removed workspace member from its sessions
+- `POST /documents/:documentId/rotate-session` - Owner action: move a live session to a fresh room key
+- `POST /webhooks/file-deleted` - Webhook (API-key protected) that ends sessions when a file is deleted
 
 ### WebSocket API
 
-Connect to `ws://${env.HOST}:{env.PORT}/` and send JSON messages:
+The server speaks [Socket.IO](https://socket.io) — it is no longer the raw-JSON message protocol of earlier versions. Connect a Socket.IO client to `ws://${env.HOST}:${env.PORT}/`; the server greets each connection with a `/server/handshake` event, and the client must then authenticate before anything else.
 
 #### Authentication
 
-```json
-{
-  "cmd": "/auth",
-  "args": {
-    "username": "user123",
-    "token": "ucan_token_here",
-    "documentId": "room123"
-  },
-  "seqId": "unique_id"
-}
-```
-
-#### Document Updates
+Emit `/auth` with an acknowledgement callback. Core fields:
 
 ```json
 {
-  "cmd": "/documents/update",
-  "args": {
-    "documentId": "room123",
-    "data": "encrypted_yjs_update",
-    "update_snapshot_ref": null
-  },
-  "seqId": "unique_id"
+  "documentId": "doc123",
+  "sessionDid": "did:key:z6Mk...",
+  "collaborationToken": "ucan_token_here",
+  "editUcan": "(gate-minted edit credential — required to write on edit-gated documents)",
+  "actorHandle": "(per-editor handle bound to that credential)"
 }
 ```
 
-#### Create Commit
+The acknowledgement returns the assigned role (`owner` or `editor`) and whether the session is `new` or `existing`.
 
-```json
-{
-  "cmd": "/documents/commit",
-  "args": {
-    "documentId": "room123",
-    "updates": ["update_id_1", "update_id_2"],
-    "cid": "ipfs_hash",
-    "data": "encrypted_document_state"
-  },
-  "seqId": "unique_id"
-}
-```
+#### Client → server events
 
-#### Get Room Members
+- `/documents/update` - Send an encrypted Y.js update
+- `/documents/update/history` - Fetch the stored updates for a document
+- `/documents/commit` - Record that a batch of updates was committed to IPFS
+- `/documents/commit/history` - Fetch past commits
+- `/documents/snapshot` - Store a compacted snapshot of the session so far
+- `/documents/mirror-snapshot` - Store the latest full encrypted state of the document
+- `/documents/meta` - Update encrypted document metadata (e.g. the live title)
+- `/documents/peers/list` - List who is in the room
+- `/documents/awareness` - Broadcast encrypted cursor/selection data
+- `/documents/terminate` - End the session
+- `/session/epoch_loaded` - Confirm a new room key was loaded after rotation
 
-```json
-{
-  "cmd": "/documents/peers/list",
-  "args": {
-    "documentId": "room123"
-  },
-  "seqId": "unique_id"
-}
-```
+#### Server → client events
 
-#### Awareness Updates
+- `/server/handshake` - Sent on connect
+- `/document/content_update` - Another editor's encrypted update
+- `/document/awareness_update` - Another editor's cursor/selection data
+- `/document/meta_update` - Encrypted document metadata changed
+- `/room/membership_change` - Someone joined or left the room
+- `/session/terminated` - The session ended, or your access was revoked
+- `/server/error` - Something went wrong
 
-```json
-{
-  "cmd": "/documents/awareness",
-  "args": {
-    "documentId": "room123",
-    "data": {
-      "position": "encrypted_cursor_data"
-    }
-  },
-  "seqId": "unique_id"
-}
-```
+## Usage with the Sync Engine
 
-## Usage with Sync Package
-
-This server is designed to work with the `@fileverse-dev/sync` package. Here's how to configure the client:
-
-```typescript
-import { useSyncMachine } from "@fileverse-dev/sync";
-
-const { connect, disconnect, isConnected, ydoc, isReady } = useSyncMachine({
-  roomId: "your-room-id",
-  wsProvider: "ws://localhost:5000/",
-  onError: (err) => console.error(err),
-});
-
-// Connect with username and room key
-const roomKey = await crypto.subtle.importKey(/* ... */);
-connect("username", roomKey);
-```
+The client half of this protocol lives in the [fileverse-ddoc](https://github.com/fileverse/fileverse-ddoc) repo, under `package/sync-local` (`useSyncManager`). It handles connecting, authenticating, encrypting updates with the room key, and recovering a document from the server's stored state — apps embedding the dDocs editor get it out of the box.
 
 ## Architecture
 
 ```
-┌─────────────────┐    ┌──────────────────┐    ┌─────────────────┐
-│   Client App    │    │  Collaboration   │    │   Memory Store  │
-│                 │    │     Server       │    │                 │
-│  ┌───────────┐  │    │                  │    │  ┌───────────┐  │
-│  │ Sync Pkg  │──┼────┼─► WebSocket      │    │  │ Documents │  │
-│  └───────────┘  │    │   Manager        │    │  │ Updates   │  │
-│                 │    │                  │    │  │ Commits   │  │
-│  ┌───────────┐  │    │  ┌─────────────┐ │    │  │ Members   │  │
-│  │  Y.js Doc │  │    │  │ Auth Service│ │    │  └───────────┘  │
-│  └───────────┘  │    │  └─────────────┘ │    │                 │
-└─────────────────┘    └──────────────────┘    └─────────────────┘
+┌─────────────────┐     ┌──────────────────────┐     ┌──────────────────┐
+│   Client App    │     │ Collaboration Server │     │     Storage      │
+│                 │     │                      │     │                  │
+│  ┌───────────┐  │     │  Socket.IO events    │     │  MongoDB:        │
+│  │Sync engine│──┼─────┼─► Auth (UCAN + gate  │─────┼─► updates,       │
+│  └───────────┘  │     │    edit credentials) │     │   snapshots,     │
+│  ┌───────────┐  │     │  Session manager     │     │   sessions       │
+│  │ Y.js Doc  │  │     │  Owner-op HTTP API   │     │  Redis: pub/sub  │
+│  └───────────┘  │     └──────────┬───────────┘     └──────────────────┘
+└─────────────────┘                │
+                                   ▼
+                        Access gate (voprf-server):
+                     mints edit credentials after a
+                    Semaphore zero-knowledge proof
 ```
 
 ## Development
@@ -216,21 +190,31 @@ connect("username", roomKey);
 
 ```
 src/
-├── config/           # Configuration management
-├── services/         # Core business logic
-│   ├── auth.ts       # UCAN authentication
-│   ├── memory-store.ts # In-memory data storage
-│   └── websocket-manager.ts # WebSocket handling
-├── types/            # TypeScript type definitions
-└── index.ts          # Server entry point
+├── config/                 # Configuration management
+├── services/               # Core business logic
+│   ├── auth.ts                  # UCAN auth + gate edit-credential verification
+│   ├── socket-handlers.ts       # Socket.IO event handlers
+│   ├── session-manager.ts       # Session and room lifecycle
+│   ├── mongodb-store.ts         # Durable storage for updates, snapshots, commits
+│   ├── owner-op-routes.ts       # Owner HTTP actions (join toggle, evictions, ...)
+│   ├── rotate-route.ts          # Room-key rotation endpoint
+│   ├── rotation-coordinator.ts  # Coordinates rotation across live editors
+│   ├── flush-route.ts           # Out-of-session state flush
+│   ├── published-reconciler.ts  # Background reconciliation of published documents
+│   └── deleted-file-webhook.ts  # Cleanup when a file is deleted
+├── database/               # MongoDB models
+├── cron/                   # Scheduled background jobs
+├── redis.ts                # Redis wiring
+├── types/                  # TypeScript type definitions
+└── index.ts                # Server entry point + HTTP routes
 ```
 
 ### Adding Features
 
-1. **New WebSocket Commands**: Add handlers in `websocket-manager.ts`
+1. **New Socket.IO Events**: Add handlers in `socket-handlers.ts`
 2. **Authentication**: Modify `auth.ts` for custom auth logic
-3. **Storage**: Replace `memory-store.ts` with persistent storage
-4. **Middleware**: Add Express middleware in `index.ts`
+3. **Storage**: Extend `mongodb-store.ts`
+4. **HTTP Endpoints & Middleware**: Add Express routes in `index.ts`
 
 ## Production Deployment
 
