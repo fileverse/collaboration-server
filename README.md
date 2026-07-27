@@ -11,7 +11,7 @@ Self-hosting and Decentralization:
 - Bring your own Server: RTC on ddocs.new can also work by self-hosting your own web-socket server and enabling your collaboration session through it.
 - Decentralisation explorations: People using dDocs can also turn on the Waku servers discovery feature, which lets them discover and connect to community-hosted servers for RTC via Waku. This feature is still in early Alpha and highly experimental :warning:. Please use at your own risk. Thank you team Waku and Vàclav san for all the insights in helping us add this first version on dDocs! For the waku enabled version check this branch: feat/waku
 
-This repo is currently being audited by Dedalo. Findings will be shared in a report here when completed.
+This repo was audited by [Dédalo](https://www.dedalo.io) in Q3 2025 as part of a broader security assessment of dDocs, with this collaboration server explicitly in scope. The full report (September 2025, revised October 2025) is available here: [Dédalo audit report](./audits/dedalo-ddocs-audit-2025-q3.pdf). Note that the audit covered the stateless relay described at the top of this README — the durable-edit and edit-access changes described in the update above landed after the audit.
 
 ## Features
 
