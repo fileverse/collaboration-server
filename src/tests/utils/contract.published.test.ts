@@ -9,7 +9,7 @@ describe("resolvePublishedDocumentIds", () => {
   it("returns [] for empty input without calling the chain", async () => {
     const spy = vi.spyOn(publicClient, "multicall");
     const out = await resolvePublishedDocumentIds([]);
-    expect(out.size).toBe(0);
+    expect(out).toEqual([]);
     expect(spy).not.toHaveBeenCalled();
   });
 
@@ -37,7 +37,10 @@ describe("resolvePublishedDocumentIds", () => {
     const out = await resolvePublishedDocumentIds(refs);
 
     expect(spy).toHaveBeenCalledTimes(2);
-    expect([...out].sort()).toEqual(["da", "db"]);
+    expect(out.map((x) => x.documentId).sort()).toEqual(["da", "db"]);
+    // fileId carried through as a decimal string (da -> file 0, db -> file 3).
+    expect(out.find((x) => x.documentId === "da")?.fileId).toBe("0");
+    expect(out.find((x) => x.documentId === "db")?.fileId).toBe("3");
   });
 
   it("treats a failed phase-1 sub-call as unpublished", async () => {
@@ -45,6 +48,6 @@ describe("resolvePublishedDocumentIds", () => {
       .mockResolvedValueOnce([{ status: "failure", error: new Error("rpc") }] as any)
       .mockResolvedValueOnce([] as any);
     const out = await resolvePublishedDocumentIds([{ documentId: "dx", portalAddress: "0xP" }]);
-    expect(out.size).toBe(0);
+    expect(out).toEqual([]);
   });
 });

@@ -10,6 +10,7 @@ interface IDocumentMeta extends MongooseDocument {
   title: string | null; // roomKey-encrypted
   updatedAt: number;
   isPublished: boolean; // set by the publish reconciler once the doc is on-chain
+  onChainFileId: string | null; // on-chain fileId, captured by the reconciler at publish detection
   tombstonedAt: number | null; // set by the DeletedFile webhook; grace window runs from here
   tombstoneReason: string | null;
 }
@@ -24,6 +25,7 @@ const DocumentMetaSchema = new Schema<IDocumentMeta>({
   title: { type: String, default: null },
   updatedAt: { type: Number, required: true },
   isPublished: { type: Boolean, default: false },
+  onChainFileId: { type: String, default: null },
   tombstonedAt: { type: Number, default: null },
   tombstoneReason: { type: String, default: null },
 });

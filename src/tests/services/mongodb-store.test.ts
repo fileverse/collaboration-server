@@ -21,7 +21,7 @@ vi.mock("../../database/models", () => {
     DocumentCommitModel,
     CounterModel: { findOneAndUpdate: vi.fn(), deleteOne: vi.fn().mockResolvedValue(undefined) },
     SessionModel: { findOne: vi.fn(), find: vi.fn(), deleteMany: vi.fn().mockResolvedValue(undefined) },
-    DocumentMetaModel: { findOneAndUpdate: vi.fn(), find: vi.fn(), findById: vi.fn(), updateMany: vi.fn().mockResolvedValue(undefined), updateOne: vi.fn(), deleteOne: vi.fn().mockResolvedValue(undefined) },
+    DocumentMetaModel: { findOneAndUpdate: vi.fn(), find: vi.fn(), findById: vi.fn(), updateMany: vi.fn().mockResolvedValue(undefined), updateOne: vi.fn(), bulkWrite: vi.fn().mockResolvedValue(undefined), deleteOne: vi.fn().mockResolvedValue(undefined) },
     DocumentMirrorModel: {
       findOneAndUpdate: vi.fn().mockResolvedValue(undefined),
       findOne: vi.fn(),
@@ -279,21 +279,24 @@ describe("listDocumentsForOwner", () => {
     ]);
   });
 
-  it("markDocumentsPublished updateMany sets isPublished for the given ids", async () => {
+  it("markDocumentsPublished bulkWrite sets isPublished + onChainFileId per doc", async () => {
     const { DocumentMetaModel } = await import("../../database/models");
     const store = new MongoDBStore();
-    await store.markDocumentsPublished(["d1", "d2"]);
-    expect(DocumentMetaModel.updateMany).toHaveBeenCalledWith(
-      { _id: { $in: ["d1", "d2"] } },
-      { $set: { isPublished: true } }
-    );
+    await store.markDocumentsPublished([
+      { documentId: "d1", fileId: "0" },
+      { documentId: "d2", fileId: "3" },
+    ]);
+    expect(DocumentMetaModel.bulkWrite).toHaveBeenCalledWith([
+      { updateOne: { filter: { _id: "d1" }, update: { $set: { isPublished: true, onChainFileId: "0" } } } },
+      { updateOne: { filter: { _id: "d2" }, update: { $set: { isPublished: true, onChainFileId: "3" } } } },
+    ]);
   });
 
   it("markDocumentsPublished no-ops on empty input", async () => {
     const { DocumentMetaModel } = await import("../../database/models");
     const store = new MongoDBStore();
     await store.markDocumentsPublished([]);
-    expect(DocumentMetaModel.updateMany).not.toHaveBeenCalled();
+    expect(DocumentMetaModel.bulkWrite).not.toHaveBeenCalled();
   });
 
   it("returns an empty list when neither ownerIdentityDid nor ownerDid is given", async () => {

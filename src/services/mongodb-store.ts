@@ -374,11 +374,18 @@ export class MongoDBStore {
     return rows.map((r) => ({ documentId: r._id, portalAddress: r.portalAddress }));
   }
 
-  async markDocumentsPublished(documentIds: string[]): Promise<void> {
-    if (documentIds.length === 0) return;
-    await DocumentMetaModel.updateMany(
-      { _id: { $in: documentIds } },
-      { $set: { isPublished: true } }
+  async markDocumentsPublished(
+    docs: Array<{ documentId: string; fileId: string }>
+  ): Promise<void> {
+    if (docs.length === 0) return;
+    // Per-doc onChainFileId, so a single updateMany won't do — one updateOne each.
+    await DocumentMetaModel.bulkWrite(
+      docs.map((d) => ({
+        updateOne: {
+          filter: { _id: d.documentId },
+          update: { $set: { isPublished: true, onChainFileId: d.fileId } },
+        },
+      }))
     );
   }
 

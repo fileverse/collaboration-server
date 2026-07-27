@@ -14,7 +14,12 @@ describe("reconcilePublishedDocuments", () => {
       { documentId: "d3", portalAddress: "0xP" },
     ];
     const store = makeStore(refs);
-    const resolve = vi.fn().mockResolvedValue(new Set(["d1", "d3"]));
+    const resolve = vi
+      .fn()
+      .mockResolvedValue([
+        { documentId: "d1", fileId: "0" },
+        { documentId: "d3", fileId: "5" },
+      ]);
 
     const out = await reconcilePublishedDocuments({
       mongodbStore: store as any,
@@ -24,7 +29,10 @@ describe("reconcilePublishedDocuments", () => {
 
     expect(store.listUnpublishedMetaRefs).toHaveBeenCalledWith(500);
     expect(resolve).toHaveBeenCalledWith(refs);
-    expect(store.markDocumentsPublished).toHaveBeenCalledWith(["d1", "d3"]);
+    expect(store.markDocumentsPublished).toHaveBeenCalledWith([
+      { documentId: "d1", fileId: "0" },
+      { documentId: "d3", fileId: "5" },
+    ]);
     expect(out).toEqual({ scanned: 3, published: 2 });
   });
 
@@ -43,7 +51,7 @@ describe("reconcilePublishedDocuments", () => {
 
   it("does not call markDocumentsPublished when nothing resolved published", async () => {
     const store = makeStore([{ documentId: "d1", portalAddress: "0xP" }]);
-    const resolve = vi.fn().mockResolvedValue(new Set<string>());
+    const resolve = vi.fn().mockResolvedValue([]);
     const out = await reconcilePublishedDocuments({
       mongodbStore: store as any,
       resolvePublishedDocumentIds: resolve,
