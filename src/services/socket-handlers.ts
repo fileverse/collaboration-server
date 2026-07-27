@@ -644,7 +644,12 @@ export async function isStillAdmitted(socket: AppSocket, deps: SocketHandlerDeps
   if (!documentId || !sessionDid) return false;
   if (railKind === "gp-actor") {
     if (editEpoch === undefined) return false;
-    return editEpoch >= (await deps.mongodbStore.getMinEditEpoch(documentId));
+    if (editEpoch >= (await deps.mongodbStore.getMinEditEpoch(documentId))) return true;
+    // Below the floor: tolerate ONLY while a make-before-break rotation for this doc is in flight.
+    // The survivor is re-issued a fresh-epoch editUcan at cutover and must not be kicked in the gap
+    // (a kick drops it from the room, so it misses the one-shot cutover). The removed actor was
+    // already dropped by evict's targeted sweep and cannot rejoin — JOIN admission stays strict.
+    return rotationCoordinator.isActive(documentId);
   }
   if (rail === "workspace") return (await deps.sessionManager.getWorkspaceEditEnabled(documentId, sessionDid)) === true;
   return (await deps.sessionManager.getCollabJoinEnabled(documentId, sessionDid)) === true;
