@@ -196,29 +196,18 @@ export class SessionManager {
     return (doc as any)?.collabJoinEnabled;
   }
 
-  // Earliest session stamped with collabJoinEnabled = the moment this deployment's
-  // edit-permission server arrived (inserts stamp the field; old rows are never
-  // backfilled). Monotonic, so cache once found.
-  private legacyStampCutoverMs: number | null = null;
-
   /** Whether the session predates the edit-permission server with joining not
    *  explicitly disabled — i.e. an old-format collab link that the /share route
-   *  sunset killed. undefined when unknowable (no session, or nothing stamped yet). */
+   *  sunset killed. Era marker: portalAddress is written only at session insert
+   *  and never retro-filled, so key absence proves the row is pre-upgrade.
+   *  undefined when there is no session row. */
   async getLegacyRtcVerdict(documentId: string, sessionDid: string): Promise<boolean | undefined> {
     const row = await SessionModel.findOne(
       { documentId, sessionDid },
-      { createdAt: 1, collabJoinEnabled: 1 }
-    ).lean<{ createdAt: Date; collabJoinEnabled?: boolean }>();
+      { portalAddress: 1, collabJoinEnabled: 1 }
+    ).lean<{ portalAddress?: string | null; collabJoinEnabled?: boolean }>();
     if (!row) return undefined;
-    if (row.collabJoinEnabled === false) return false;
-    if (this.legacyStampCutoverMs === null) {
-      const first = await SessionModel.findOne({ collabJoinEnabled: { $exists: true } }, { createdAt: 1 })
-        .sort({ createdAt: 1 })
-        .lean<{ createdAt: Date }>();
-      if (first) this.legacyStampCutoverMs = new Date(first.createdAt).getTime();
-    }
-    if (this.legacyStampCutoverMs === null) return undefined;
-    return new Date(row.createdAt).getTime() < this.legacyStampCutoverMs;
+    return row.portalAddress === undefined && row.collabJoinEnabled !== false;
   }
 
   async setCollabJoinEnabled(documentId: string, sessionDid: string, enabled: boolean): Promise<boolean> {
