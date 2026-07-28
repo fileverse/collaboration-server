@@ -609,10 +609,15 @@ export class MongoDBStore {
 
     let purged = 0;
     for (const s of terminated) {
+      // Pre-durable sessions (insert-only portalAddress key absent) predate the
+      // editLock/snapshot invariant this sweep relies on — never sweep them.
+      if (!Object.prototype.hasOwnProperty.call(s, "portalAddress")) continue;
       const meta: any = await DocumentMetaModel.findById(s.documentId).lean();
       if (meta?.editLock) continue; // real draft — never sweep
       const snap: any = await DocumentUpdateModel.findOne({ documentId: s.documentId, updateType: "snapshot" }).sort({ seq: -1 }).lean();
       if (snap) continue; // has a hydration base — never sweep
+      const legacy: any = await DocumentUpdateModel.findOne({ documentId: s.documentId, seq: { $exists: false } }).select("_id").lean();
+      if (legacy) continue; // pre-durable rows awaiting seq backfill — never sweep
       await DocumentUpdateModel.deleteMany({ documentId: s.documentId });
       await SessionModel.deleteMany({ documentId: s.documentId });
       await CounterModel.deleteOne({ _id: s.documentId });
