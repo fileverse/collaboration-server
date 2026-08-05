@@ -163,6 +163,7 @@ export async function handleAuth(
     let actorHandle: string | undefined = undefined;
     let admittedEditEpoch: number | undefined = undefined;
     let provenIdentityDid: string | null = null;
+    let editPlaneEnforced: boolean;
 
     // joinOnly is strictly privilege-reducing: never create or bind a room on behalf of
     // a joiner. A workspace member's valid SHARED ownerToken would otherwise create the
@@ -219,16 +220,15 @@ export async function handleAuth(
         });
       }
 
-      // R3 owner binding (ddoc-only): the identity that becomes the room's root of
-      // trust must be cryptographically proven, not client-asserted. Verify the identity
-      // UCAN against the on-chain signingDid and bind THAT. Dsheets keep the legacy path
-      // (no durable recovery / owner-op surface) — mirrors the ddoc-only join gate so a
-      // dsheet owner is never rejected here.
+      // R3 owner binding: the identity that becomes the room's root of trust must be
+      // cryptographically proven, not client-asserted. ddoc hard-requires the proof.
+      // dsheet binds-if-presented: a legacy dsheets.new client never sends an
+      // identityToken and keeps creating unbound rooms (legacy semantics — no owner-op
+      // surface, no edit-plane enforcement); a presented-but-invalid proof is rejected,
+      // never downgraded to an unbound create.
       let boundOwnerIdentityDid: string | null = null;
-      if (claimedAppType === "ddoc") {
-        const provenSigningDid = args.identityToken
-          ? await authService.verifyIdentityToken(args.identityToken, documentId)
-          : null;
+      if (args.identityToken) {
+        const provenSigningDid = await authService.verifyIdentityToken(args.identityToken, documentId);
         if (!provenSigningDid) {
           return callback({
             status: false,
@@ -239,6 +239,13 @@ export async function handleAuth(
         }
         boundOwnerIdentityDid = provenSigningDid;
         provenIdentityDid = provenSigningDid;
+      } else if (claimedAppType === "ddoc") {
+        return callback({
+          status: false,
+          statusCode: 401,
+          error: "Valid identity proof required to create a durable session",
+          errorCode: ErrorCode.AUTH_TOKEN_INVALID,
+        });
       }
 
       // C1: pin documentId → portalAddress on the first owner bind, immutably (trust-on-first-use).
@@ -252,26 +259,25 @@ export async function handleAuth(
       // (pin-at-document-creation / an owner-authenticated reclaim path) is out of scope. The
       // doc→portal *deletion* proof lives in the DeletedFile webhook (onlyCollaborator-gated).
       // See docs/architecture/edit-permission.md.
-      if (claimedAppType === "ddoc") {
-        const { portalAddress: pinnedPortal } = await deps.mongodbStore.pinDocumentPortalIfAbsent({
-          documentId,
-          portalAddress: args.contractAddress as string,
-          ownerDid,
-          ownerIdentityDid: boundOwnerIdentityDid,
-          sessionDid,
-        });
+      const { portalAddress: pinnedPortal } = await deps.mongodbStore.pinDocumentPortalIfAbsent({
+        documentId,
+        portalAddress: args.contractAddress as string,
+        ownerDid,
+        ownerIdentityDid: boundOwnerIdentityDid,
+        sessionDid,
+        appType: claimedAppType,
+      });
 
-        if (
-          !pinnedPortal ||
-          pinnedPortal.toLowerCase() !== (args.contractAddress as string).toLowerCase()
-        ) {
-          return callback({
-            status: false,
-            statusCode: 403,
-            error: "Document is owned by a different portal",
-            errorCode: ErrorCode.AUTH_TOKEN_INVALID,
-          });
-        }
+      if (
+        !pinnedPortal ||
+        pinnedPortal.toLowerCase() !== (args.contractAddress as string).toLowerCase()
+      ) {
+        return callback({
+          status: false,
+          statusCode: 403,
+          error: "Document is owned by a different portal",
+          errorCode: ErrorCode.AUTH_TOKEN_INVALID,
+        });
       }
 
       // Terminate other sessions with socket notification
@@ -301,12 +307,7 @@ export async function handleAuth(
           s.leave(oldRoomName);
         }
 
-        // Now clean up DB — use the terminated session's own appType, not the new connection's claimed one
-        await sessionManager.terminateSession(
-          oldSession.documentId,
-          oldSession.sessionDid,
-          oldSession.appType ?? "ddoc"
-        );
+        await sessionManager.terminateSession(oldSession.documentId, oldSession.sessionDid);
         console.log(
           `[Auth] Terminated old session: ${oldSession.sessionDid} for document: ${documentId}`
         );
@@ -327,6 +328,7 @@ export async function handleAuth(
       sessionType = "new";
       roomInfo = args.roomInfo;
       resolvedAppType = claimedAppType;
+      editPlaneEnforced = claimedAppType === "ddoc" || boundOwnerIdentityDid != null;
     } else if (existingSession) {
       // Join an existing session
       const userDid = await authService.verifyCollaborationToken(
@@ -398,14 +400,14 @@ export async function handleAuth(
         existingSession.ownerDid = ownerDid;
       }
 
-      // Identity-based role (ddoc-only): the shared team-portal
+      // Identity-based role: the shared team-portal
       // DID cannot tell a member from the creator, but the per-person identity signingDid
       // can. On a bound session a presented identityToken DECIDES the role — owner needs
       // BOTH the proven identity match and the portal ownerToken match. An invalid token
       // is a 401; a token-less join on a bound session is never owner (capped to editor) —
       // a bound session already proved identity once, so a modern client always presents it.
       const boundIdentityDid = existingSession.ownerIdentityDid ?? null;
-      if (storedAppType === "ddoc" && boundIdentityDid && args.identityToken) {
+      if (boundIdentityDid && args.identityToken) {
         const provenDid = await authService.verifyIdentityToken(args.identityToken, documentId);
         if (!provenDid) {
           return callback({
@@ -421,7 +423,6 @@ export async function handleAuth(
             : "editor";
         provenIdentityDid = provenDid;
       } else if (
-        storedAppType === "ddoc" &&
         boundIdentityDid &&
         !args.identityToken
       ) {
@@ -439,11 +440,10 @@ export async function handleAuth(
       // resolves a team member to owner — a join-only bearer never gets owner powers.
       if (args.joinOnly === true && role === "owner") role = "editor";
 
-      // R3 heal (ddoc-only): a session bound before identity proof was required (or
+      // R3 heal: a session bound before identity proof was required (or
       // bound empty) is filled — once, atomically — by a proven owner, so the pre-fix
       // corpus becomes recoverable on the owner's next open. Never overwrites a real bind.
       if (
-        storedAppType === "ddoc" &&
         role === "owner" &&
         args.joinOnly !== true &&
         !existingSession.ownerIdentityDid &&
@@ -458,10 +458,23 @@ export async function handleAuth(
             provenSigningDid
           );
           existingSession.ownerIdentityDid = provenSigningDid;
+
+          // Sockets admitted while the room was unbound carry no rail and no
+          // per-op recheck; drop them so they re-enter through the admission gate.
+          const healedRoom = getRoomName(documentId, existingSession.sessionDid);
+          for (const st of await io.in(healedRoom).fetchSockets()) {
+            if (st.id !== socket.id && st.data.editPlaneEnforced !== true) st.disconnect(true);
+          }
         }
       }
 
-      // Rail-exclusive edit admission (ddoc-only, non-owner): resolved by the credential the
+      // Edit-plane activation: ddoc always; dsheet iff the room has a bound owner
+      // identity (only a modern client can bind — legacy dsheet rooms keep today's
+      // valid-roomKey-writes semantics). Computed after the heal so a healing owner's
+      // socket is stamped enforced.
+      editPlaneEnforced = storedAppType === "ddoc" || existingSession.ownerIdentityDid != null;
+
+      // Rail-exclusive edit admission (enforced rooms, non-owner): resolved by the credential the
       // client presents, never a sequential try-each. An editUcan join is GP-or-reject and must
       // NEVER fall through to workspace/public — a demoted GP editor still holds the un-rotated
       // roomKey, and falling through would let them re-enter as a lower-trust bearer.
@@ -471,7 +484,7 @@ export async function handleAuth(
       // rail, but an owner-shaped bearer already cleared a stricter bar. rail/railKind are
       // left unset, so isStillAdmitted's default (checks collabJoinEnabled) fails closed for
       // any later write attempt on a private doc — the headless read path never calls it.
-      if (storedAppType === "ddoc" && role === "editor" && !(args.joinOnly === true && ownerVerifiedPreCap)) {
+      if (editPlaneEnforced && role === "editor" && !(args.joinOnly === true && ownerVerifiedPreCap)) {
         if (args.editUcan) {
           // Offline gp-actor admission: valid editUcan + epoch at/above the minEditEpoch floor.
           // No gate poll — rotation bumps the floor and terminates the old session, confining a
@@ -556,6 +569,7 @@ export async function handleAuth(
     socket.data.actorHandle = actorHandle;
     socket.data.actorIdentityDid = provenIdentityDid ?? undefined;
     socket.data.editEpoch = admittedEditEpoch;
+    socket.data.editPlaneEnforced = editPlaneEnforced;
 
     // Join the Socket.IO room
     const roomName = getRoomName(documentId, sessionDid);
@@ -713,7 +727,7 @@ export async function handleDocumentUpdate(
       });
     }
 
-    if (socket.data.role !== "owner" && normalizeAppType(socket.data.appType) === "ddoc") {
+    if (socket.data.role !== "owner" && socket.data.editPlaneEnforced === true) {
       const revoked = !(await isStillAdmitted(socket, deps));
       if (revoked) {
         // Ack the reason first, then drop the socket — the revoked actor must not
@@ -745,7 +759,6 @@ export async function handleDocumentUpdate(
         commitCid: null,
         createdAt,
         sessionDid,
-        appType: socket.data.appType,
       });
     } catch (err) {
       if (err instanceof SessionTerminatedError) {
@@ -1005,7 +1018,7 @@ export async function handleSnapshot(
     // can already rewrite the full content through ordinary updates, so authorship grants
     // no new power — and it is what keeps an owner-absent document's log bounded. Same
     // per-op revocation check as the update path.
-    if (socket.data.role !== "owner" && normalizeAppType(socket.data.appType) === "ddoc") {
+    if (socket.data.role !== "owner" && socket.data.editPlaneEnforced === true) {
       const revoked = !(await isStillAdmitted(socket, deps));
       if (revoked) {
         return callback({
@@ -1209,6 +1222,7 @@ export async function handleSetDocumentMeta(
       ownerDid: session.ownerDid ?? null,
       ownerIdentityDid: session.ownerIdentityDid ?? null,
       portalAddress: session.portalAddress ?? null,
+      appType: socket.data.appType,
       editLock: args.editLock,
       title: args.title,
     });
@@ -1294,7 +1308,7 @@ export async function handleAwareness(
 
     // Post-broadcast, fire-and-forget: catches revoked-but-idle (reading, cursor-moving)
     // actors that never hit the write chokepoints. Kicks are per-actor/rail-off only.
-    if (socket.data.role !== "owner" && normalizeAppType(socket.data.appType) === "ddoc") {
+    if (socket.data.role !== "owner" && socket.data.editPlaneEnforced === true) {
       const now = Date.now();
       if (now - (socket.data.lastAdmitRecheckAt ?? 0) >= ADMIT_RECHECK_INTERVAL_MS) {
         socket.data.lastAdmitRecheckAt = now;
@@ -1397,7 +1411,7 @@ export async function handleTerminateSession(
     await sessionManager.deactivateSession(documentId, session.sessionDid);
 
     // 5. Clean up DB
-    await sessionManager.terminateSession(documentId, session.sessionDid, session.appType ?? "ddoc");
+    await sessionManager.terminateSession(documentId, session.sessionDid);
 
     callback({
       status: true,

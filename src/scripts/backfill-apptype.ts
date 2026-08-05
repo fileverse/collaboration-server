@@ -16,6 +16,7 @@ import {
   DocumentUpdateModel,
   DocumentCommitModel,
   SessionModel,
+  DocumentMetaModel,
 } from "../database/models";
 
 async function backfill(): Promise<void> {
@@ -24,16 +25,18 @@ async function backfill(): Promise<void> {
   const filter = { appType: { $exists: false } };
   const set = { $set: { appType: "ddoc" as const } };
 
-  const [updates, commits, sessions] = await Promise.all([
+  const [updates, commits, sessions, metas] = await Promise.all([
     DocumentUpdateModel.updateMany(filter, set),
     DocumentCommitModel.updateMany(filter, set),
     SessionModel.updateMany(filter, set),
+    DocumentMetaModel.updateMany(filter, set),
   ]);
 
   console.log("appType backfill complete:");
   console.log(`  DocumentUpdate: ${updates.modifiedCount} tagged "ddoc"`);
   console.log(`  DocumentCommit: ${commits.modifiedCount} tagged "ddoc"`);
   console.log(`  Session:        ${sessions.modifiedCount} tagged "ddoc"`);
+  console.log(`  DocumentMeta:   ${metas.modifiedCount} tagged "ddoc"`);
 
   await databaseService.disconnect();
 }

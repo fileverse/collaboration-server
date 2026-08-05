@@ -54,7 +54,6 @@ export function createFlushHandler(deps: FlushDeps) {
         commitCid: null,
         createdAt: Date.now(),
         sessionDid,
-        appType: "ddoc",
       });
     } catch (err) {
       if (err instanceof SessionTerminatedError) {

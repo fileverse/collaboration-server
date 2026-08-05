@@ -1,4 +1,4 @@
-import { DocumentUpdate, DocumentCommit } from "../types/index";
+import { DocumentUpdate, DocumentCommit, AppType } from "../types/index";
 import { DocumentUpdateModel, DocumentCommitModel, CounterModel, SessionModel, DocumentMetaModel, DocumentMirrorModel, DocumentEditEpochModel } from "../database/models";
 
 export class SessionTerminatedError extends Error {
@@ -37,7 +37,9 @@ export class MongoDBStore {
         commitCid: update.commitCid,
         createdAt: update.createdAt,
         sessionDid: update.sessionDid,
-        appType: update.appType,
+        // Server-authoritative: the session row decides which app owns this stream —
+        // an HTTP caller (e.g. /flush) has no trustworthy claim of its own.
+        appType: session.appType ?? "ddoc",
       });
 
       await mongoUpdate.save();
@@ -257,6 +259,7 @@ export class MongoDBStore {
     ownerDid: string | null;
     ownerIdentityDid: string | null;
     portalAddress: string | null;
+    appType: AppType;
     editLock: string | null;
     title: string | null;
   }): Promise<void> {
@@ -267,6 +270,7 @@ export class MongoDBStore {
           ownerDid: meta.ownerDid,
           ownerIdentityDid: meta.ownerIdentityDid,
           portalAddress: meta.portalAddress,
+          appType: meta.appType,
         },
         $set: {
           sessionDid: meta.sessionDid,
@@ -292,6 +296,7 @@ export class MongoDBStore {
     ownerDid: string | null;
     ownerIdentityDid: string | null;
     sessionDid: string;
+    appType: AppType;
   }): Promise<{ portalAddress: string | null }> {
     // 1. Ensure the row exists; pin all binding fields on INSERT only.
     await DocumentMetaModel.findOneAndUpdate(
@@ -304,6 +309,7 @@ export class MongoDBStore {
           sessionDid: p.sessionDid,
           updatedAt: Date.now(),
           isPublished: false,
+          appType: p.appType,
         },
       },
       { upsert: true, writeConcern: { w: "majority", j: true } }
@@ -363,7 +369,7 @@ export class MongoDBStore {
   // Discovery: docs bound to the proven owner (identity DID or portal owner DID) — recovery for a wiped device.
   async listDocumentsForOwner(
     by: { ownerIdentityDid?: string; ownerDid?: string }
-  ): Promise<Array<{ documentId: string; editLock: string | null; title: string | null }>> {
+  ): Promise<Array<{ documentId: string; editLock: string | null; title: string | null; appType: AppType }>> {
     const filter: Record<string, any> = {};
     if (by.ownerIdentityDid) filter.ownerIdentityDid = by.ownerIdentityDid;
     else if (by.ownerDid) filter.ownerDid = by.ownerDid;
@@ -372,11 +378,12 @@ export class MongoDBStore {
     // unpublished durable docs (the publish reconciler flips this flag).
     filter.isPublished = { $ne: true };
 
-    const metas: any[] = await DocumentMetaModel.find(filter).select("editLock title").lean();
+    const metas: any[] = await DocumentMetaModel.find(filter).select("editLock title appType").lean();
     return metas.map((m) => ({
       documentId: m._id,
       editLock: m.editLock ?? null,
       title: m.title ?? null,
+      appType: (m.appType as AppType) ?? "ddoc",
     }));
   }
 
@@ -599,12 +606,14 @@ export class MongoDBStore {
     return ids;
   }
 
-  // Conservative orphan GC: terminated ddoc streams with no editLock and no snapshot row.
-  // A real draft always has an editLock or a snapshot, so it is never swept.
+  // Conservative orphan GC: terminated update streams (both apps) with no live sibling
+  // session, no editLock, and no snapshot row. The purge is documentId-scoped, so a live
+  // sibling must be ruled out first — a real draft always has an editLock or a snapshot,
+  // so it is never swept; a terminated legacy dsheet stream's durability is its IPFS commit.
   async collectOrphans(graceMs: number): Promise<number> {
     const cutoff = new Date(Date.now() - graceMs);
     const terminated: any[] = await SessionModel.find({
-      appType: "ddoc", state: "terminated", createdAt: { $lt: cutoff },
+      state: "terminated", createdAt: { $lt: cutoff },
     }).lean();
 
     let purged = 0;
@@ -612,6 +621,11 @@ export class MongoDBStore {
       // Pre-durable sessions (insert-only portalAddress key absent) predate the
       // editLock/snapshot invariant this sweep relies on — never sweep them.
       if (!Object.prototype.hasOwnProperty.call(s, "portalAddress")) continue;
+      // A live sibling session owns this document's stream — never purge under it.
+      const live = await SessionModel.findOne({ documentId: s.documentId, state: { $ne: "terminated" } })
+        .select("_id")
+        .lean();
+      if (live) continue;
       const meta: any = await DocumentMetaModel.findById(s.documentId).lean();
       if (meta?.editLock) continue; // real draft — never sweep
       const snap: any = await DocumentUpdateModel.findOne({ documentId: s.documentId, updateType: "snapshot" }).sort({ seq: -1 }).lean();
@@ -619,6 +633,7 @@ export class MongoDBStore {
       const legacy: any = await DocumentUpdateModel.findOne({ documentId: s.documentId, seq: { $exists: false } }).select("_id").lean();
       if (legacy) continue; // pre-durable rows awaiting seq backfill — never sweep
       await DocumentUpdateModel.deleteMany({ documentId: s.documentId });
+      await DocumentCommitModel.deleteMany({ documentId: s.documentId });
       await SessionModel.deleteMany({ documentId: s.documentId });
       await CounterModel.deleteOne({ _id: s.documentId });
       purged++;

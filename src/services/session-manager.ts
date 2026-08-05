@@ -1,4 +1,4 @@
-import { SessionModel, DocumentUpdateModel, DocumentCommitModel } from "../database/models";
+import { SessionModel } from "../database/models";
 
 interface RuntimeSession {
   documentId: string;
@@ -302,11 +302,7 @@ export class SessionManager {
     }
   }
 
-  async terminateSession(
-    documentId: string,
-    sessionDid: string,
-    appType: "ddoc" | "dsheet" = "ddoc"
-  ): Promise<void> {
+  async terminateSession(documentId: string, sessionDid: string): Promise<void> {
     const sessionKey = this.getSessionKey(documentId, sessionDid);
     this.inMemorySessions.delete(sessionKey);
 
@@ -315,11 +311,6 @@ export class SessionManager {
         { documentId, sessionDid },
         { state: "terminated", roomInfo: null }
       );
-
-      if (appType === "dsheet") {
-        await DocumentUpdateModel.deleteMany({ documentId, sessionDid });
-        await DocumentCommitModel.deleteMany({ documentId, sessionDid });
-      }
     } catch (error) {
       console.error("Error terminating session in database:", error);
     }

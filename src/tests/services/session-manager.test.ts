@@ -148,46 +148,16 @@ describe("SessionManager", () => {
 
   // terminateSession
 
-  it("removes the session from memory and cleans up all related data in the database", async () => {
-    await sessionManager.terminateSession("doc-1", "session-1", "dsheet");
+  it("marks the session terminated and keeps update + commit rows (all app types)", async () => {
+    await sessionManager.terminateSession("doc-1", "session-1");
 
     expect(sessionManager.getLocalClients("doc-1", "session-1")).toBeUndefined();
     expect(SessionModel.findOneAndUpdate).toHaveBeenCalledWith(
       { documentId: "doc-1", sessionDid: "session-1" },
       { state: "terminated", roomInfo: null }
     );
-    expect(DocumentUpdateModel.deleteMany).toHaveBeenCalledWith({
-      documentId: "doc-1",
-      sessionDid: "session-1",
-    });
-    expect(DocumentCommitModel.deleteMany).toHaveBeenCalledWith({
-      documentId: "doc-1",
-      sessionDid: "session-1",
-    });
-  });
-
-  it("ddoc terminate marks the session terminated but keeps updates + commits", async () => {
-    await sessionManager.terminateSession("doc-1", "session-1", "ddoc");
-
-    expect(SessionModel.findOneAndUpdate).toHaveBeenCalledWith(
-      { documentId: "doc-1", sessionDid: "session-1" },
-      { state: "terminated", roomInfo: null }
-    );
     expect(DocumentUpdateModel.deleteMany).not.toHaveBeenCalled();
     expect(DocumentCommitModel.deleteMany).not.toHaveBeenCalled();
-  });
-
-  it("dsheet terminate keeps the cascade delete", async () => {
-    await sessionManager.terminateSession("doc-1", "session-1", "dsheet");
-
-    expect(DocumentUpdateModel.deleteMany).toHaveBeenCalledWith({
-      documentId: "doc-1",
-      sessionDid: "session-1",
-    });
-    expect(DocumentCommitModel.deleteMany).toHaveBeenCalledWith({
-      documentId: "doc-1",
-      sessionDid: "session-1",
-    });
   });
 
   // getOtherNonTerminatedSessions

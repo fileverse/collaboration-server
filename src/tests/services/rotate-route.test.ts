@@ -271,7 +271,7 @@ describe("POST /documents/:id/rotate-session", () => {
 
       await vi.advanceTimersByTimeAsync(10_000);
 
-      expect(deps.terminateOldSession).toHaveBeenCalledWith(documentId, oldSessionDid, "ddoc");
+      expect(deps.terminateOldSession).toHaveBeenCalledWith(documentId, oldSessionDid);
     } finally {
       vi.useRealTimers();
     }

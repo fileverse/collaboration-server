@@ -14,7 +14,7 @@ export interface RotateDeps {
   sessionManager: Pick<SessionManager, "getSession" | "createSession">;
   mongodbStore: Pick<MongoDBStore, "setMinEditEpoch">;
   rotationCoordinator: Pick<RotationCoordinator, "begin" | "isActive">;
-  terminateOldSession: (documentId: string, sessionDid: string, appType: "ddoc" | "dsheet") => Promise<void>;
+  terminateOldSession: (documentId: string, sessionDid: string) => Promise<void>;
 }
 
 export function createRotateSessionHandler(deps: RotateDeps, io: AppServer) {
@@ -95,7 +95,7 @@ export function createRotateSessionHandler(deps: RotateDeps, io: AppServer) {
       onCutover: () => {
         io.to(oldRoom).emit("/session/cutover", { roomId: documentId, epoch: gateEpoch });
         setTimeout(() => {
-          void deps.terminateOldSession(documentId, oldSessionDid, oldSession.appType ?? "ddoc")
+          void deps.terminateOldSession(documentId, oldSessionDid)
             .catch((e) => console.error("rotate terminate error:", e));
         }, T_DRAIN_MS);
       },

@@ -46,8 +46,11 @@ describe("POST /flush", () => {
     await createFlushHandler(deps)({ body: { documentId: "d", sessionDid: "s", collaborationToken: "t", data: "ct" } } as any, r);
     expect(deps.authService.verifyCollaborationToken).toHaveBeenCalledWith("t", "s", "d");
     expect(deps.mongodbStore.createUpdate).toHaveBeenCalledWith(expect.objectContaining({
-      documentId: "d", data: "ct", updateType: "yjs_update", sessionDid: "s", appType: "ddoc",
+      documentId: "d", data: "ct", updateType: "yjs_update", sessionDid: "s",
     }));
+    expect(deps.mongodbStore.createUpdate).toHaveBeenCalledWith(
+      expect.not.objectContaining({ appType: expect.anything() })
+    );
     expect(r.status).toHaveBeenCalledWith(200);
   });
 
