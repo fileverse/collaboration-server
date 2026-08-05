@@ -353,6 +353,9 @@ export interface SocketData {
   actorIdentityDid?: string;
   editEpoch?: number;
   lastAdmitRecheckAt?: number;
+  /** Rail admission + per-op revocation rechecks apply (ddoc always; dsheet iff the
+   *  room has a bound owner identity — legacy dsheet rooms keep legacy semantics). */
+  editPlaneEnforced?: boolean;
 }
 
 // ***************************************

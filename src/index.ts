@@ -119,7 +119,7 @@ class CollaborationServer {
       "/documents/:documentId/rotate-session",
       createRotateSessionHandler({
         authService, sessionManager, mongodbStore, rotationCoordinator,
-        terminateOldSession: async (documentId, sessionDid, appType) => {
+        terminateOldSession: async (documentId, sessionDid) => {
           const room = getRoomName(documentId, sessionDid);
           const sockets = await this.io!.in(room).fetchSockets();
           // Laggard sockets stay AUTHED: their next write must reach createUpdate and get the
@@ -128,7 +128,7 @@ class CollaborationServer {
           // See docs/architecture/gp-semaphore.md.
           for (const s of sockets) { s.leave(room); }
           await sessionManager.deactivateSession(documentId, sessionDid);
-          await sessionManager.terminateSession(documentId, sessionDid, appType);
+          await sessionManager.terminateSession(documentId, sessionDid);
         },
       }, this.io)
     );
@@ -150,7 +150,7 @@ class CollaborationServer {
             const room = getRoomName(documentId, s.sessionDid);
             this.io!.to(room).emit("/session/terminated", { roomId: documentId });
             for (const sock of await this.io!.in(room).fetchSockets()) sock.leave(room);
-            await sessionManager.terminateSession(documentId, s.sessionDid, s.appType ?? "ddoc");
+            await sessionManager.terminateSession(documentId, s.sessionDid);
           }
         },
       })

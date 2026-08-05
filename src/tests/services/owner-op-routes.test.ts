@@ -191,7 +191,7 @@ describe("POST /list-my-documents", () => {
     vi.clearAllMocks();
     deps = {
       authService: { verifyIdentityToken: vi.fn(), verifyOwnerToken: vi.fn() },
-      mongodbStore: { listDocumentsForOwner: vi.fn().mockResolvedValue([{ documentId: "d1", editLock: "el", title: "t" }]) },
+      mongodbStore: { listDocumentsForOwner: vi.fn().mockResolvedValue([{ documentId: "d1", editLock: "el", title: "t", appType: "dsheet" }]) },
     };
   });
 
@@ -203,6 +203,9 @@ describe("POST /list-my-documents", () => {
     );
     expect(deps.mongodbStore.listDocumentsForOwner).toHaveBeenCalledWith({ ownerIdentityDid: "did:key:zOwner" });
     expect(r.status).toHaveBeenCalledWith(200);
+    expect(r.json).toHaveBeenCalledWith({
+      documents: [{ documentId: "d1", editLock: "el", title: "t", appType: "dsheet" }],
+    });
   });
 
   it("401s when the fields are missing (short-circuits before verifyIdentityToken)", async () => {

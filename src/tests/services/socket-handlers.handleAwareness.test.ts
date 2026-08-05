@@ -9,6 +9,7 @@ const defaultSocketData: SocketData = {
   role: "owner",
   authenticated: true,
   appType: "ddoc",
+  editPlaneEnforced: true,
 };
 
 function createFakeIO(): AppServer {
@@ -133,6 +134,25 @@ describe('handleAwareness', () => {
     const socket = createFakeSocket(undefined, { role: "editor", rail: "gp", railKind: "gp-actor", editEpoch: 2, actorHandle: "survivor-handle" });
     await handleAwareness(deps as any, createFakeIO(), socket, { documentId: "test-document-id", data: "x" } as any);
     await flush();
+    expect((socket as any).disconnect).not.toHaveBeenCalled();
+  });
+
+  it("disconnects a revoked editor on a BOUND dsheet session", async () => {
+    const deps = createDeps();
+    deps.sessionManager.getCollabJoinEnabled.mockResolvedValue(false);
+    const socket = createFakeSocket(undefined, { role: "editor", appType: "dsheet", editPlaneEnforced: true, rail: "public" });
+    await handleAwareness(deps as any, createFakeIO(), socket, { documentId: "test-document-id", data: "x" } as any);
+    await flush();
+    expect((socket as any).disconnect).toHaveBeenCalledWith(true);
+  });
+
+  it("does NOT guard an UNBOUND dsheet editor's awareness traffic (legacy semantics — must not disconnect)", async () => {
+    const deps = createDeps();
+    deps.sessionManager.getCollabJoinEnabled.mockResolvedValue(false); // would revoke if the recheck ran
+    const socket = createFakeSocket(undefined, { role: "editor", appType: "dsheet", editPlaneEnforced: undefined, rail: "public" });
+    await handleAwareness(deps as any, createFakeIO(), socket, { documentId: "test-document-id", data: "x" } as any);
+    await flush();
+    expect(deps.sessionManager.getCollabJoinEnabled).not.toHaveBeenCalled();
     expect((socket as any).disconnect).not.toHaveBeenCalled();
   });
 });

@@ -265,6 +265,7 @@ describe("handleAuth", () => {
         ownerDid: "owner-did",
         ownerIdentityDid: "owner-identity-did",
         sessionDid: pinArgs.sessionDid,
+        appType: "ddoc",
       });
       expect(fakeSessionManager.createSession).toHaveBeenCalled();
       expect(callback).toHaveBeenCalledWith(
@@ -479,8 +480,7 @@ describe("handleAuth", () => {
     expect(oldSocket1.leave).toHaveBeenCalledWith(oldRoomName1);
     expect(fakeSessionManager.terminateSession).toHaveBeenCalledWith(
       otherSessions[0].documentId,
-      otherSessions[0].sessionDid,
-      "ddoc"
+      otherSessions[0].sessionDid
     );
 
     // Second other session (old-session-2)
@@ -500,8 +500,7 @@ describe("handleAuth", () => {
     expect(oldSocket2.leave).toHaveBeenCalledWith(oldRoomName2);
     expect(fakeSessionManager.terminateSession).toHaveBeenCalledWith(
       otherSessions[1].documentId,
-      otherSessions[1].sessionDid,
-      "ddoc"
+      otherSessions[1].sessionDid
     );
 
     // Aggregate call-count assertions after verifying per-iteration sequence
@@ -541,7 +540,7 @@ describe("handleAuth", () => {
     });
   });
 
-  it("terminates other sessions using their OWN appType, not the new connection's claimed appType", async () => {
+  it("terminates other sessions using their OWN sessionDid, not the new connection's claimed appType", async () => {
     const fakeIO = createFakeIO();
     const fakeBroadcastOperator = { emit: vi.fn() };
     const fakeSocket = createFakeSocket(fakeBroadcastOperator);
@@ -575,13 +574,11 @@ describe("handleAuth", () => {
 
     await handleAuth(deps, fakeIO, fakeSocket, fakeArgs, callback);
 
-    // terminateSession must use the terminated session's own appType ("ddoc"), never
-    // the claimed appType of the new connection ("dsheet") — otherwise a dsheet
-    // re-auth would cascade-delete a ddoc's durable rows.
+    // terminateSession must target the terminated session's own identity, never
+    // anything derived from the new connection's claimed appType.
     expect(fakeSessionManager.terminateSession).toHaveBeenCalledWith(
       otherSession.documentId,
-      otherSession.sessionDid,
-      "ddoc"
+      otherSession.sessionDid
     );
   });
 
@@ -617,6 +614,7 @@ describe("handleAuth", () => {
 
     const roomName = getRoomName(fakeArgs.documentId, fakeArgs.sessionDid);
     expect(fakeSocket.join).toHaveBeenCalledWith(roomName);
+    expect(fakeSocket.data.editPlaneEnforced).toBe(true);
     expect(fakeBroadcastOperator.emit).toHaveBeenCalledWith("/room/membership_change", {
       action: "user_joined",
       user: { role: "editor" },
@@ -1713,6 +1711,328 @@ describe("handleAuth", () => {
       await handleAuth(deps, createFakeIO(), fakeSocket, tokenless as any, callback);
 
       expect(fakeSocket.data.actorIdentityDid).toBeUndefined();
+    });
+  });
+
+  describe("dsheet owner bind (bind-if-presented)", () => {
+    const createArgs = (extra: Partial<AuthArgs> = {}): AuthArgs => ({
+      documentId: "doc-1",
+      sessionDid: "session-1",
+      collaborationToken: "collab-token",
+      ownerToken: "owner-token",
+      ownerAddress: "0x0000000000000000000000000000000000000001",
+      contractAddress: "0x0000000000000000000000000000000000000002",
+      appType: "dsheet",
+      ...extra,
+    });
+
+    it("creates an UNBOUND dsheet session when no identityToken is presented (legacy client)", async () => {
+      const fakeIO = createFakeIO();
+      const fakeSocket = createFakeSocket({ emit: vi.fn() });
+      const callback = vi.fn();
+      fakeSessionManager.getSession.mockResolvedValue(undefined);
+      fakeSessionManager.getOtherNonTerminatedSessions.mockResolvedValue([]);
+      fakeAuthService.verifyOwnerToken.mockResolvedValue("owner-did");
+
+      await handleAuth(deps, fakeIO, fakeSocket, createArgs(), callback);
+
+      expect(fakeAuthService.verifyIdentityToken).not.toHaveBeenCalled();
+      expect(fakeSessionManager.createSession).toHaveBeenCalledWith(
+        expect.objectContaining({ appType: "dsheet", ownerIdentityDid: undefined })
+      );
+      expect(callback).toHaveBeenCalledWith(
+        expect.objectContaining({ status: true, statusCode: 200 })
+      );
+    });
+
+    it("pins the documentId→portal binding for a dsheet create (unbound)", async () => {
+      const fakeIO = createFakeIO();
+      const fakeSocket = createFakeSocket({ emit: vi.fn() });
+      const callback = vi.fn();
+      fakeSessionManager.getSession.mockResolvedValue(undefined);
+      fakeSessionManager.getOtherNonTerminatedSessions.mockResolvedValue([]);
+      fakeAuthService.verifyOwnerToken.mockResolvedValue("owner-did");
+
+      await handleAuth(deps, fakeIO, fakeSocket, createArgs(), callback);
+
+      expect(fakeMongoDBStore.pinDocumentPortalIfAbsent).toHaveBeenCalledWith(
+        expect.objectContaining({
+          documentId: "doc-1",
+          portalAddress: "0x0000000000000000000000000000000000000002",
+          ownerIdentityDid: null,
+          appType: "dsheet",
+        })
+      );
+      expect(callback).toHaveBeenCalledWith(
+        expect.objectContaining({ status: true, statusCode: 200 })
+      );
+    });
+
+    it("403s a dsheet create when the pinned portal differs, without creating a session", async () => {
+      const fakeIO = createFakeIO();
+      const fakeSocket = createFakeSocket({ emit: vi.fn() });
+      const callback = vi.fn();
+      fakeSessionManager.getSession.mockResolvedValue(undefined);
+      fakeAuthService.verifyOwnerToken.mockResolvedValue("owner-did");
+      fakeMongoDBStore.pinDocumentPortalIfAbsent.mockResolvedValueOnce({
+        portalAddress: "0x9999999999999999999999999999999999999999",
+      });
+
+      await handleAuth(deps, fakeIO, fakeSocket, createArgs(), callback);
+
+      expect(callback).toHaveBeenCalledWith({
+        status: false,
+        statusCode: 403,
+        error: "Document is owned by a different portal",
+        errorCode: ErrorCode.AUTH_TOKEN_INVALID,
+      });
+      expect(fakeSessionManager.createSession).not.toHaveBeenCalled();
+    });
+
+    it("binds the owner identity on a dsheet create when a valid identityToken is presented", async () => {
+      const fakeIO = createFakeIO();
+      const fakeSocket = createFakeSocket({ emit: vi.fn() });
+      const callback = vi.fn();
+      fakeSessionManager.getSession.mockResolvedValue(undefined);
+      fakeSessionManager.getOtherNonTerminatedSessions.mockResolvedValue([]);
+      fakeAuthService.verifyOwnerToken.mockResolvedValue("owner-did");
+      fakeAuthService.verifyIdentityToken.mockResolvedValue("did:key:owner-identity");
+
+      await handleAuth(deps, fakeIO, fakeSocket, createArgs({ identityToken: "id-token" }), callback);
+
+      expect(fakeAuthService.verifyIdentityToken).toHaveBeenCalledWith("id-token", "doc-1");
+      expect(fakeSessionManager.createSession).toHaveBeenCalledWith(
+        expect.objectContaining({ appType: "dsheet", ownerIdentityDid: "did:key:owner-identity" })
+      );
+      expect(fakeMongoDBStore.pinDocumentPortalIfAbsent).toHaveBeenCalledWith(
+        expect.objectContaining({
+          documentId: "doc-1",
+          appType: "dsheet",
+          ownerIdentityDid: "did:key:owner-identity",
+        })
+      );
+      expect(callback).toHaveBeenCalledWith(
+        expect.objectContaining({ status: true, statusCode: 200 })
+      );
+    });
+
+    it("401s a dsheet create when the presented identityToken is invalid (never downgraded to unbound)", async () => {
+      const fakeIO = createFakeIO();
+      const fakeSocket = createFakeSocket({ emit: vi.fn() });
+      const callback = vi.fn();
+      fakeSessionManager.getSession.mockResolvedValue(undefined);
+      fakeAuthService.verifyOwnerToken.mockResolvedValue("owner-did");
+      fakeAuthService.verifyIdentityToken.mockResolvedValue(null);
+
+      await handleAuth(deps, fakeIO, fakeSocket, createArgs({ identityToken: "bad-token" }), callback);
+
+      expect(fakeSessionManager.createSession).not.toHaveBeenCalled();
+      expect(callback).toHaveBeenCalledWith({
+        status: false,
+        statusCode: 401,
+        error: "Valid identity proof required to create a durable session",
+        errorCode: ErrorCode.AUTH_TOKEN_INVALID,
+      });
+    });
+
+    it("identity decides the role on a BOUND dsheet session join", async () => {
+      const fakeIO = createFakeIO();
+      const fakeSocket = createFakeSocket({ emit: vi.fn() });
+      const callback = vi.fn();
+      fakeSessionManager.getSession.mockResolvedValue({
+        sessionDid: "session-1", ownerDid: "owner-did", roomInfo: "r",
+        appType: "dsheet", collabJoinEnabled: false,
+        ownerIdentityDid: "did:key:owner-identity",
+      });
+      fakeAuthService.verifyCollaborationToken.mockResolvedValue("user-did");
+      fakeAuthService.verifyOwnerToken.mockResolvedValue("owner-did");
+      fakeAuthService.verifyIdentityToken.mockResolvedValue("did:key:owner-identity");
+
+      await handleAuth(deps, fakeIO, fakeSocket, createArgs({ identityToken: "id-token" }), callback);
+
+      expect(callback).toHaveBeenCalledWith(
+        expect.objectContaining({
+          status: true,
+          data: expect.objectContaining({ role: "owner" }),
+        })
+      );
+    });
+
+    it("caps role to editor when the presented identity does not match the bound owner identity (dsheet)", async () => {
+      const fakeIO = createFakeIO();
+      const fakeSocket = createFakeSocket({ emit: vi.fn() });
+      const callback = vi.fn();
+      fakeSessionManager.getSession.mockResolvedValue({
+        sessionDid: "session-1", ownerDid: "owner-did", roomInfo: "r",
+        appType: "dsheet", collabJoinEnabled: false,
+        ownerIdentityDid: "did:key:owner-identity",
+      });
+      fakeAuthService.verifyCollaborationToken.mockResolvedValue("user-did");
+      fakeAuthService.verifyOwnerToken.mockResolvedValue("owner-did");
+      fakeAuthService.verifyIdentityToken.mockResolvedValue("did:key:other-identity");
+
+      await handleAuth(deps, fakeIO, fakeSocket, createArgs({ identityToken: "id-token" }), callback);
+
+      expect(callback).toHaveBeenCalledWith(
+        expect.objectContaining({
+          status: true,
+          data: expect.objectContaining({ role: "editor" }),
+        })
+      );
+    });
+
+    it("caps role to editor on a token-less join of a BOUND dsheet session", async () => {
+      const fakeIO = createFakeIO();
+      const fakeSocket = createFakeSocket({ emit: vi.fn() });
+      const callback = vi.fn();
+      fakeSessionManager.getSession.mockResolvedValue({
+        sessionDid: "session-1", ownerDid: "owner-did", roomInfo: "r",
+        appType: "dsheet", collabJoinEnabled: false,
+        ownerIdentityDid: "did:key:owner-identity",
+      });
+      fakeAuthService.verifyCollaborationToken.mockResolvedValue("user-did");
+      fakeAuthService.verifyOwnerToken.mockResolvedValue("owner-did");
+
+      await handleAuth(deps, fakeIO, fakeSocket, createArgs(), callback);
+
+      expect(fakeAuthService.verifyIdentityToken).not.toHaveBeenCalled();
+      expect(callback).toHaveBeenCalledWith(
+        expect.objectContaining({
+          status: true,
+          data: expect.objectContaining({ role: "editor" }),
+        })
+      );
+    });
+
+    it("401s a BOUND dsheet join when the presented identityToken fails to verify", async () => {
+      const fakeIO = createFakeIO();
+      const fakeSocket = createFakeSocket({ emit: vi.fn() });
+      const callback = vi.fn();
+      fakeSessionManager.getSession.mockResolvedValue({
+        sessionDid: "session-1", ownerDid: "owner-did", roomInfo: "r",
+        appType: "dsheet", collabJoinEnabled: false,
+        ownerIdentityDid: "did:key:owner-identity",
+      });
+      fakeAuthService.verifyCollaborationToken.mockResolvedValue("user-did");
+      fakeAuthService.verifyOwnerToken.mockResolvedValue("owner-did");
+      fakeAuthService.verifyIdentityToken.mockResolvedValue(null);
+
+      await handleAuth(deps, fakeIO, fakeSocket, createArgs({ identityToken: "bad-token" }), callback);
+
+      expect(callback).toHaveBeenCalledWith({
+        status: false,
+        statusCode: 401,
+        error: "Invalid identity proof",
+        errorCode: ErrorCode.AUTH_TOKEN_INVALID,
+      });
+    });
+
+    it("heals an unbound dsheet session when a proven owner presents an identityToken", async () => {
+      const fakeIO = createFakeIO();
+      const fakeSocket = createFakeSocket({ emit: vi.fn() });
+      const callback = vi.fn();
+      fakeSessionManager.getSession.mockResolvedValue({
+        sessionDid: "session-1", ownerDid: "owner-did", roomInfo: "r",
+        appType: "dsheet", collabJoinEnabled: false, ownerIdentityDid: null,
+      });
+      fakeAuthService.verifyCollaborationToken.mockResolvedValue("user-did");
+      fakeAuthService.verifyOwnerToken.mockResolvedValue("owner-did");
+      fakeAuthService.verifyIdentityToken.mockResolvedValue("did:key:owner-identity");
+
+      await handleAuth(deps, fakeIO, fakeSocket, createArgs({ identityToken: "id-token" }), callback);
+
+      expect(fakeSessionManager.fillOwnerIdentityDidIfAbsent).toHaveBeenCalledWith(
+        "doc-1", "session-1", "did:key:owner-identity"
+      );
+    });
+
+    it("kicks unenforced sockets already in the room on heal, spares already-enforced ones", async () => {
+      const unenforcedRemote = { id: "socket-unenforced", data: { editPlaneEnforced: false }, disconnect: vi.fn() };
+      const enforcedRemote = { id: "socket-enforced", data: { editPlaneEnforced: true }, disconnect: vi.fn() };
+      const fetchSockets = vi.fn().mockResolvedValue([unenforcedRemote, enforcedRemote]);
+      const fakeIO = createFakeIO({ fetchSockets });
+      const fakeSocket = createFakeSocket({ emit: vi.fn() });
+      const callback = vi.fn();
+      fakeSessionManager.getSession.mockResolvedValue({
+        sessionDid: "session-1", ownerDid: "owner-did", roomInfo: "r",
+        appType: "dsheet", collabJoinEnabled: false, ownerIdentityDid: null,
+      });
+      fakeAuthService.verifyCollaborationToken.mockResolvedValue("user-did");
+      fakeAuthService.verifyOwnerToken.mockResolvedValue("owner-did");
+      fakeAuthService.verifyIdentityToken.mockResolvedValue("did:key:owner-identity");
+
+      await handleAuth(deps, fakeIO, fakeSocket, createArgs({ identityToken: "id-token" }), callback);
+
+      expect(unenforcedRemote.disconnect).toHaveBeenCalledWith(true);
+      expect(enforcedRemote.disconnect).not.toHaveBeenCalled();
+    });
+
+    it("enforces rail admission on a BOUND dsheet session: no rail → JOIN_DISABLED", async () => {
+      const fakeIO = createFakeIO();
+      const fakeSocket = createFakeSocket({ emit: vi.fn() });
+      const callback = vi.fn();
+      fakeSessionManager.getSession.mockResolvedValue({
+        sessionDid: "session-1", ownerDid: "owner-did", roomInfo: "r",
+        appType: "dsheet", collabJoinEnabled: false,
+        ownerIdentityDid: "did:key:owner-identity",
+      });
+      fakeAuthService.verifyCollaborationToken.mockResolvedValue("user-did");
+      fakeSessionManager.getCollabJoinEnabled.mockResolvedValue(false);
+
+      // Editor join: collaborationToken only — no ownerToken, no editUcan.
+      await handleAuth(deps, fakeIO, fakeSocket, {
+        documentId: "doc-1", sessionDid: "session-1",
+        collaborationToken: "collab-token", appType: "dsheet",
+      }, callback);
+
+      expect(callback).toHaveBeenCalledWith(
+        expect.objectContaining({ statusCode: 403, errorCode: ErrorCode.JOIN_DISABLED })
+      );
+      expect(fakeSocket.join).not.toHaveBeenCalled();
+    });
+
+    it("admits a workspace-rail editor on a BOUND dsheet session when the tier is on", async () => {
+      const fakeIO = createFakeIO();
+      const fakeSocket = createFakeSocket({ emit: vi.fn() });
+      const callback = vi.fn();
+      fakeSessionManager.getSession.mockResolvedValue({
+        sessionDid: "session-1", ownerDid: "owner-did", roomInfo: "r",
+        appType: "dsheet", collabJoinEnabled: false,
+        ownerIdentityDid: "did:key:owner-identity",
+      });
+      fakeAuthService.verifyCollaborationToken.mockResolvedValue("user-did");
+      fakeAuthService.verifyOwnerToken.mockResolvedValue("owner-did"); // shared portal secret
+      fakeAuthService.verifyIdentityToken.mockResolvedValue("did:key:member-identity"); // not the creator
+      fakeSessionManager.getWorkspaceEditEnabled.mockResolvedValue(true);
+
+      await handleAuth(deps, fakeIO, fakeSocket, createArgs({ identityToken: "member-id-token" }), callback);
+
+      expect(fakeSocket.join).toHaveBeenCalled();
+      expect(fakeSocket.data.rail).toBe("workspace");
+      expect(fakeSocket.data.editPlaneEnforced).toBe(true);
+      expect(callback).toHaveBeenCalledWith(
+        expect.objectContaining({ status: true, data: expect.objectContaining({ role: "editor" }) })
+      );
+    });
+
+    it("stamps editPlaneEnforced=false on an UNBOUND dsheet join (legacy semantics preserved)", async () => {
+      const fakeIO = createFakeIO();
+      const fakeSocket = createFakeSocket({ emit: vi.fn() });
+      const callback = vi.fn();
+      fakeSessionManager.getSession.mockResolvedValue({
+        sessionDid: "session-1", ownerDid: "owner-did", roomInfo: "r",
+        appType: "dsheet", collabJoinEnabled: false,
+      });
+      fakeAuthService.verifyCollaborationToken.mockResolvedValue("user-did");
+
+      await handleAuth(deps, fakeIO, fakeSocket, {
+        documentId: "doc-1", sessionDid: "session-1",
+        collaborationToken: "collab-token", appType: "dsheet",
+      }, callback);
+
+      expect(fakeSocket.join).toHaveBeenCalled();
+      expect(fakeSocket.data.editPlaneEnforced).toBe(false);
+      expect(fakeSessionManager.getCollabJoinEnabled).not.toHaveBeenCalled();
     });
   });
 });

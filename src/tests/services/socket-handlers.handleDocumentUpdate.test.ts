@@ -228,7 +228,7 @@ describe("handleDocumentUpdate", () => {
     });
   });
 
-  it("stamps the connection's appType onto the persisted update", async () => {
+  it("does not forward appType to createUpdate (the store stamps it from the session row)", async () => {
     const fakeIO = createFakeIO();
     const fakeSocket = createFakeSocket({ emit: vi.fn() });
     fakeSocket.data.appType = "dsheet";
@@ -257,7 +257,7 @@ describe("handleDocumentUpdate", () => {
     await handleDocumentUpdate(deps, fakeIO, fakeSocket, fakeArgs, callback);
 
     expect(fakeMongoDBStore.createUpdate).toHaveBeenCalledWith(
-      expect.objectContaining({ appType: "dsheet" })
+      expect.not.objectContaining({ appType: expect.anything() })
     );
   });
 
@@ -345,6 +345,7 @@ describe("handleDocumentUpdate", () => {
     ) {
       const socket = createFakeSocket(broadcast ?? { emit: vi.fn() }, { role: "editor" });
       socket.data.rail = railData.rail;
+      socket.data.editPlaneEnforced = true;
       fakeSessionManager.getRuntimeSession.mockResolvedValue({ sessionDid: socket.data.sessionDid });
       fakeAuthService.verifyCollaborationToken.mockResolvedValue(true);
       return socket;
@@ -391,9 +392,9 @@ describe("handleDocumentUpdate", () => {
       expect(cb).toHaveBeenCalledWith(expect.objectContaining({ status: true }));
     });
 
-    it("does NOT guard a dsheet editor (no rail model — must not 403)", async () => {
+    it("does NOT guard an UNBOUND dsheet editor (legacy semantics — must not 403)", async () => {
       const socket = createFakeSocket({ emit: vi.fn() }, { role: "editor" });
-      socket.data.appType = "dsheet"; // excluded from the ddoc-only guard
+      socket.data.appType = "dsheet"; // no editPlaneEnforced stamp — unbound room, legacy semantics
       fakeSessionManager.getRuntimeSession.mockResolvedValue({ sessionDid: socket.data.sessionDid });
       fakeAuthService.verifyCollaborationToken.mockResolvedValue(true);
       fakeMongoDBStore.createUpdate.mockResolvedValue({ id: "u1", documentId: "doc-1", data: "d", updateType: "yjs_update", commitCid: null, createdAt: 1 });
@@ -401,6 +402,18 @@ describe("handleDocumentUpdate", () => {
       await handleDocumentUpdate(deps, createFakeIO(), socket, args, cb);
       expect(fakeMongoDBStore.createUpdate).toHaveBeenCalled();
       expect(cb).toHaveBeenCalledWith(expect.objectContaining({ status: true }));
+    });
+
+    it("kicks a revoked editor on a BOUND dsheet session (EDIT_REVOKED + disconnect)", async () => {
+      // Same setup as the ddoc revocation test in this file, but with a dsheet socket
+      // whose auth stamped editPlaneEnforced (bound room).
+      const socket = makeEditor({ rail: "public" });
+      socket.data.appType = "dsheet";
+      fakeSessionManager.getCollabJoinEnabled.mockResolvedValue(false);
+      const cb = vi.fn();
+      await handleDocumentUpdate(deps, createFakeIO(), socket, args, cb);
+      expect(cb).toHaveBeenCalledWith(expect.objectContaining({ statusCode: 403, errorCode: ErrorCode.EDIT_REVOKED }));
+      expect((socket as any).disconnect).toHaveBeenCalledWith(true);
     });
   });
 });

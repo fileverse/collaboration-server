@@ -7,7 +7,7 @@ import { ErrorCode } from "../../types";
 function fakeSocket(role: "owner" | "editor", extra: Record<string, unknown> = {}): AppSocket {
   return {
     id: "socket-1",
-    data: { authenticated: true, documentId: "doc-1", sessionDid: "room-did", role, appType: "ddoc", ...extra },
+    data: { authenticated: true, documentId: "doc-1", sessionDid: "room-did", role, appType: "ddoc", editPlaneEnforced: true, ...extra },
   } as unknown as AppSocket;
 }
 
@@ -78,6 +78,33 @@ describe("handleSnapshot", () => {
     createSnapshot.mockResolvedValue({ id: "s1", documentId: "doc-1", seq: 11 });
     const cb = vi.fn();
     await handleSnapshot(deps, fakeSocket("owner"), { data: "ct", collaborationToken: "t", floorSeq: 10 }, cb);
+    expect(cb).toHaveBeenCalledWith(expect.objectContaining({ status: true, statusCode: 200 }));
+  });
+
+  it("kicks a revoked editor on a BOUND dsheet session (EDIT_REVOKED)", async () => {
+    getCollabJoinEnabled.mockResolvedValue(false);
+    const cb = vi.fn();
+    await handleSnapshot(
+      deps,
+      fakeSocket("editor", { appType: "dsheet", editPlaneEnforced: true }),
+      { data: "ct", collaborationToken: "t", floorSeq: 1 },
+      cb
+    );
+    expect(createSnapshot).not.toHaveBeenCalled();
+    expect(cb).toHaveBeenCalledWith(expect.objectContaining({ status: false, statusCode: 403, errorCode: ErrorCode.EDIT_REVOKED }));
+  });
+
+  it("does NOT guard an UNBOUND dsheet editor's snapshot (legacy semantics — must not 403)", async () => {
+    getCollabJoinEnabled.mockResolvedValue(false); // would revoke if the recheck ran
+    createSnapshot.mockResolvedValue({ id: "s1", documentId: "doc-1", seq: 9 });
+    const cb = vi.fn();
+    await handleSnapshot(
+      deps,
+      fakeSocket("editor", { appType: "dsheet", editPlaneEnforced: undefined }),
+      { data: "ct", collaborationToken: "t", floorSeq: 4 },
+      cb
+    );
+    expect(createSnapshot).toHaveBeenCalled();
     expect(cb).toHaveBeenCalledWith(expect.objectContaining({ status: true, statusCode: 200 }));
   });
 });

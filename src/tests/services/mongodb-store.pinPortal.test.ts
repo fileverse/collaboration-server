@@ -37,6 +37,7 @@ describe("pinDocumentPortalIfAbsent", () => {
       ownerDid: "did:key:o",
       ownerIdentityDid: "did:key:i",
       sessionDid: "did:key:s1",
+      appType: "ddoc",
     });
 
     expect(findOneAndUpdate).toHaveBeenCalledWith(
@@ -62,6 +63,7 @@ describe("pinDocumentPortalIfAbsent", () => {
       ownerDid: "did:key:o",
       ownerIdentityDid: "did:key:i",
       sessionDid: "did:key:s1",
+      appType: "ddoc",
     });
 
     expect(updateOne).toHaveBeenCalledWith(
@@ -79,6 +81,7 @@ describe("pinDocumentPortalIfAbsent", () => {
       ownerDid: "did:key:o2",
       ownerIdentityDid: "did:key:i2",
       sessionDid: "did:key:s2",
+      appType: "ddoc",
     });
 
     // The caller's own portal is irrelevant to the return value — the effective
@@ -98,6 +101,7 @@ describe("pinDocumentPortalIfAbsent", () => {
       ownerDid: null,
       ownerIdentityDid: "did:key:i",
       sessionDid: "did:key:s",
+      appType: "ddoc",
     });
 
     expect(result.portalAddress).toBe("0xP1");
@@ -113,6 +117,7 @@ describe("pinDocumentPortalIfAbsent", () => {
       ownerDid: null,
       ownerIdentityDid: null,
       sessionDid: "did:key:s",
+      appType: "ddoc",
     });
 
     expect(result).toEqual({ portalAddress: null });
@@ -133,6 +138,7 @@ describe("upsertDocumentMeta binding immutability", () => {
       ownerDid: "did:key:x",
       ownerIdentityDid: "did:key:x",
       portalAddress: "0xEVIL",
+      appType: "ddoc",
       editLock: "lk",
       title: "t",
     });
@@ -144,6 +150,7 @@ describe("upsertDocumentMeta binding immutability", () => {
           ownerDid: "did:key:x",
           ownerIdentityDid: "did:key:x",
           portalAddress: "0xEVIL",
+          appType: "ddoc",
         },
         $set: expect.objectContaining({
           sessionDid: "did:key:s",

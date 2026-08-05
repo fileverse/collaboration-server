@@ -6,6 +6,7 @@ interface IDocumentMeta extends MongooseDocument {
   ownerDid: string | null;
   ownerIdentityDid: string | null;
   portalAddress: string | null;
+  appType?: "ddoc" | "dsheet";
   editLock: string | null; // roomKey-wrapped
   title: string | null; // roomKey-encrypted
   updatedAt: number;
@@ -21,6 +22,8 @@ const DocumentMetaSchema = new Schema<IDocumentMeta>({
   ownerDid: { type: String, default: null },
   ownerIdentityDid: { type: String, default: null },
   portalAddress: { type: String, default: null },
+  // Which Fileverse app owns this document. Absent ⇒ "ddoc" (legacy).
+  appType: { type: String, enum: ["ddoc", "dsheet"], default: "ddoc" },
   editLock: { type: String, default: null },
   title: { type: String, default: null },
   updatedAt: { type: Number, required: true },

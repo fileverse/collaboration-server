@@ -43,7 +43,7 @@ describe("handleSetDocumentMeta", () => {
     const cb = vi.fn();
     await handleSetDocumentMeta(deps, fakeSocket("owner"), { editLock: "el", title: "t" }, cb);
     expect(upsertDocumentMeta).toHaveBeenCalledWith(expect.objectContaining({
-      documentId: "doc-1", sessionDid: "room-did", ownerDid: "od", ownerIdentityDid: "oid", editLock: "el", title: "t",
+      documentId: "doc-1", sessionDid: "room-did", ownerDid: "od", ownerIdentityDid: "oid", editLock: "el", title: "t", appType: "ddoc",
     }));
     expect(cb).toHaveBeenCalledWith(expect.objectContaining({ status: true, statusCode: 200 }));
   });

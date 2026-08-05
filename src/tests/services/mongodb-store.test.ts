@@ -107,6 +107,23 @@ describe("createUpdate: durable-write gate", () => {
 
     expect(CounterModel.findOneAndUpdate).not.toHaveBeenCalled();
   });
+
+  it("stamps appType from the session row, not the caller", async () => {
+    const { CounterModel, SessionModel, DocumentUpdateModel: MockedUpdateModel } =
+      await import("../../database/models");
+    (SessionModel.findOne as any).mockResolvedValue({ state: "active", appType: "dsheet" });
+    (CounterModel.findOneAndUpdate as any).mockResolvedValue({ _id: "doc-1", seq: 1 });
+
+    const store = new MongoDBStore();
+    await store.createUpdate({
+      id: "u1", documentId: "doc-1", data: "ct", updateType: "yjs_update",
+      committed: false, commitCid: null, createdAt: 1, sessionDid: "room-did",
+    });
+
+    expect(MockedUpdateModel).toHaveBeenCalledWith(
+      expect.objectContaining({ appType: "dsheet" })
+    );
+  });
 });
 
 describe("schema: seq ordering", () => {
@@ -207,7 +224,7 @@ describe("upsertDocumentMeta", () => {
     const store = new MongoDBStore();
     await store.upsertDocumentMeta({
       documentId: "doc-1", sessionDid: "room-did", ownerDid: "od", ownerIdentityDid: "oid",
-      portalAddress: "0xP", editLock: "el", title: "t",
+      portalAddress: "0xP", appType: "ddoc", editLock: "el", title: "t",
     });
 
     expect(DocumentMetaModel.findOneAndUpdate).toHaveBeenCalledWith(
@@ -215,7 +232,7 @@ describe("upsertDocumentMeta", () => {
       expect.objectContaining({
         // Binding fields are first-writer-immutable (C1) — pinned on insert only.
         $setOnInsert: expect.objectContaining({
-          ownerDid: "od", ownerIdentityDid: "oid", portalAddress: "0xP",
+          ownerDid: "od", ownerIdentityDid: "oid", portalAddress: "0xP", appType: "ddoc",
         }),
         $set: expect.objectContaining({
           sessionDid: "room-did", editLock: "el", title: "t",
@@ -250,8 +267,8 @@ describe("listDocumentsForOwner", () => {
       isPublished: { $ne: true },
     });
     expect(result).toEqual([
-      { documentId: "doc-1", editLock: "el-1", title: "t1" },
-      { documentId: "doc-2", editLock: "el-2", title: "t2" },
+      { documentId: "doc-1", editLock: "el-1", title: "t1", appType: "ddoc" },
+      { documentId: "doc-2", editLock: "el-2", title: "t2", appType: "ddoc" },
     ]);
   });
 
@@ -306,6 +323,29 @@ describe("listDocumentsForOwner", () => {
 
     expect(result).toEqual([]);
     expect(DocumentMetaModel.find).not.toHaveBeenCalled();
+  });
+});
+
+describe("listDocumentsForOwner: appType routing", () => {
+  beforeEach(() => { vi.clearAllMocks(); });
+
+  it("returns each row's appType, defaulting absent (legacy) rows to ddoc", async () => {
+    const { DocumentMetaModel } = await import("../../database/models");
+    const lean = vi.fn().mockResolvedValue([
+      { _id: "doc-1", editLock: "lock", title: "t", appType: "dsheet" },
+      { _id: "doc-2", editLock: null, title: null },
+    ]);
+    const select = vi.fn(() => ({ lean }));
+    (DocumentMetaModel.find as any).mockReturnValue({ select });
+
+    const store = new MongoDBStore();
+    const docs = await store.listDocumentsForOwner({ ownerIdentityDid: "did:key:x" });
+
+    expect(select).toHaveBeenCalledWith("editLock title appType");
+    expect(docs).toEqual([
+      { documentId: "doc-1", editLock: "lock", title: "t", appType: "dsheet" },
+      { documentId: "doc-2", editLock: null, title: null, appType: "ddoc" },
+    ]);
   });
 });
 
@@ -462,44 +502,91 @@ describe("collectOrphans", () => {
     vi.clearAllMocks();
   });
 
+  // No live sibling session on the documentId — the sweep's default posture in every
+  // case below except the one that specifically tests the live-sibling guard.
+  function mockNoLiveSibling(SessionModel: any) {
+    (SessionModel.findOne as any).mockReturnValue({ select: vi.fn().mockReturnValue({ lean: vi.fn().mockResolvedValue(null) }) });
+  }
+
   it("purges a terminated ddoc stream with no editLock and no snapshot", async () => {
-    const { SessionModel, DocumentMetaModel, DocumentUpdateModel } = await import("../../database/models");
-    (SessionModel.find as any).mockReturnValue({ lean: vi.fn().mockResolvedValue([{ documentId: "orphan", sessionDid: "s" }]) });
+    const { SessionModel, DocumentMetaModel, DocumentUpdateModel, DocumentCommitModel } = await import("../../database/models");
+    (SessionModel.find as any).mockReturnValue({ lean: vi.fn().mockResolvedValue([{ documentId: "orphan", sessionDid: "s", portalAddress: null }]) });
+    mockNoLiveSibling(SessionModel);
     (DocumentMetaModel.findById as any) = vi.fn().mockReturnValue({ lean: vi.fn().mockResolvedValue(null) }); // no editLock
-    (DocumentUpdateModel.findOne as any).mockReturnValue({ sort: vi.fn().mockReturnValue({ lean: vi.fn().mockResolvedValue(null) }) }); // no snapshot
+    (DocumentUpdateModel.findOne as any).mockReturnValue({
+      sort: vi.fn().mockReturnValue({ lean: vi.fn().mockResolvedValue(null) }), // no snapshot
+      select: vi.fn().mockReturnValue({ lean: vi.fn().mockResolvedValue(null) }), // no pre-durable legacy row
+    });
 
     const store = new MongoDBStore();
     const n = await store.collectOrphans(60_000);
 
     expect(DocumentUpdateModel.deleteMany).toHaveBeenCalledWith({ documentId: "orphan" });
+    expect(DocumentCommitModel.deleteMany).toHaveBeenCalledWith({ documentId: "orphan" });
     expect(n).toBe(1);
   });
 
+  it("spares a document that still has a non-terminated sibling session", async () => {
+    const { SessionModel, DocumentMetaModel, DocumentUpdateModel, DocumentCommitModel, CounterModel } = await import("../../database/models");
+    (SessionModel.find as any).mockReturnValue({ lean: vi.fn().mockResolvedValue([{ documentId: "shared-doc", sessionDid: "s", portalAddress: null }]) });
+    (SessionModel.findOne as any).mockReturnValue({ select: vi.fn().mockReturnValue({ lean: vi.fn().mockResolvedValue({ _id: "live-session" }) }) });
+
+    const store = new MongoDBStore();
+    const n = await store.collectOrphans(60_000);
+
+    expect(SessionModel.findOne).toHaveBeenCalledWith({ documentId: "shared-doc", state: { $ne: "terminated" } });
+    // The live-sibling guard short-circuits before any of the other guards run.
+    expect(DocumentMetaModel.findById).not.toHaveBeenCalled();
+    expect(DocumentUpdateModel.deleteMany).not.toHaveBeenCalled();
+    expect(DocumentCommitModel.deleteMany).not.toHaveBeenCalled();
+    expect(SessionModel.deleteMany).not.toHaveBeenCalled();
+    expect(CounterModel.deleteOne).not.toHaveBeenCalled();
+    expect(n).toBe(0);
+  });
+
   it("keeps a terminated stream that still has an editLock (real draft)", async () => {
-    const { SessionModel, DocumentMetaModel, DocumentUpdateModel } = await import("../../database/models");
-    (SessionModel.find as any).mockReturnValue({ lean: vi.fn().mockResolvedValue([{ documentId: "draft", sessionDid: "s" }]) });
+    const { SessionModel, DocumentMetaModel, DocumentUpdateModel, DocumentCommitModel } = await import("../../database/models");
+    (SessionModel.find as any).mockReturnValue({ lean: vi.fn().mockResolvedValue([{ documentId: "draft", sessionDid: "s", portalAddress: null }]) });
+    mockNoLiveSibling(SessionModel);
     (DocumentMetaModel.findById as any) = vi.fn().mockReturnValue({ lean: vi.fn().mockResolvedValue({ editLock: "el" }) });
     (DocumentUpdateModel.findOne as any).mockReturnValue({ sort: vi.fn().mockReturnValue({ lean: vi.fn().mockResolvedValue(null) }) });
 
     const store = new MongoDBStore();
     const n = await store.collectOrphans(60_000);
+    expect(DocumentMetaModel.findById).toHaveBeenCalledWith("draft"); // guard genuinely consulted the editLock
     expect(DocumentUpdateModel.deleteMany).not.toHaveBeenCalled();
+    expect(DocumentCommitModel.deleteMany).not.toHaveBeenCalled();
     expect(n).toBe(0);
   });
 
   it("keeps a terminated stream that has no editLock but still has a snapshot (hydration base)", async () => {
-    const { SessionModel, DocumentMetaModel, DocumentUpdateModel, CounterModel } = await import("../../database/models");
-    (SessionModel.find as any).mockReturnValue({ lean: vi.fn().mockResolvedValue([{ documentId: "snapdraft", sessionDid: "s" }]) });
+    const { SessionModel, DocumentMetaModel, DocumentUpdateModel, DocumentCommitModel, CounterModel } = await import("../../database/models");
+    (SessionModel.find as any).mockReturnValue({ lean: vi.fn().mockResolvedValue([{ documentId: "snapdraft", sessionDid: "s", portalAddress: null }]) });
+    mockNoLiveSibling(SessionModel);
     (DocumentMetaModel.findById as any) = vi.fn().mockReturnValue({ lean: vi.fn().mockResolvedValue(null) }); // no editLock
     (DocumentUpdateModel.findOne as any).mockReturnValue({ sort: vi.fn().mockReturnValue({ lean: vi.fn().mockResolvedValue({ _id: "snap1", documentId: "snapdraft", seq: 5 }) }) }); // snapshot exists
 
     const store = new MongoDBStore();
     const n = await store.collectOrphans(60_000);
 
+    expect(DocumentUpdateModel.findOne).toHaveBeenCalled(); // guard genuinely consulted the snapshot query
     expect(DocumentUpdateModel.deleteMany).not.toHaveBeenCalled();
+    expect(DocumentCommitModel.deleteMany).not.toHaveBeenCalled();
     expect(SessionModel.deleteMany).not.toHaveBeenCalled();
     expect(CounterModel.deleteOne).not.toHaveBeenCalled();
     expect(n).toBe(0);
+  });
+
+  it("queries terminated sessions across BOTH app types (no appType filter)", async () => {
+    const { SessionModel } = await import("../../database/models");
+    (SessionModel.find as any).mockReturnValue({ lean: vi.fn().mockResolvedValue([]) });
+
+    const store = new MongoDBStore();
+    await store.collectOrphans(1000);
+
+    expect(SessionModel.find).toHaveBeenCalledWith({
+      state: "terminated", createdAt: { $lt: expect.any(Date) },
+    });
   });
 });
 

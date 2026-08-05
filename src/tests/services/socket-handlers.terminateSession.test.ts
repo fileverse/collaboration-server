@@ -248,8 +248,7 @@ describe("handleTerminateSession", () => {
     expect(fetchSocketsResponse[0].data.authenticated).toBe(false);
     expect(fakeSessionManager.terminateSession).toHaveBeenCalledWith(
       fakeArgs.documentId,
-      fakeSessionResponse.sessionDid,
-      "ddoc"
+      fakeSessionResponse.sessionDid
     );
 
     const callbackResponse = {
@@ -260,11 +259,11 @@ describe("handleTerminateSession", () => {
     expect(callback).toHaveBeenCalledWith(callbackResponse);
   });
 
-  it("uses the TARGET session's appType, not the calling socket's appType, when terminating cross-appType", async () => {
+  it("uses the TARGET session's own sessionDid, not the calling socket's, when terminating cross-appType", async () => {
     // Regression test: a socket last-authenticated to a "dsheet" session must not be able to
-    // use its own socket.data.appType when terminating a DIFFERENT target session/document
-    // that is actually a "ddoc". The cascade delete must be scoped to the target session's
-    // own stored appType, not whatever the calling socket happens to be.
+    // use its own socket.data when terminating a DIFFERENT target session/document
+    // that is actually a "ddoc". terminateSession must be scoped to the target session's
+    // own identity, not whatever the calling socket happens to be.
     const fetchSocketsResponse = [
       {
         id: "peer-1",
@@ -304,8 +303,7 @@ describe("handleTerminateSession", () => {
 
     expect(fakeSessionManager.terminateSession).toHaveBeenCalledWith(
       fakeArgs.documentId,
-      fakeSessionResponse.sessionDid,
-      "ddoc"
+      fakeSessionResponse.sessionDid
     );
   });
 
@@ -343,8 +341,7 @@ describe("handleTerminateSession", () => {
     );
     expect(fakeSessionManager.terminateSession).toHaveBeenCalledWith(
       fakeArgs.documentId,
-      fakeSessionResponse.sessionDid,
-      "ddoc"
+      fakeSessionResponse.sessionDid
     );
     expect(callback).toHaveBeenCalledWith({
       status: true,
