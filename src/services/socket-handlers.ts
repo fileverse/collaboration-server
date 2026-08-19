@@ -31,6 +31,7 @@ import { rotationCoordinator } from "./rotation-coordinator";
 import { Hex, isAddress } from "viem";
 import type { SocketHandlerDeps } from "./socket-handlers.deps";
 import { config } from "../config";
+import { timeAck } from "./perf-metrics";
 
 const defaultDeps: SocketHandlerDeps = {
   authService,
@@ -73,34 +74,64 @@ export function registerEventHandlers(io: AppServer): void {
     });
 
     // Register event handlers
-    socket.on("/auth", (args, callback) => handleAuth(defaultDeps, io, socket, args, callback));
+    socket.on("/auth", (args, callback) =>
+      handleAuth(defaultDeps, io, socket, args, timeAck("/auth", args?.documentId, callback))
+    );
     socket.on("/documents/update", (args, callback) =>
-      handleDocumentUpdate(defaultDeps, io, socket, args, callback)
+      handleDocumentUpdate(
+        defaultDeps, io, socket, args,
+        timeAck("/documents/update", args?.documentId, callback)
+      )
     );
     socket.on("/documents/commit", (args, callback) =>
-      handleDocumentCommit(defaultDeps, socket, args, callback)
+      handleDocumentCommit(
+        defaultDeps, socket, args,
+        timeAck("/documents/commit", args?.documentId, callback)
+      )
     );
     socket.on("/documents/commit/history", (args, callback) =>
-      handleCommitHistory(defaultDeps, socket, args, callback)
+      handleCommitHistory(
+        defaultDeps, socket, args,
+        timeAck("/documents/commit/history", args?.documentId, callback)
+      )
     );
     socket.on("/documents/update/history", (args, callback) =>
-      handleUpdateHistory(defaultDeps, socket, args, callback)
+      handleUpdateHistory(
+        defaultDeps, socket, args,
+        timeAck("/documents/update/history", args?.documentId, callback)
+      )
     );
     socket.on("/documents/snapshot", (args, callback) =>
-      handleSnapshot(defaultDeps, socket, args, callback)
+      handleSnapshot(
+        defaultDeps, socket, args,
+        timeAck("/documents/snapshot", args?.documentId, callback)
+      )
     );
     socket.on("/documents/mirror-snapshot", (args, callback) =>
-      handleMirrorSnapshot(defaultDeps, socket, args, callback)
+      handleMirrorSnapshot(
+        defaultDeps, socket, args,
+        timeAck("/documents/mirror-snapshot", args?.documentId, callback)
+      )
     );
     socket.on("/documents/meta", (args, callback) =>
-      handleSetDocumentMeta(defaultDeps, socket, args, callback)
+      handleSetDocumentMeta(
+        defaultDeps, socket, args,
+        timeAck("/documents/meta", args?.documentId, callback)
+      )
     );
-    socket.on("/documents/peers/list", (args, callback) => handlePeersList(io, socket, args, callback));
+    socket.on("/documents/peers/list", (args, callback) =>
+      handlePeersList(io, socket, args, timeAck("/documents/peers/list", args?.documentId, callback))
+    );
     socket.on("/documents/awareness", (args) => handleAwareness(defaultDeps, io, socket, args));
     socket.on("/documents/terminate", (args, callback) =>
-      handleTerminateSession(defaultDeps, io, socket, args, callback)
+      handleTerminateSession(
+        defaultDeps, io, socket, args,
+        timeAck("/documents/terminate", args?.documentId, callback)
+      )
     );
-    socket.on("/session/epoch_loaded", (args, callback) => handleEpochLoaded(socket, args, callback));
+    socket.on("/session/epoch_loaded", (args, callback) =>
+      handleEpochLoaded(socket, args, timeAck("/session/epoch_loaded", args?.documentId, callback))
+    );
 
     // Disconnection handling
     socket.on("disconnecting", () => handleDisconnecting(defaultDeps, socket));

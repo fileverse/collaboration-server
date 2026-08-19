@@ -8,6 +8,7 @@ import { createServer } from "http";
 import { config } from "./config";
 import { authService } from "./services/auth";
 import { registerEventHandlers, getRoomName } from "./services/socket-handlers";
+import { startPerfMonitor } from "./services/perf-metrics";
 import { authMiddleware } from "./services/auth-middleware";
 import { sessionManager } from "./services/session-manager";
 import { mongodbStore } from "./services/mongodb-store";
@@ -222,6 +223,7 @@ class CollaborationServer {
       this.io.use(authMiddleware);
 
       registerEventHandlers(this.io);
+      startPerfMonitor(this.io);
 
       this.setupRoutes();
 

@@ -1,5 +1,6 @@
 import { DocumentUpdate, DocumentCommit, AppType } from "../types/index";
 import { DocumentUpdateModel, DocumentCommitModel, CounterModel, SessionModel, DocumentMetaModel, DocumentMirrorModel, DocumentEditEpochModel } from "../database/models";
+import { perfLogger } from "./logger";
 
 export class SessionTerminatedError extends Error {
   constructor() { super("session terminated"); this.name = "SessionTerminatedError"; }
@@ -211,6 +212,7 @@ export class MongoDBStore {
     options: { sinceSeq?: number; maxBytes?: number } = {}
   ): Promise<{ snapshot: DocumentUpdate | null; updates: DocumentUpdate[]; nextSeq: number | null; hasMore: boolean }> {
     const maxBytes = options.maxBytes ?? 9 * 1024 * 1024; // headroom under the 10MB socket buffer
+    const startedAt = Date.now();
 
     const snapshotDoc: any = await DocumentUpdateModel.findOne({
       documentId, sessionDid, updateType: "snapshot",
@@ -248,6 +250,24 @@ export class MongoDBStore {
     const snapshot: DocumentUpdate | null = includeSnapshot && snapshotDoc
       ? { id: snapshotDoc._id, documentId: snapshotDoc.documentId, seq: snapshotDoc.seq, data: snapshotDoc.data, updateType: "snapshot", committed: false, commitCid: null, createdAt: snapshotDoc.createdAt, sessionDid: snapshotDoc.sessionDid, publishedMarker: snapshotDoc.publishedMarker, floorSeq: snapshotDoc.floorSeq ?? null }
       : null;
+
+    const elapsedMs = Date.now() - startedAt;
+    if (elapsedMs > 500) {
+      // scanned = full tail materialized by the unbounded find; served = what fits the page.
+      perfLogger.warn(
+        {
+          doc: documentId,
+          sinceSeq: options.sinceSeq ?? null,
+          hasSnapshot: !!snapshotDoc,
+          scanned: rows.length,
+          served: updates.length,
+          bytes,
+          hasMore,
+          ms: elapsedMs,
+        },
+        "slow hydration"
+      );
+    }
 
     return { snapshot, updates, nextSeq, hasMore };
   }
