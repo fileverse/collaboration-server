@@ -39,6 +39,7 @@ import {
   SocketData,
   AppServer,
 } from "./types/index";
+import { logger } from "./services/logger";
 
 const ORPHAN_GRACE_MS = 7 * 24 * 60 * 60 * 1000; // 7 days
 const ORPHAN_GC_INTERVAL_MS = 6 * 60 * 60 * 1000; // every 6h
@@ -80,7 +81,7 @@ class CollaborationServer {
 
     // Request logging
     this.app.use((req, res, next) => {
-      console.log(`${new Date().toISOString()} - ${req.method} ${req.path}`);
+      logger.info(`${req.method} ${req.path}`);
       next();
     });
   }
@@ -174,7 +175,7 @@ class CollaborationServer {
     // Error handler
     this.app.use(
       (err: any, req: express.Request, res: express.Response, next: express.NextFunction) => {
-        console.error("Express error:", err);
+        logger.error({ err }, "Express error");
         res.status(500).json({
           error: "Internal server error",
           message: process.env.NODE_ENV === "development" ? err.message : "Something went wrong",
@@ -186,7 +187,7 @@ class CollaborationServer {
   async start() {
     try {
       if (!config.gate.did) {
-        console.warn(
+        logger.warn(
           "[startup] GATE_DID is not set — GP (private/group) live editing is DISABLED; only owner/workspace/public rails admit writes."
         );
       }
@@ -229,29 +230,29 @@ class CollaborationServer {
 
       // Orphan GC sweep
       this.orphanGcInterval = setInterval(
-        () => mongodbStore.collectOrphans(ORPHAN_GRACE_MS).catch((e) => console.error("orphan-GC error:", e)),
+        () => mongodbStore.collectOrphans(ORPHAN_GRACE_MS).catch((e) => logger.error({ err: e }, "orphan-GC error")),
         ORPHAN_GC_INTERVAL_MS
       );
 
       // Start the server
       this.server.listen(config.port, config.host, () => {
-        console.log(`Collaboration server running on ${config.host}:${config.port}`);
-        console.log(`Socket.IO endpoint: http://${config.host}:${config.port}/socket.io/`);
-        console.log(`Server DID: ${authService.getServerDid()}`);
-        console.log(`CORS origins: ${config.corsOrigins.join(", ")}`);
+        logger.info(`Collaboration server running on ${config.host}:${config.port}`);
+        logger.info(`Socket.IO endpoint: http://${config.host}:${config.port}/socket.io/`);
+        logger.info(`Server DID: ${authService.getServerDid()}`);
+        logger.info(`CORS origins: ${config.corsOrigins.join(", ")}`);
       });
 
       // Graceful shutdown
       process.on("SIGTERM", () => this.shutdown("SIGTERM"));
       process.on("SIGINT", () => this.shutdown("SIGINT"));
     } catch (error) {
-      console.error("Failed to start server:", error);
+      logger.error({ err: error }, "Failed to start server");
       process.exit(1);
     }
   }
 
   private shutdown(signal: string) {
-    console.log(`\n Received ${signal}. Shutting down gracefully...`);
+    logger.info(`\n Received ${signal}. Shutting down gracefully...`);
 
     if (this.orphanGcInterval) {
       clearInterval(this.orphanGcInterval);
@@ -259,28 +260,28 @@ class CollaborationServer {
 
     if (this.io) {
       this.io.close(() => {
-        console.log("Socket.IO server closed");
+        logger.info("Socket.IO server closed");
       });
     }
 
     if (this.server) {
       this.server.close(async () => {
-        console.log("HTTP server closed");
+        logger.info("HTTP server closed");
 
         // Cleanup session manager
         try {
           sessionManager.destroy();
-          console.log("Session manager cleaned up");
+          logger.info("Session manager cleaned up");
         } catch (error) {
-          console.error("Error cleaning up session manager:", error);
+          logger.error({ err: error }, "Error cleaning up session manager");
         }
 
         // Disconnect from database
         try {
           await databaseService.disconnect();
-          console.log("Database connection closed");
+          logger.info("Database connection closed");
         } catch (error) {
-          console.error("Error closing database connection:", error);
+          logger.error({ err: error }, "Error closing database connection");
         }
 
         process.exit(0);
@@ -289,12 +290,12 @@ class CollaborationServer {
 
     // Force exit after 10 seconds
     setTimeout(async () => {
-      console.log("Force closing server");
+      logger.info("Force closing server");
       try {
         sessionManager.destroy();
         await databaseService.disconnect();
       } catch (error) {
-        console.error("Error during force shutdown:", error);
+        logger.error({ err: error }, "Error during force shutdown");
       }
       process.exit(1);
     }, 10000);
@@ -314,22 +315,22 @@ class CollaborationServer {
           privateKey,
         },
       });
-      console.log("Waku created:", this.waku);
+      logger.info("Waku created");
       await this.waku.start();
-      console.log("Waku started");
+      logger.info("Waku started");
 
       // creating encoder
       const encoder = this.waku.createEncoder({
         contentTopic: `/ddocs/1/server-discovery-response/proto`,
       });
-      console.log("Encoder created:", encoder);
+      logger.info({ encoder }, "Encoder created");
 
       // creating decoder
-      console.log("Creating decoder...");
+      logger.info("Creating decoder...");
       const decoder = this.waku.createDecoder({
         contentTopic: `/ddocs/1/server-discovery-request/proto`,
       });
-      console.log("Decoder created:", decoder);
+      logger.info({ decoder }, "Decoder created");
 
       // Create a message structure using Protobuf
       const DataPacket = new protobuf.Type("DataPacket")
@@ -342,24 +343,24 @@ class CollaborationServer {
         sender: "Server",
         message: config.wsURL,
       });
-      console.log("Waku message send:", wakuMessageSend);
+      logger.info({ wakuMessageSend }, "Waku message send");
 
       // subscribing to the decoder
       await this.waku.filter.subscribe(decoder, (wakuMessage: any) => {
         const decodedMessage: any = DataPacket.decode(wakuMessage.payload);
-        console.log("Decoded message:", decodedMessage);
+        logger.info({ decodedMessage }, "Decoded message");
         if (decodedMessage && decodedMessage.sender === "dDocs-Client") {
           // sending the message to the encoder
           this.waku.lightPush
             .send(encoder, { payload: DataPacket.encode(wakuMessageSend).finish() })
             .then((result: any) => {
-              console.log("Result:", result);
+              logger.info({ result }, "Result");
             })
-            .catch(console.log);
+            .catch((err: unknown) => logger.error(err));
         }
       });
     } catch (error) {
-      console.error("Error starting Waku:", error);
+      logger.error({ err: error }, "Error starting Waku");
     }
   }
 }
@@ -370,10 +371,10 @@ server
   .start()
   .then(() => {
     if (config.wsURL && config.wsURL !== "wss://0.0.0.0:5001") {
-      server.setupWaku().catch(console.log);
+      server.setupWaku().catch((err: unknown) => logger.error(err));
     }
   })
   .catch((error) => {
-    console.error("Failed to start collaboration server:", error);
+    logger.error({ err: error }, "Failed to start collaboration server");
     process.exit(1);
   });

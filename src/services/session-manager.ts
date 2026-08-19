@@ -1,4 +1,5 @@
 import { SessionModel } from "../database/models";
+import { logger } from "./logger";
 
 interface RuntimeSession {
   documentId: string;
@@ -72,7 +73,7 @@ export class SessionManager {
         { upsert: true, new: true }
       );
     } catch (error) {
-      console.error("Error persisting session:", error);
+      logger.error({ err: error }, "Error persisting session");
     }
 
     return runtimeSession;
@@ -103,7 +104,7 @@ export class SessionManager {
       const mem = this.inMemorySessions.get(sessionKey);
       if (mem && !mem.ownerIdentityDid) mem.ownerIdentityDid = ownerIdentityDid;
     } catch (error) {
-      console.error("Error filling ownerIdentityDid:", error);
+      logger.error({ err: error }, "Error filling ownerIdentityDid");
     }
   }
 
@@ -120,7 +121,7 @@ export class SessionManager {
       const mem = this.inMemorySessions.get(sessionKey);
       if (mem) mem.ownerDid = ownerDid;
     } catch (error) {
-      console.error("Error updating session ownerDid:", error);
+      logger.error({ err: error }, "Error updating session ownerDid");
     }
   }
 
@@ -218,7 +219,7 @@ export class SessionManager {
       const res = await SessionModel.findOneAndUpdate({ documentId, sessionDid }, { collabJoinEnabled: enabled });
       return res !== null || session !== undefined;
     } catch (error) {
-      console.error("Error setting collabJoinEnabled:", error);
+      logger.error({ err: error }, "Error setting collabJoinEnabled");
       return false;
     }
   }
@@ -236,7 +237,7 @@ export class SessionManager {
       const res = await SessionModel.findOneAndUpdate({ documentId, sessionDid }, { workspaceEditEnabled: enabled });
       return res !== null || session !== undefined;
     } catch (error) {
-      console.error("Error setting workspaceEditEnabled:", error);
+      logger.error({ err: error }, "Error setting workspaceEditEnabled");
       return false;
     }
   }
@@ -264,7 +265,7 @@ export class SessionManager {
         { state: "active" }
       );
     } catch (error) {
-      console.error("Error reactivating session in database:", error);
+      logger.error({ err: error }, "Error reactivating session in database");
     }
 
     return true;
@@ -298,7 +299,7 @@ export class SessionManager {
         { state: "inactive" }
       );
     } catch (error) {
-      console.error("Error deactivating session in database:", error);
+      logger.error({ err: error }, "Error deactivating session in database");
     }
   }
 
@@ -312,7 +313,7 @@ export class SessionManager {
         { state: "terminated", roomInfo: null }
       );
     } catch (error) {
-      console.error("Error terminating session in database:", error);
+      logger.error({ err: error }, "Error terminating session in database");
     }
   }
 
@@ -344,7 +345,7 @@ export class SessionManager {
         appType: s.appType,
       }));
     } catch (error) {
-      console.error("Error getting other non-terminated sessions:", error);
+      logger.error({ err: error }, "Error getting other non-terminated sessions");
       return [];
     }
   }
@@ -362,7 +363,7 @@ export class SessionManager {
       ).lean();
       return sessions.map((s: any) => ({ sessionDid: s.sessionDid, appType: s.appType }));
     } catch (error) {
-      console.error("Error getting non-terminated sessions for document:", error);
+      logger.error({ err: error }, "Error getting non-terminated sessions for document");
       return [];
     }
   }
@@ -384,7 +385,7 @@ export class SessionManager {
         sessionDid: s.sessionDid,
       }));
     } catch (error) {
-      console.error("Error getting non-terminated sessions for portal:", error);
+      logger.error({ err: error }, "Error getting non-terminated sessions for portal");
       return [];
     }
   }
@@ -398,7 +399,7 @@ export class SessionManager {
     try {
       return await SessionModel.countDocuments({ state: "active" });
     } catch (error) {
-      console.error("Error getting active sessions count from database:", error);
+      logger.error({ err: error }, "Error getting active sessions count from database");
       return 0;
     }
   }
@@ -418,7 +419,7 @@ export class SessionManager {
     try {
       await SessionModel.findOneAndUpdate({ documentId, sessionDid, ownerDid }, { roomInfo });
     } catch (error) {
-      console.error("Error updating session in database:", error);
+      logger.error({ err: error }, "Error updating session in database");
     }
   }
 

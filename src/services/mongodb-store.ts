@@ -1,6 +1,6 @@
 import { DocumentUpdate, DocumentCommit, AppType } from "../types/index";
 import { DocumentUpdateModel, DocumentCommitModel, CounterModel, SessionModel, DocumentMetaModel, DocumentMirrorModel, DocumentEditEpochModel } from "../database/models";
-import { perfLogger } from "./logger";
+import { logger, perfLogger } from "./logger";
 
 export class SessionTerminatedError extends Error {
   constructor() { super("session terminated"); this.name = "SessionTerminatedError"; }
@@ -47,7 +47,7 @@ export class MongoDBStore {
       return { ...update, seq };
     } catch (error) {
       if (!(error instanceof SessionTerminatedError)) {
-        console.error("Error creating update:", error);
+        logger.error({ err: error }, "Error creating update");
       }
       throw error;
     }
@@ -70,7 +70,7 @@ export class MongoDBStore {
         seq: update.seq,
       };
     } catch (error) {
-      console.error("Error getting update:", error);
+      logger.error({ err: error }, "Error getting update");
       return undefined;
     }
   }
@@ -118,7 +118,7 @@ export class MongoDBStore {
         seq: update.seq,
       }));
     } catch (error) {
-      console.error("Error getting updates by document:", error);
+      logger.error({ err: error }, "Error getting updates by document");
       return [];
     }
   }
@@ -133,7 +133,7 @@ export class MongoDBStore {
         }
       );
     } catch (error) {
-      console.error("Error marking updates as committed:", error);
+      logger.error({ err: error }, "Error marking updates as committed");
       throw error;
     }
   }
@@ -473,7 +473,7 @@ export class MongoDBStore {
 
       return commit;
     } catch (error) {
-      console.error("Error creating commit:", error);
+      logger.error({ err: error }, "Error creating commit");
       throw error;
     }
   }
@@ -492,7 +492,7 @@ export class MongoDBStore {
         sessionDid: commit.sessionDid,
       };
     } catch (error) {
-      console.error("Error getting commit:", error);
+      logger.error({ err: error }, "Error getting commit");
       return undefined;
     }
   }
@@ -531,7 +531,7 @@ export class MongoDBStore {
         sessionDid: commit.sessionDid,
       }));
     } catch (error) {
-      console.error("Error getting commits by document:", error);
+      logger.error({ err: error }, "Error getting commits by document");
       return [];
     }
   }
@@ -547,7 +547,7 @@ export class MongoDBStore {
       }
       return await DocumentUpdateModel.countDocuments(query);
     } catch (error) {
-      console.error("Error counting updates:", error);
+      logger.error({ err: error }, "Error counting updates");
       return 0;
     }
   }
@@ -558,7 +558,7 @@ export class MongoDBStore {
     try {
       return await DocumentCommitModel.countDocuments(filters);
     } catch (error) {
-      console.error("Error counting commits:", error);
+      logger.error({ err: error }, "Error counting commits");
       return 0;
     }
   }
@@ -576,7 +576,7 @@ export class MongoDBStore {
         commits,
       };
     } catch (error) {
-      console.error("Error getting stats:", error);
+      logger.error({ err: error }, "Error getting stats");
       return {
         updates: 0,
         commits: 0,
@@ -666,7 +666,7 @@ export class MongoDBStore {
     try {
       await Promise.all([DocumentUpdateModel.deleteMany({}), DocumentCommitModel.deleteMany({})]);
     } catch (error) {
-      console.error("Error clearing data:", error);
+      logger.error({ err: error }, "Error clearing data");
       throw error;
     }
   }

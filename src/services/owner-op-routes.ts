@@ -6,6 +6,7 @@ import type { MongoDBStore } from "./mongodb-store";
 import { getRoomName } from "./socket-handlers";
 import { Hex, isAddress } from "viem";
 import { getPortalOwnerAddress, bustOwnerDidCacheForPortal } from "../utils/contract";
+import { logger } from "./logger";
 
 // Duplicated from socket-handlers.ts (not exported there); keep in sync if that changes.
 function validateHexAddress(address: string | undefined, fieldName: string): address is Hex {
@@ -34,11 +35,11 @@ async function logSessionNotFound(
 ): Promise<void> {
   try {
     const others = await sessionManager.getNonTerminatedSessionsForDocument(documentId);
-    console.warn(
+    logger.warn(
       `[owner-op:${op}] session not found doc=${documentId} did=${sessionDid} nonTerminated=[${others.map((t) => t.sessionDid).join(",")}]`
     );
   } catch {
-    console.warn(`[owner-op:${op}] session not found doc=${documentId} did=${sessionDid}`);
+    logger.warn(`[owner-op:${op}] session not found doc=${documentId} did=${sessionDid}`);
   }
 }
 
@@ -248,7 +249,7 @@ export function createDeleteDocumentHandler(deps: {
 
     const session = await deps.sessionManager.getSession(documentId, sessionDid);
     if (!session) {
-      console.warn(`[owner-op:delete] session not found doc=${documentId} did=${sessionDid}`);
+      logger.warn(`[owner-op:delete] session not found doc=${documentId} did=${sessionDid}`);
       res.status(404).json({ error: "Session not found" });
       return;
     }

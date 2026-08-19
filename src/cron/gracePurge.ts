@@ -1,6 +1,7 @@
 import { agenda } from "./agenda.js";
 import { databaseService } from "../database/index.js";
 import gracePurgeJob from "./jobs/gracePurgeJob.js";
+import { logger } from "../services/logger";
 
 async function graceful() {
   await agenda.stop();
@@ -15,9 +16,9 @@ async function graceful() {
     await databaseService.connect();
     await agenda.start();
     await gracePurgeJob.setupJob();
-    console.log("grace-purge worker started");
+    logger.info("grace-purge worker started");
   } catch (err) {
-    console.error(err);
+    logger.error(err);
     await graceful();
   }
 })();

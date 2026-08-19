@@ -6,6 +6,7 @@ import type { MongoDBStore } from "./mongodb-store";
 import type { RotationCoordinator } from "./rotation-coordinator";
 import { getRoomName } from "./socket-handlers";
 import { Hex } from "viem";
+import { logger } from "./logger";
 
 const T_DRAIN_MS = 10_000;
 
@@ -96,7 +97,7 @@ export function createRotateSessionHandler(deps: RotateDeps, io: AppServer) {
         io.to(oldRoom).emit("/session/cutover", { roomId: documentId, epoch: gateEpoch });
         setTimeout(() => {
           void deps.terminateOldSession(documentId, oldSessionDid)
-            .catch((e) => console.error("rotate terminate error:", e));
+            .catch((e) => logger.error({ err: e }, "rotate terminate error"));
         }, T_DRAIN_MS);
       },
     });

@@ -32,6 +32,7 @@ import { Hex, isAddress } from "viem";
 import type { SocketHandlerDeps } from "./socket-handlers.deps";
 import { config } from "../config";
 import { timeAck } from "./perf-metrics";
+import { logger } from "./logger";
 
 const defaultDeps: SocketHandlerDeps = {
   authService,
@@ -65,7 +66,7 @@ function normalizeAppType(value: unknown): AppType {
 
 export function registerEventHandlers(io: AppServer): void {
   io.on("connection", (socket: AppSocket) => {
-    console.log(`New Socket.IO connection: ${socket.id}`);
+    logger.info(`New Socket.IO connection: ${socket.id}`);
 
     // Send handshake immediately
     socket.emit("/server/handshake", {
@@ -136,10 +137,10 @@ export function registerEventHandlers(io: AppServer): void {
     // Disconnection handling
     socket.on("disconnecting", () => handleDisconnecting(defaultDeps, socket));
     socket.on("disconnect", (reason) => {
-      console.log(`Socket disconnected: ${socket.id}, reason: ${reason}`);
+      logger.info(`Socket disconnected: ${socket.id}, reason: ${reason}`);
     });
     socket.on("error", (error) => {
-      console.error(`Socket error for ${socket.id}:`, error);
+      logger.error({ err: error }, `Socket error for ${socket.id}`);
     });
   });
 }
@@ -339,7 +340,7 @@ export async function handleAuth(
         }
 
         await sessionManager.terminateSession(oldSession.documentId, oldSession.sessionDid);
-        console.log(
+        logger.info(
           `[Auth] Terminated old session: ${oldSession.sessionDid} for document: ${documentId}`
         );
       }
@@ -618,7 +619,7 @@ export async function handleAuth(
     // Track in session manager (for session lifecycle / deactivation logic)
     await sessionManager.addClientToSession(documentId, sessionDid, socket.id);
 
-    console.log(sessionType === "new" ? "SETUP DONE" : "JOINED SESSION", documentId, role);
+    logger.info({ documentId, role }, sessionType === "new" ? "SETUP DONE" : "JOINED SESSION");
 
     // Broadcast membership change to others in the room — suppressed on a rotation
     // cutover re-auth so the surviving socket doesn't blip presence for itself.
@@ -649,7 +650,7 @@ export async function handleAuth(
       },
     });
   } catch (error) {
-    console.error("Error in auth handler:", error);
+    logger.error({ err: error }, "Error in auth handler");
     callback({
       status: false,
       statusCode: 500,
@@ -825,7 +826,7 @@ export async function handleDocumentUpdate(
       },
     });
   } catch (error) {
-    console.error("Error in document update handler:", error);
+    logger.error({ err: error }, "Error in document update handler");
     callback({
       status: false,
       statusCode: 500,
@@ -932,7 +933,7 @@ export async function handleDocumentCommit(
       },
     });
   } catch (error) {
-    console.error("Error in document commit handler:", error);
+    logger.error({ err: error }, "Error in document commit handler");
     callback({
       status: false,
       statusCode: 500,
@@ -977,7 +978,7 @@ export async function handleCommitHistory(
       },
     });
   } catch (error) {
-    console.error("Error in commit history handler:", error);
+    logger.error({ err: error }, "Error in commit history handler");
     callback({
       status: false,
       statusCode: 500,
@@ -1018,7 +1019,7 @@ export async function handleUpdateHistory(
       data: { history, total: history.length, snapshot, nextSeq, hasMore },
     });
   } catch (error) {
-    console.error("Error in update history handler:", error);
+    logger.error({ err: error }, "Error in update history handler");
     callback({
       status: false,
       statusCode: 500,
@@ -1145,7 +1146,7 @@ export async function handleSnapshot(
       data: { id: snapshot.id, seq: snapshot.seq! },
     });
   } catch (error) {
-    console.error("Error in snapshot handler:", error);
+    logger.error({ err: error }, "Error in snapshot handler");
     callback({
       status: false,
       statusCode: 500,
@@ -1204,7 +1205,7 @@ export async function handleMirrorSnapshot(
 
     callback({ status: true, statusCode: 200, data: { ok: true } });
   } catch (error) {
-    console.error("Error in mirror snapshot handler:", error);
+    logger.error({ err: error }, "Error in mirror snapshot handler");
     callback({ status: false, statusCode: 500, error: "Internal server error", errorCode: ErrorCode.INTERNAL_ERROR });
   }
 }
@@ -1270,7 +1271,7 @@ export async function handleSetDocumentMeta(
       data: { ok: true },
     });
   } catch (error) {
-    console.error("Error in set-document-meta handler:", error);
+    logger.error({ err: error }, "Error in set-document-meta handler");
     callback({
       status: false,
       statusCode: 500,
@@ -1308,7 +1309,7 @@ export async function handlePeersList(
       data: { peers },
     });
   } catch (error) {
-    console.error("Error in peers list handler:", error);
+    logger.error({ err: error }, "Error in peers list handler");
     callback({
       status: false,
       statusCode: 500,
@@ -1351,7 +1352,7 @@ export async function handleAwareness(
       }
     }
   } catch (error) {
-    console.error("Error in awareness handler:", error);
+    logger.error({ err: error }, "Error in awareness handler");
   }
 }
 
@@ -1366,7 +1367,7 @@ export async function handleTerminateSession(
     const { authService, sessionManager } = deps;
     const { documentId, sessionDid, ownerToken, ownerAddress, contractAddress } = args;
 
-    console.log("TERMINATING SESSION", documentId);
+    logger.info({ documentId }, "TERMINATING SESSION");
 
     if (!sessionDid) {
       return callback({
@@ -1450,7 +1451,7 @@ export async function handleTerminateSession(
       data: { message: "Session terminated" },
     });
   } catch (error) {
-    console.error("Error in terminate session handler:", error);
+    logger.error({ err: error }, "Error in terminate session handler");
     callback({
       status: false,
       statusCode: 500,
@@ -1505,6 +1506,6 @@ export async function handleDisconnecting(
       socket.id
     );
   } catch (error) {
-    console.error(`Error during disconnection cleanup for ${socket.id}:`, error);
+    logger.error({ err: error }, `Error during disconnection cleanup for ${socket.id}`);
   }
 }

@@ -1,6 +1,7 @@
 import { agenda } from "./agenda.js";
 import { databaseService } from "../database/index.js";
 import publishReconcileJob from "./jobs/publishReconcileJob.js";
+import { logger } from "../services/logger";
 
 async function graceful() {
   await agenda.stop();
@@ -15,9 +16,9 @@ async function graceful() {
     await databaseService.connect();
     await agenda.start();
     await publishReconcileJob.setupJob();
-    console.log("publish-reconcile worker started");
+    logger.info("publish-reconcile worker started");
   } catch (err) {
-    console.error(err);
+    logger.error(err);
     await graceful();
   }
 })();

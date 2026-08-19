@@ -3,6 +3,7 @@ import { getIdentitySigningDid, getOwnerDid, refreshOwnerDid } from "../utils/co
 import { Hex } from "viem";
 import NodeCache from "node-cache";
 import { config } from "../config";
+import { logger } from "./logger";
 
 export class AuthService {
   private serverDid: string;
@@ -37,7 +38,7 @@ export class AuthService {
       if (!this.isDid(freshDid) || freshDid === cachedDid) return null;
       return (await this.ucanVerifiesAgainstOwner(token, contractAddress, freshDid)) ? freshDid : null;
     } catch (error) {
-      console.error("UCAN verification error:", error);
+      logger.error({ err: error }, "UCAN verification error");
       return null;
     }
   }
@@ -93,7 +94,7 @@ export class AuthService {
       }
       return result.ok;
     } catch (error) {
-      console.error("UCAN verification error:", error);
+      logger.error({ err: error }, "UCAN verification error");
       return false;
     }
   }
@@ -134,7 +135,7 @@ export class AuthService {
       }
       return null;
     } catch (error) {
-      console.error("Edit UCAN verification error:", error);
+      logger.error({ err: error }, "Edit UCAN verification error");
       return null;
     }
   }
@@ -167,7 +168,7 @@ export class AuthService {
       });
       return result.ok ? signingDid : null;
     } catch (error) {
-      console.error("Identity token verification error:", error);
+      logger.error({ err: error }, "Identity token verification error");
       return null;
     }
   }

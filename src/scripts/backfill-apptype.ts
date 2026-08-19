@@ -18,6 +18,7 @@ import {
   SessionModel,
   DocumentMetaModel,
 } from "../database/models";
+import { logger } from "../services/logger";
 
 async function backfill(): Promise<void> {
   await databaseService.connect();
@@ -32,11 +33,11 @@ async function backfill(): Promise<void> {
     DocumentMetaModel.updateMany(filter, set),
   ]);
 
-  console.log("appType backfill complete:");
-  console.log(`  DocumentUpdate: ${updates.modifiedCount} tagged "ddoc"`);
-  console.log(`  DocumentCommit: ${commits.modifiedCount} tagged "ddoc"`);
-  console.log(`  Session:        ${sessions.modifiedCount} tagged "ddoc"`);
-  console.log(`  DocumentMeta:   ${metas.modifiedCount} tagged "ddoc"`);
+  logger.info("appType backfill complete:");
+  logger.info(`  DocumentUpdate: ${updates.modifiedCount} tagged "ddoc"`);
+  logger.info(`  DocumentCommit: ${commits.modifiedCount} tagged "ddoc"`);
+  logger.info(`  Session:        ${sessions.modifiedCount} tagged "ddoc"`);
+  logger.info(`  DocumentMeta:   ${metas.modifiedCount} tagged "ddoc"`);
 
   await databaseService.disconnect();
 }
@@ -44,6 +45,6 @@ async function backfill(): Promise<void> {
 backfill()
   .then(() => process.exit(0))
   .catch((err) => {
-    console.error("appType backfill failed:", err);
+    logger.error({ err }, "appType backfill failed");
     process.exit(1);
   });

@@ -1,12 +1,13 @@
 import mongoose from "mongoose";
 import { config } from "../config";
+import { logger } from "../services/logger";
 
 class DatabaseService {
   private isConnected = false;
 
   async connect(): Promise<void> {
     if (this.isConnected) {
-      console.log("Database already connected");
+      logger.info("Database already connected");
       return;
     }
 
@@ -17,7 +18,7 @@ class DatabaseService {
         throw new Error("MongoDB connection string not provided");
       }
 
-      console.log("Connecting to MongoDB...");
+      logger.info("Connecting to MongoDB...");
 
       await mongoose.connect(connectionString, {
         // Connection pool settings
@@ -49,30 +50,30 @@ class DatabaseService {
       });
 
       this.isConnected = true;
-      console.log("✅ Connected to MongoDB successfully");
+      logger.info("✅ Connected to MongoDB successfully");
 
       // Handle connection events
       mongoose.connection.on("error", (error) => {
-        console.error("MongoDB connection error:", error);
+        logger.error({ err: error }, "MongoDB connection error");
         this.isConnected = false;
       });
 
       mongoose.connection.on("disconnected", () => {
-        console.log("MongoDB disconnected");
+        logger.info("MongoDB disconnected");
         this.isConnected = false;
       });
 
       mongoose.connection.on("reconnected", () => {
-        console.log("MongoDB reconnected");
+        logger.info("MongoDB reconnected");
         this.isConnected = true;
       });
 
       mongoose.connection.on("close", () => {
-        console.log("MongoDB connection closed");
+        logger.info("MongoDB connection closed");
         this.isConnected = false;
       });
     } catch (error) {
-      console.error("Failed to connect to MongoDB:", error);
+      logger.error({ err: error }, "Failed to connect to MongoDB");
       this.isConnected = false;
       throw error;
     }
@@ -86,9 +87,9 @@ class DatabaseService {
     try {
       await mongoose.disconnect();
       this.isConnected = false;
-      console.log("Disconnected from MongoDB");
+      logger.info("Disconnected from MongoDB");
     } catch (error) {
-      console.error("Error disconnecting from MongoDB:", error);
+      logger.error({ err: error }, "Error disconnecting from MongoDB");
       throw error;
     }
   }

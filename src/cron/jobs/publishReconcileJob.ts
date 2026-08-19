@@ -4,6 +4,7 @@ import { config } from "../../config/index.js";
 import { mongodbStore } from "../../services/mongodb-store.js";
 import { resolvePublishedDocumentIds } from "../../utils/contract.js";
 import { reconcilePublishedDocuments } from "../../services/published-reconciler.js";
+import { logger } from "../../services/logger";
 
 const jobName = "PUBLISH_RECONCILE";
 
@@ -14,10 +15,10 @@ async function jobDefinition(job: Job, done: (err?: Error) => void) {
       resolvePublishedDocumentIds,
       batchSize: config.publishReconcile.batchSize,
     });
-    console.log(`[${jobName}] scanned=${scanned} published=${published}`);
+    logger.info(`[${jobName}] scanned=${scanned} published=${published}`);
     done();
   } catch (err: any) {
-    console.error(`[${jobName}] ${err?.message ?? err}`);
+    logger.error(`[${jobName}] ${err?.message ?? err}`);
     done(err);
   }
 }
