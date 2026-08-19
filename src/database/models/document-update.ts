@@ -51,6 +51,14 @@ DocumentUpdateSchema.index(
 
 DocumentUpdateSchema.index({ documentId: 1, sessionDid: 1 }, { background: true });
 
+// Snapshot-only partial index: getHydrationRange's newest-snapshot findOne must not
+// scan the session's whole row set (measured: 47k docsExamined, 20-65s cold) — this
+// serves it with one key. Covers only updateType:"snapshot" rows, so write cost ~0.
+DocumentUpdateSchema.index(
+  { documentId: 1, sessionDid: 1, seq: -1 },
+  { background: true, partialFilterExpression: { updateType: "snapshot" } }
+);
+
 // Supports per-app lifecycle/analytics queries (e.g. "all dsheet updates").
 DocumentUpdateSchema.index({ appType: 1, createdAt: 1 }, { background: true });
 
