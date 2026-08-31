@@ -316,6 +316,49 @@ describe("listDocumentsForOwner", () => {
     expect(DocumentMetaModel.bulkWrite).not.toHaveBeenCalled();
   });
 
+  it("scopes to the proven portal, case-insensitively, keeping pre-pin null-portal rows", async () => {
+    const { DocumentMetaModel } = await import("../../database/models");
+    (DocumentMetaModel.find as any).mockReturnValue({
+      select: vi.fn().mockReturnValue({
+        lean: vi.fn().mockResolvedValue([
+          { _id: "same", editLock: "e1", title: "t1", portalAddress: "0xAbCd" },
+          { _id: "other", editLock: "e2", title: "t2", portalAddress: "0xOther" },
+          { _id: "legacy", editLock: "e3", title: "t3", portalAddress: null },
+        ]),
+      }),
+    });
+
+    const store = new MongoDBStore();
+    const result = await store.listDocumentsForOwner({
+      ownerIdentityDid: "did:key:zOwner",
+      portalAddress: "0xabcd",
+    });
+
+    // The portal is matched in JS, so the Mongo filter is unchanged.
+    expect(DocumentMetaModel.find).toHaveBeenCalledWith({
+      ownerIdentityDid: "did:key:zOwner",
+      isPublished: { $ne: true },
+    });
+    expect(result.map((d) => d.documentId)).toEqual(["same", "legacy"]);
+  });
+
+  it("returns every portal's docs when no portalAddress is given", async () => {
+    const { DocumentMetaModel } = await import("../../database/models");
+    (DocumentMetaModel.find as any).mockReturnValue({
+      select: vi.fn().mockReturnValue({
+        lean: vi.fn().mockResolvedValue([
+          { _id: "a", editLock: "e1", title: "t1", portalAddress: "0xA" },
+          { _id: "b", editLock: "e2", title: "t2", portalAddress: "0xB" },
+        ]),
+      }),
+    });
+
+    const store = new MongoDBStore();
+    const result = await store.listDocumentsForOwner({ ownerIdentityDid: "did:key:zOwner" });
+
+    expect(result.map((d) => d.documentId)).toEqual(["a", "b"]);
+  });
+
   it("returns an empty list when neither ownerIdentityDid nor ownerDid is given", async () => {
     const { DocumentMetaModel } = await import("../../database/models");
     const store = new MongoDBStore();
@@ -341,7 +384,7 @@ describe("listDocumentsForOwner: appType routing", () => {
     const store = new MongoDBStore();
     const docs = await store.listDocumentsForOwner({ ownerIdentityDid: "did:key:x" });
 
-    expect(select).toHaveBeenCalledWith("editLock title appType");
+    expect(select).toHaveBeenCalledWith("editLock title appType portalAddress");
     expect(docs).toEqual([
       { documentId: "doc-1", editLock: "lock", title: "t", appType: "dsheet" },
       { documentId: "doc-2", editLock: null, title: null, appType: "ddoc" },

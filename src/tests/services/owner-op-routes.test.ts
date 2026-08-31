@@ -201,7 +201,10 @@ describe("POST /list-my-documents", () => {
     await createListMyDocumentsHandler(deps)(
       { body: { identityToken: "it", portalAddress: "0xP" } } as any, r
     );
-    expect(deps.mongodbStore.listDocumentsForOwner).toHaveBeenCalledWith({ ownerIdentityDid: "did:key:zOwner" });
+    expect(deps.mongodbStore.listDocumentsForOwner).toHaveBeenCalledWith({
+      ownerIdentityDid: "did:key:zOwner",
+      portalAddress: "0xP",
+    });
     expect(r.status).toHaveBeenCalledWith(200);
     expect(r.json).toHaveBeenCalledWith({
       documents: [{ documentId: "d1", editLock: "el", title: "t", appType: "dsheet" }],

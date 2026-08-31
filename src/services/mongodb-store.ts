@@ -388,7 +388,7 @@ export class MongoDBStore {
 
   // Discovery: docs bound to the proven owner (identity DID or portal owner DID) — recovery for a wiped device.
   async listDocumentsForOwner(
-    by: { ownerIdentityDid?: string; ownerDid?: string }
+    by: { ownerIdentityDid?: string; ownerDid?: string; portalAddress?: string }
   ): Promise<Array<{ documentId: string; editLock: string | null; title: string | null; appType: AppType }>> {
     const filter: Record<string, any> = {};
     if (by.ownerIdentityDid) filter.ownerIdentityDid = by.ownerIdentityDid;
@@ -398,8 +398,23 @@ export class MongoDBStore {
     // unpublished durable docs (the publish reconciler flips this flag).
     filter.isPublished = { $ne: true };
 
-    const metas: any[] = await DocumentMetaModel.find(filter).select("editLock title appType").lean();
-    return metas.map((m) => ({
+    const metas: any[] = await DocumentMetaModel.find(filter)
+      .select("editLock title appType portalAddress")
+      .lean();
+
+    // Scope to the portal the caller proved. A team editLock is an identity envelope and
+    // decrypts on ANY portal, so without this the client merges another workspace's doc on
+    // whichever portal pass reaches it first and stamps it with the wrong portal. Matched in
+    // JS, not in the query: stored portals are not case-normalised (the pin at
+    // pinDocumentPortalIfAbsent compares case-insensitively) and the indexed filter above
+    // already bounds this to tens of rows. Rows predating the pin (null portal) have nothing
+    // to match on, so they stay visible on every pass rather than becoming unrecoverable.
+    const scope = typeof by.portalAddress === "string" ? by.portalAddress.toLowerCase() : null;
+    const scoped = scope
+      ? metas.filter((m) => !m.portalAddress || String(m.portalAddress).toLowerCase() === scope)
+      : metas;
+
+    return scoped.map((m) => ({
       documentId: m._id,
       editLock: m.editLock ?? null,
       title: m.title ?? null,
