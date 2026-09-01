@@ -397,8 +397,26 @@ describe("getHydrationRange", () => {
     vi.clearAllMocks();
   });
 
-  function mockFind(rows: any[]) {
-    return { sort: vi.fn().mockReturnValue({ lean: vi.fn().mockResolvedValue(rows) }) };
+  // getHydrationRange streams the tail: find().sort().lean().cursor(), then next() until the
+  // page budget breaks. The stub counts next() calls so a test can assert the read stopped
+  // early instead of draining the whole stream.
+  function mockCursor(rows: any[]) {
+    let i = 0;
+    return {
+      next: vi.fn(async () => (i < rows.length ? rows[i++] : null)),
+      close: vi.fn(async () => undefined),
+      get consumed() { return i; },
+    };
+  }
+
+  function mockFind(rows: any[], cursorOut?: { cursor?: ReturnType<typeof mockCursor> }) {
+    const cursor = mockCursor(rows);
+    if (cursorOut) cursorOut.cursor = cursor;
+    return {
+      sort: vi.fn().mockReturnValue({
+        lean: vi.fn().mockReturnValue({ cursor: vi.fn().mockReturnValue(cursor) }),
+      }),
+    };
   }
 
   it("serves latest snapshot + tail after its floor when the client has no cursor", async () => {
@@ -494,6 +512,49 @@ describe("getHydrationRange", () => {
     expect(res.updates.map((u) => u.seq)).toEqual([1]);
     expect(res.hasMore).toBe(true);
     expect(res.nextSeq).toBe(1);
+  });
+
+  it("stops reading at the budget instead of draining the stream", async () => {
+    const { DocumentUpdateModel } = await import("../../database/models");
+    (DocumentUpdateModel.findOne as any).mockReturnValue({
+      sort: vi.fn().mockReturnValue({ lean: vi.fn().mockResolvedValue(null) }), // no snapshot
+    });
+    const big = "x".repeat(100);
+    const rows = Array.from({ length: 500 }, (_, i) => ({
+      _id: `u${i + 1}`, documentId: "doc-1", seq: i + 1, data: big, updateType: "yjs_update", sessionDid: "room-did",
+    }));
+    const out: { cursor?: any } = {};
+    (DocumentUpdateModel.find as any).mockReturnValue(mockFind(rows, out));
+
+    const store = new MongoDBStore();
+    const res = await store.getHydrationRange("doc-1", "room-did", { maxBytes: 150 });
+
+    expect(res.updates.map((u) => u.seq)).toEqual([1]);
+    expect(res.hasMore).toBe(true);
+    // The whole point of the fix: 2 rows pulled off a 500-row stream, not 500.
+    expect(out.cursor.consumed).toBe(2);
+    expect(out.cursor.close).toHaveBeenCalled();
+  });
+
+  it("reports hasMore=false only once the stream is genuinely exhausted", async () => {
+    const { DocumentUpdateModel } = await import("../../database/models");
+    (DocumentUpdateModel.findOne as any).mockReturnValue({
+      sort: vi.fn().mockReturnValue({ lean: vi.fn().mockResolvedValue(null) }), // no snapshot
+    });
+    const rows = Array.from({ length: 3 }, (_, i) => ({
+      _id: `u${i + 1}`, documentId: "doc-1", seq: i + 1, data: "x", updateType: "yjs_update", sessionDid: "room-did",
+    }));
+    const out: { cursor?: any } = {};
+    (DocumentUpdateModel.find as any).mockReturnValue(mockFind(rows, out));
+
+    const store = new MongoDBStore();
+    const res = await store.getHydrationRange("doc-1", "room-did", { maxBytes: 1000 });
+
+    // Guards the one dangerous failure mode: telling a client it is caught up when it is not.
+    expect(res.updates.map((u) => u.seq)).toEqual([1, 2, 3]);
+    expect(res.hasMore).toBe(false);
+    expect(res.nextSeq).toBeNull();
+    expect(out.cursor.consumed).toBe(3);
   });
 
   it("serves a budget-filling snapshot alone, with the cursor resuming at the floor", async () => {

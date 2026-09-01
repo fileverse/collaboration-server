@@ -6,6 +6,13 @@ export class SessionTerminatedError extends Error {
   constructor() { super("session terminated"); this.name = "SessionTerminatedError"; }
 }
 
+// Hydration is logged on SIZE as well as latency: the reads that OOM-killed the dyno on
+// 2026-08-31 each returned a 16MiB batch in ~200ms, so a latency-only trigger never saw them.
+// Thresholds sit well above the healthy ceiling observed in prod (~360KB / ~110 rows).
+const HYDRATION_SLOW_MS = 500;
+const HYDRATION_LARGE_BYTES = 2 * 1024 * 1024;
+const HYDRATION_LARGE_ROWS = 2_000;
+
 export class MongoDBStore {
   // Update management
   async createUpdate(update: DocumentUpdate): Promise<DocumentUpdate> {
@@ -226,25 +233,39 @@ export class MongoDBStore {
     const includeSnapshot = !(options.sinceSeq !== undefined && options.sinceSeq >= baseSeq);
     const fromSeq = includeSnapshot ? baseSeq : options.sinceSeq!;
 
-    const rows: any[] = await DocumentUpdateModel.find({
+    // Streamed, never materialized. This was an unbounded find().lean() that pulled EVERY
+    // remaining row of the (documentId, sessionDid) stream into one array before the loop
+    // below sliced out a single page — and because the client pages via hasMore/nextSeq,
+    // each page re-read the whole tail again. On large streams that dragged GBs out of Mongo
+    // and OOM-killed the web dyno. Page semantics below are unchanged: same byte budget,
+    // same break condition, same hasMore/nextSeq.
+    const cursor = DocumentUpdateModel.find({
       documentId, sessionDid, updateType: { $ne: "snapshot" }, seq: { $gt: fromSeq },
-    }).sort({ seq: 1 }).lean();
+    }).sort({ seq: 1 }).lean().cursor();
 
     const updates: DocumentUpdate[] = [];
     const snapshotBytes = includeSnapshot && snapshotDoc ? (snapshotDoc.data?.length ?? 0) : 0;
     let bytes = snapshotBytes;
     let hasMore = false;
     let nextSeq: number | null = null;
-    if (snapshotBytes >= maxBytes) {
-      // A snapshot that alone fills the page budget is served by itself — the loop below
-      // force-includes one update per page, which here could push the emit past the socket
-      // buffer. The cursor resumes at the floor, where the snapshot is no longer included.
-      if (rows.length > 0) { hasMore = true; nextSeq = fromSeq; }
-    } else
-    for (const r of rows) {
-      bytes += r.data?.length ?? 0;
-      if (updates.length > 0 && bytes > maxBytes) { hasMore = true; nextSeq = updates[updates.length - 1].seq!; break; }
-      updates.push({ id: r._id, documentId: r.documentId, seq: r.seq, data: r.data, updateType: r.updateType, committed: r.committed, commitCid: r.commitCid, createdAt: r.createdAt, sessionDid: r.sessionDid, publishedMarker: r.publishedMarker });
+    let scanned = 0;
+    try {
+      if (snapshotBytes >= maxBytes) {
+        // A snapshot that alone fills the page budget is served by itself — the loop below
+        // force-includes one update per page, which here could push the emit past the socket
+        // buffer. The cursor resumes at the floor, where the snapshot is no longer included.
+        const first: any = await cursor.next();
+        if (first) { scanned = 1; hasMore = true; nextSeq = fromSeq; }
+      } else {
+        for (let r: any = await cursor.next(); r; r = await cursor.next()) {
+          scanned++;
+          bytes += r.data?.length ?? 0;
+          if (updates.length > 0 && bytes > maxBytes) { hasMore = true; nextSeq = updates[updates.length - 1].seq!; break; }
+          updates.push({ id: r._id, documentId: r.documentId, seq: r.seq, data: r.data, updateType: r.updateType, committed: r.committed, commitCid: r.commitCid, createdAt: r.createdAt, sessionDid: r.sessionDid, publishedMarker: r.publishedMarker });
+        }
+      }
+    } finally {
+      try { await cursor.close(); } catch { /* cleanup is best-effort; the page is already built */ }
     }
 
     const snapshot: DocumentUpdate | null = includeSnapshot && snapshotDoc
@@ -252,20 +273,22 @@ export class MongoDBStore {
       : null;
 
     const elapsedMs = Date.now() - startedAt;
-    if (elapsedMs > 500) {
-      // scanned = full tail materialized by the unbounded find; served = what fits the page.
+    const slow = elapsedMs > HYDRATION_SLOW_MS;
+    const large = bytes >= HYDRATION_LARGE_BYTES || scanned >= HYDRATION_LARGE_ROWS;
+    if (slow || large) {
+      // scanned = rows pulled off the cursor (the page, plus the row that broke the budget).
       perfLogger.warn(
         {
           doc: documentId,
           sinceSeq: options.sinceSeq ?? null,
           hasSnapshot: !!snapshotDoc,
-          scanned: rows.length,
+          scanned,
           served: updates.length,
           bytes,
           hasMore,
           ms: elapsedMs,
         },
-        "slow hydration"
+        slow ? "slow hydration" : "large hydration"
       );
     }
 
