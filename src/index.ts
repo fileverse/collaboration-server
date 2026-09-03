@@ -41,6 +41,14 @@ import {
 } from "./types/index";
 import { logger } from "./services/logger";
 
+// The cors package only treats the bare string "*" as allow-all; an array containing "*"
+// is matched literally and blocks every origin. `true` reflects the request origin, which
+// also works with `credentials: true` (a literal `*` header is rejected by browsers there).
+const corsOptions = {
+  origin: config.corsOrigins.includes("*") ? true : config.corsOrigins,
+  credentials: true,
+};
+
 const ORPHAN_GRACE_MS = 7 * 24 * 60 * 60 * 1000; // 7 days
 const ORPHAN_GC_INTERVAL_MS = 6 * 60 * 60 * 1000; // every 6h
 
@@ -65,12 +73,7 @@ class CollaborationServer {
     );
 
     // CORS
-    this.app.use(
-      cors({
-        origin: config.corsOrigins,
-        credentials: true,
-      })
-    );
+    this.app.use(cors(corsOptions));
 
     // Compression
     this.app.use(compression());
@@ -200,10 +203,7 @@ class CollaborationServer {
 
       // Setup Socket.IO server
       const socketIOOptions = {
-        cors: {
-          origin: config.corsOrigins,
-          credentials: true,
-        },
+        cors: corsOptions,
         pingInterval: config.socketio.pingInterval,
         pingTimeout: config.socketio.pingTimeout,
         maxHttpBufferSize: config.socketio.maxHttpBufferSize,

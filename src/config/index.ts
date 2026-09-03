@@ -5,7 +5,10 @@ dotenv.config();
 export const config: ServerConfig = {
   port: parseInt(process.env.PORT || "5001"),
   host: process.env.HOST || "0.0.0.0",
-  corsOrigins: process.env.CORS_ORIGINS ? process.env.CORS_ORIGINS.split(",") : ["*"],
+  corsOrigins: (process.env.CORS_ORIGINS || "*")
+    .split(",")
+    .map((origin) => origin.trim())
+    .filter(Boolean),
 
   database: {
     uri: process.env.MONGODB_URI || "mongodb://localhost:27017/collaboration",

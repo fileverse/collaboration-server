@@ -36,7 +36,7 @@ This repo was audited by [Dédalo](https://www.dedalo.io) in Q3 2025 as part of 
     PORT # Server port (default: 5001)
     HOST # Server host (default: 0.0.0.0)
     NODE_ENV # Environment mode (development/production)
-    CORS_ORIGINS # Comma-separated list of allowed origins
+    CORS_ORIGINS # Comma-separated list of allowed origins, or * to allow any origin (default: *)
     SERVER_DID # Server's DID for UCAN authentication
     MONGODB_URI # MongoDB URI where encrypted updates and snapshots are persisted
     REDIS_ENABLED # "true" to use Redis (default: false)
