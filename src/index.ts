@@ -28,6 +28,7 @@ import { createRotateSessionHandler } from "./services/rotate-route";
 import { rotationCoordinator } from "./services/rotation-coordinator";
 import { createFlushHandler } from "./services/flush-route";
 import { createDeletedFileWebhookHandler } from "./services/deleted-file-webhook";
+import { markDraining } from "./services/lifecycle";
 import { createLightNode } from "@waku/sdk";
 import protobuf from "protobufjs";
 import { generateKeyPairFromSeed } from "@libp2p/crypto/keys";
@@ -253,6 +254,7 @@ class CollaborationServer {
 
   private shutdown(signal: string) {
     logger.info(`\n Received ${signal}. Shutting down gracefully...`);
+    markDraining();
 
     if (this.orphanGcInterval) {
       clearInterval(this.orphanGcInterval);

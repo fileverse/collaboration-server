@@ -1,4 +1,5 @@
 import { Server, Socket } from "socket.io";
+import type { WireFormat } from "../services/wire-format";
 
 // ***************************************
 // Domain Models (unchanged)
@@ -85,6 +86,7 @@ export enum ErrorCode {
   ROOM_NOT_ESTABLISHED = "ROOM_NOT_ESTABLISHED",
   DB_ERROR = "DB_ERROR",
   INTERNAL_ERROR = "INTERNAL_ERROR",
+  WIRE_FORMAT_UNSUPPORTED = "WIRE_FORMAT_UNSUPPORTED",
 }
 
 // ***************************************
@@ -120,6 +122,8 @@ export interface AuthArgs {
   joinOnly?: boolean;
   // in-place re-auth into the post-rotation sessionDid — suppress the membership blip and leave the old room silently.
   rotationCutover?: boolean;
+  /** Wire ciphers this client can read. Absent means ["ecies"]. */
+  wireFormats?: WireFormat[];
 }
 
 export interface AuthResponseData {
@@ -130,6 +134,8 @@ export interface AuthResponseData {
   /** Latest stored roomKey-encrypted title (DocumentMeta) — fresher than the
    *  session-frozen roomInfo blob after a mid-session rename. */
   title?: string | null;
+  /** The write format announced for this document. */
+  wireFormat: WireFormat;
 }
 
 export interface DocumentUpdateArgs {
@@ -273,6 +279,11 @@ export interface MetaUpdatePayload {
   title: string | null;
 }
 
+export interface WireFormatPayload {
+  roomId: string;
+  wireFormat: "xchacha";
+}
+
 export interface SessionTerminatedPayload {
   roomId: string;
 }
@@ -335,6 +346,7 @@ export interface ServerToClientEvents {
   "/session/terminated": (data: SessionTerminatedPayload) => void;
   "/session/epoch_available": (data: EpochAvailablePayload) => void;
   "/session/cutover": (data: CutoverPayload) => void;
+  "/document/wire_format": (data: WireFormatPayload) => void;
 }
 
 export interface InterServerEvents {
@@ -356,6 +368,7 @@ export interface SocketData {
   /** Rail admission + per-op revocation rechecks apply (ddoc always; dsheet iff the
    *  room has a bound owner identity — legacy dsheet rooms keep legacy semantics). */
   editPlaneEnforced?: boolean;
+  wireFormats?: WireFormat[];
 }
 
 // ***************************************
@@ -430,5 +443,8 @@ export interface ServerConfig {
   };
   webhook: {
     apiKey?: string;
+  };
+  wireFormat: {
+    target: WireFormat;
   };
 }

@@ -54,4 +54,7 @@ export const config: ServerConfig = {
   webhook: {
     apiKey: process.env.COLLAB_WEBHOOK_API_KEY,
   },
+  wireFormat: {
+    target: process.env.WIRE_FORMAT_TARGET === "xchacha" ? "xchacha" : "ecies",
+  },
 };

@@ -5,3 +5,4 @@ export { CounterModel, type ICounter } from "./counter";
 export { DocumentMetaModel, type IDocumentMeta } from "./document-meta";
 export { DocumentMirrorModel, type IDocumentMirror } from "./document-mirror";
 export { DocumentEditEpochModel, type IDocumentEditEpoch } from "./document-edit-epoch";
+export { DocumentWireFormatModel, type IDocumentWireFormat } from "./document-wire-format";
