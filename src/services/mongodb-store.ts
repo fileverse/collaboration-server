@@ -1,6 +1,7 @@
 import { DocumentUpdate, DocumentCommit, AppType } from "../types/index";
-import { DocumentUpdateModel, DocumentCommitModel, CounterModel, SessionModel, DocumentMetaModel, DocumentMirrorModel, DocumentEditEpochModel } from "../database/models";
+import { DocumentUpdateModel, DocumentCommitModel, CounterModel, SessionModel, DocumentMetaModel, DocumentMirrorModel, DocumentEditEpochModel, DocumentWireFormatModel } from "../database/models";
 import { logger, perfLogger } from "./logger";
+import type { WireFormat } from "./wire-format";
 
 export class SessionTerminatedError extends Error {
   constructor() { super("session terminated"); this.name = "SessionTerminatedError"; }
@@ -375,6 +376,31 @@ export class MongoDBStore {
     return { editLock: meta.editLock ?? null, title: meta.title ?? null };
   }
 
+  // Wire-format lock. No row means ECIES.
+  async getWireFormat(documentId: string): Promise<WireFormat> {
+    const row: any = await DocumentWireFormatModel.findById(documentId).select("wireFormat").lean();
+    return row?.wireFormat === "xchacha" ? "xchacha" : "ecies";
+  }
+
+  // Idempotent under a race: two concurrent auths both end locked, exactly one sees true.
+  async lockWireFormat(documentId: string): Promise<boolean> {
+    try {
+      const res = await DocumentWireFormatModel.updateOne(
+        { _id: documentId },
+        { $setOnInsert: { wireFormat: "xchacha", lockedAt: Date.now() } },
+        { upsert: true, writeConcern: { w: "majority", j: true } }
+      );
+      return res.upsertedCount === 1;
+    } catch (err) {
+      // A concurrent upsert on the same _id can surface as a duplicate-key error instead
+      // of a clean loss of the upsertedCount race; the other caller took the lock.
+      if (typeof err === "object" && err !== null && "code" in err && (err as { code: unknown }).code === 11000) {
+        return false;
+      }
+      throw err;
+    }
+  }
+
   async setMinEditEpoch(documentId: string, epoch: number): Promise<void> {
     await DocumentEditEpochModel.findOneAndUpdate(
       { _id: documentId },
@@ -632,6 +658,7 @@ export class MongoDBStore {
       CounterModel.deleteOne({ _id: documentId }),
       DocumentMirrorModel.deleteMany({ documentId }),
       DocumentEditEpochModel.deleteOne({ _id: documentId }),
+      DocumentWireFormatModel.deleteOne({ _id: documentId }),
     ]);
   }
 
@@ -694,6 +721,7 @@ export class MongoDBStore {
       await DocumentCommitModel.deleteMany({ documentId: s.documentId });
       await SessionModel.deleteMany({ documentId: s.documentId });
       await CounterModel.deleteOne({ _id: s.documentId });
+      await DocumentWireFormatModel.deleteOne({ _id: s.documentId });
       purged++;
     }
     return purged;

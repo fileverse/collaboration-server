@@ -1,7 +1,8 @@
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { handleAuth, getRoomName } from "../../services/socket-handlers";
 import { AppServer, AppSocket, AuthArgs, ErrorCode } from "../../types";
 import type { SocketHandlerDeps } from "../../services/socket-handlers.deps";
+import { config } from "../../config";
 
 function createFakeIO(options?: {
   broadcastOperator?: { emit: ReturnType<typeof vi.fn> };
@@ -74,6 +75,8 @@ describe("handleAuth", () => {
       .mockImplementation(async (p: { portalAddress: string }) => ({
         portalAddress: p.portalAddress,
       })),
+    getWireFormat: vi.fn().mockResolvedValue("ecies"),
+    lockWireFormat: vi.fn().mockResolvedValue(false),
   } as any;
 
   const deps: SocketHandlerDeps = {
@@ -227,6 +230,7 @@ describe("handleAuth", () => {
         sessionType: "new",
         roomInfo: fakeArgs.roomInfo,
         title: null,
+        wireFormat: "ecies",
       },
     });
   });
@@ -434,7 +438,10 @@ describe("handleAuth", () => {
 
     fetchSockets
       .mockResolvedValueOnce([oldSocket1])
-      .mockResolvedValueOnce([oldSocket2]);
+      .mockResolvedValueOnce([oldSocket2])
+      // Target defaults to "ecies" in this test, so F2 (fix wave 2) skips the
+      // wire-format room enumeration entirely; nothing consumes this fallback.
+      .mockResolvedValue([]);
 
     fakeSessionManager.getSession.mockResolvedValue(undefined);
     fakeAuthService.verifyOwnerToken.mockResolvedValue("owner-did");
@@ -504,7 +511,8 @@ describe("handleAuth", () => {
     );
 
     // Aggregate call-count assertions after verifying per-iteration sequence
-    // Outside if-else block
+    // Outside if-else block. Target defaults to "ecies" here, so F2 (fix wave 2)
+    // skips the wire-format room enumeration; only the termination loop calls fetchSockets.
     expect(fetchSockets).toHaveBeenCalledTimes(otherSessions.length);
     expect(fakeSessionManager.terminateSession).toHaveBeenCalledTimes(otherSessions.length);
 
@@ -536,6 +544,7 @@ describe("handleAuth", () => {
         sessionType: "new",
         roomInfo: fakeArgs.roomInfo,
         title: null,
+        wireFormat: "ecies",
       },
     });
   });
@@ -630,7 +639,321 @@ describe("handleAuth", () => {
         sessionType: "existing",
         roomInfo: existingSession.roomInfo,
         title: null,
+        wireFormat: "ecies",
       },
+    });
+  });
+
+  // Infrastructure failures during resolution degrade to an ECIES announce with no lock
+  // instead of failing the auth.
+  describe("wire-format resolution degrades on infrastructure failure", () => {
+    let originalWireFormatTarget: typeof config.wireFormat.target;
+    beforeEach(() => {
+      originalWireFormatTarget = config.wireFormat.target;
+      config.wireFormat.target = "xchacha";
+    });
+    afterEach(() => {
+      config.wireFormat.target = originalWireFormatTarget;
+    });
+
+    const capableJoinerOfExistingSession = (): AuthArgs => {
+      const fakeArgs: AuthArgs = {
+        documentId: "doc-1",
+        sessionDid: "session-1",
+        collaborationToken: "collab-token",
+        wireFormats: ["ecies", "xchacha"],
+      };
+      fakeSessionManager.getSession.mockResolvedValue({
+        sessionDid: fakeArgs.sessionDid,
+        ownerDid: "owner-did",
+        roomInfo: "existing-room-info",
+      });
+      fakeAuthService.verifyCollaborationToken.mockResolvedValue("user-did");
+      fakeSessionManager.addClientToSession.mockResolvedValue(undefined);
+      fakeSessionManager.getCollabJoinEnabled.mockResolvedValue(true);
+      return fakeArgs;
+    };
+
+    it("announces ecies and takes no lock when the room enumeration rejects", async () => {
+      const fetchSockets = vi
+        .fn()
+        .mockRejectedValue(new Error("timeout reached: only 1 responses received out of 2"));
+      const fakeIO = createFakeIO({ fetchSockets });
+      const fakeBroadcastOperator = { emit: vi.fn() };
+      const fakeSocket = createFakeSocket(fakeBroadcastOperator);
+      const fakeArgs = capableJoinerOfExistingSession();
+      const callback = vi.fn();
+
+      await handleAuth(deps, fakeIO, fakeSocket, fakeArgs, callback);
+
+      expect(fakeMongoDBStore.lockWireFormat).not.toHaveBeenCalled();
+      expect(fakeBroadcastOperator.emit).not.toHaveBeenCalledWith(
+        "/document/wire_format",
+        expect.anything()
+      );
+      expect(fakeSessionManager.addClientToSession).toHaveBeenCalledWith(
+        fakeArgs.documentId,
+        fakeArgs.sessionDid,
+        fakeSocket.id
+      );
+      expect(callback).toHaveBeenCalledWith(
+        expect.objectContaining({
+          status: true,
+          statusCode: 200,
+          data: expect.objectContaining({ wireFormat: "ecies" }),
+        })
+      );
+    });
+
+    it("announces ecies, skips the sweep and the event, and still tracks the joiner when the lock write rejects", async () => {
+      const legacyRemote = {
+        id: "remote-legacy",
+        data: { wireFormats: ["ecies"] },
+        disconnect: vi.fn(),
+      };
+      const fetchSockets = vi
+        .fn()
+        .mockResolvedValueOnce([])
+        .mockResolvedValueOnce([legacyRemote]);
+      const fakeIO = createFakeIO({ fetchSockets });
+      const fakeBroadcastOperator = { emit: vi.fn() };
+      const fakeSocket = createFakeSocket(fakeBroadcastOperator);
+      const fakeArgs = capableJoinerOfExistingSession();
+      const callback = vi.fn();
+      fakeMongoDBStore.lockWireFormat.mockRejectedValueOnce(new Error("mongo unavailable"));
+
+      await handleAuth(deps, fakeIO, fakeSocket, fakeArgs, callback);
+
+      expect(fakeMongoDBStore.lockWireFormat).toHaveBeenCalledWith(fakeArgs.documentId);
+      expect(legacyRemote.disconnect).not.toHaveBeenCalled();
+      expect(fakeBroadcastOperator.emit).not.toHaveBeenCalledWith(
+        "/document/wire_format",
+        expect.anything()
+      );
+      expect(fakeSessionManager.addClientToSession).toHaveBeenCalledWith(
+        fakeArgs.documentId,
+        fakeArgs.sessionDid,
+        fakeSocket.id
+      );
+      expect(callback).toHaveBeenCalledWith(
+        expect.objectContaining({
+          status: true,
+          statusCode: 200,
+          data: expect.objectContaining({ wireFormat: "ecies" }),
+        })
+      );
+    });
+  });
+
+  // Refuse before bookkeeping, conditional room enumeration, post-join re-check.
+  describe("wire-format resolution (fix wave 2)", () => {
+    let originalWireFormatTarget: typeof config.wireFormat.target;
+    beforeEach(() => {
+      originalWireFormatTarget = config.wireFormat.target;
+    });
+    afterEach(() => {
+      config.wireFormat.target = originalWireFormatTarget;
+    });
+
+    it("locks the document, kicks a non-capable socket that appeared after the first enumeration, and announces xchacha", async () => {
+      config.wireFormat.target = "xchacha";
+      const capableRemote = {
+        id: "remote-capable",
+        data: { wireFormats: ["ecies", "xchacha"] },
+        disconnect: vi.fn(),
+      };
+      const legacyRemote = {
+        id: "remote-legacy",
+        data: { wireFormats: ["ecies"] },
+        disconnect: vi.fn(),
+      };
+      const fetchSockets = vi
+        .fn()
+        .mockResolvedValueOnce([capableRemote])
+        .mockResolvedValueOnce([capableRemote, legacyRemote]);
+      const fakeIO = createFakeIO({ fetchSockets });
+      const fakeBroadcastOperator = { emit: vi.fn() };
+      const fakeSocket = createFakeSocket(fakeBroadcastOperator);
+      const fakeArgs: AuthArgs = {
+        documentId: "doc-1",
+        sessionDid: "session-1",
+        collaborationToken: "collab-token",
+        wireFormats: ["ecies", "xchacha"],
+      };
+      const callback = vi.fn();
+
+      const existingSession = {
+        sessionDid: fakeArgs.sessionDid,
+        ownerDid: "owner-did",
+        roomInfo: "existing-room-info",
+      };
+      fakeSessionManager.getSession.mockResolvedValue(existingSession);
+      fakeAuthService.verifyCollaborationToken.mockResolvedValue("user-did");
+      fakeSessionManager.addClientToSession.mockResolvedValue(undefined);
+      fakeSessionManager.getCollabJoinEnabled.mockResolvedValue(true);
+      fakeMongoDBStore.getWireFormat.mockResolvedValueOnce("ecies");
+      fakeMongoDBStore.lockWireFormat.mockResolvedValueOnce(true);
+
+      await handleAuth(deps, fakeIO, fakeSocket, fakeArgs, callback);
+
+      expect(fakeMongoDBStore.lockWireFormat).toHaveBeenCalledWith(fakeArgs.documentId);
+      expect(legacyRemote.disconnect).toHaveBeenCalledWith(true);
+      expect(capableRemote.disconnect).not.toHaveBeenCalled();
+      expect(fakeBroadcastOperator.emit).toHaveBeenCalledWith("/document/wire_format", {
+        roomId: fakeArgs.documentId,
+        wireFormat: "xchacha",
+      });
+      expect(callback).toHaveBeenCalledWith(
+        expect.objectContaining({
+          status: true,
+          statusCode: 200,
+          data: expect.objectContaining({ wireFormat: "xchacha" }),
+        })
+      );
+    });
+
+    it("refuses an ecies-only joiner on a locked document before any session bookkeeping", async () => {
+      const fakeIO = createFakeIO();
+      const fakeSocket = createFakeSocket();
+      const fakeArgs: AuthArgs = {
+        documentId: "doc-1",
+        sessionDid: "session-1",
+        collaborationToken: "collab-token",
+      };
+      const callback = vi.fn();
+
+      fakeMongoDBStore.getWireFormat.mockResolvedValueOnce("xchacha");
+
+      await handleAuth(deps, fakeIO, fakeSocket, fakeArgs, callback);
+
+      expect(callback).toHaveBeenCalledWith({
+        status: false,
+        statusCode: 426,
+        error: "This document requires a newer client",
+        errorCode: ErrorCode.WIRE_FORMAT_UNSUPPORTED,
+      });
+      expect(fakeSocket.join).not.toHaveBeenCalled();
+      expect(fakeSessionManager.createSession).not.toHaveBeenCalled();
+      expect(fakeSessionManager.updateRoomInfo).not.toHaveBeenCalled();
+      expect(fakeSessionManager.addClientToSession).not.toHaveBeenCalled();
+    });
+
+    it("steps back out when the lock lands between the read and the join", async () => {
+      config.wireFormat.target = "xchacha";
+      const fetchSockets = vi.fn().mockResolvedValue([]);
+      const fakeIO = createFakeIO({ fetchSockets });
+      const fakeSocket = createFakeSocket();
+      (fakeSocket as any).leave = vi.fn();
+      const fakeArgs: AuthArgs = {
+        documentId: "doc-1",
+        sessionDid: "session-1",
+        collaborationToken: "collab-token",
+      };
+      const callback = vi.fn();
+
+      const existingSession = {
+        sessionDid: fakeArgs.sessionDid,
+        ownerDid: "owner-did",
+        roomInfo: "existing-room-info",
+      };
+      fakeSessionManager.getSession.mockResolvedValue(existingSession);
+      fakeAuthService.verifyCollaborationToken.mockResolvedValue("user-did");
+      fakeSessionManager.getCollabJoinEnabled.mockResolvedValue(true);
+      fakeMongoDBStore.getWireFormat
+        .mockResolvedValueOnce("ecies")
+        .mockResolvedValueOnce("xchacha");
+
+      await handleAuth(deps, fakeIO, fakeSocket, fakeArgs, callback);
+
+      const roomName = getRoomName(fakeArgs.documentId, fakeArgs.sessionDid);
+      expect(fakeSocket.join).toHaveBeenCalledWith(roomName);
+      expect((fakeSocket as any).leave).toHaveBeenCalledWith(roomName);
+      expect(callback).toHaveBeenCalledWith(
+        expect.objectContaining({ statusCode: 426, errorCode: ErrorCode.WIRE_FORMAT_UNSUPPORTED })
+      );
+      expect(fakeSessionManager.addClientToSession).not.toHaveBeenCalled();
+    });
+
+    // R2: the re-read must keep refusing a lock that landed elsewhere even when this
+    // instance is running with the target unset (a rolling target change or rollback).
+    it("steps back out when the lock lands between the read and the join, even off the xchacha target", async () => {
+      config.wireFormat.target = "ecies";
+      const fetchSockets = vi.fn().mockResolvedValue([]);
+      const fakeIO = createFakeIO({ fetchSockets });
+      const fakeSocket = createFakeSocket();
+      (fakeSocket as any).leave = vi.fn();
+      const fakeArgs: AuthArgs = {
+        documentId: "doc-1",
+        sessionDid: "session-1",
+        collaborationToken: "collab-token",
+      };
+      const callback = vi.fn();
+
+      const existingSession = {
+        sessionDid: fakeArgs.sessionDid,
+        ownerDid: "owner-did",
+        roomInfo: "existing-room-info",
+      };
+      fakeSessionManager.getSession.mockResolvedValue(existingSession);
+      fakeAuthService.verifyCollaborationToken.mockResolvedValue("user-did");
+      fakeSessionManager.getCollabJoinEnabled.mockResolvedValue(true);
+      fakeMongoDBStore.getWireFormat
+        .mockResolvedValueOnce("ecies")
+        .mockResolvedValueOnce("xchacha");
+
+      await handleAuth(deps, fakeIO, fakeSocket, fakeArgs, callback);
+
+      const roomName = getRoomName(fakeArgs.documentId, fakeArgs.sessionDid);
+      expect(fakeSocket.join).toHaveBeenCalledWith(roomName);
+      expect((fakeSocket as any).leave).toHaveBeenCalledWith(roomName);
+      expect(callback).toHaveBeenCalledWith(
+        expect.objectContaining({ statusCode: 426, errorCode: ErrorCode.WIRE_FORMAT_UNSUPPORTED })
+      );
+      expect(fakeSessionManager.addClientToSession).not.toHaveBeenCalled();
+    });
+
+    // F7: a refused socket that was already authenticated (rotation-cutover re-auth)
+    // must be migrated out of its prior room, not left as a ghost in the old session.
+    it("cleans up the prior room when a cutover re-auth is refused", async () => {
+      const fakeSocket = createFakeSocket(undefined, {
+        authenticated: true,
+        documentId: "doc-1",
+        sessionDid: "did:old",
+      });
+      (fakeSocket as any).leave = vi.fn();
+      const fakeIO = createFakeIO();
+      const fakeArgs: AuthArgs = {
+        documentId: "doc-1",
+        sessionDid: "did:new",
+        collaborationToken: "collab-token",
+        rotationCutover: true,
+      };
+      const callback = vi.fn();
+
+      fakeMongoDBStore.getWireFormat.mockResolvedValueOnce("xchacha");
+      fakeSessionManager.removeClientFromSession.mockResolvedValue(undefined);
+
+      await handleAuth(deps, fakeIO, fakeSocket, fakeArgs, callback);
+
+      const oldRoomName = getRoomName("doc-1", "did:old");
+      expect((fakeSocket as any).leave).toHaveBeenCalledWith(oldRoomName);
+      expect(fakeSessionManager.removeClientFromSession).toHaveBeenCalledWith(
+        "doc-1",
+        "did:old",
+        fakeSocket.id
+      );
+      expect(callback).toHaveBeenCalledWith({
+        status: false,
+        statusCode: 426,
+        error: "This document requires a newer client",
+        errorCode: ErrorCode.WIRE_FORMAT_UNSUPPORTED,
+      });
+      expect(fakeSocket.data.authenticated).toBe(false);
+      // R5: the refusal answers before it cleans up, so a slow removeClientFromSession
+      // never delays the ack.
+      expect(callback.mock.invocationCallOrder[0]).toBeLessThan(
+        fakeSessionManager.removeClientFromSession.mock.invocationCallOrder[0]
+      );
     });
   });
 
@@ -940,6 +1263,7 @@ describe("handleAuth", () => {
         sessionType: "existing",
         roomInfo: existingSession.roomInfo,
         title: null,
+        wireFormat: "ecies",
       },
     });
   });
@@ -1040,6 +1364,7 @@ describe("handleAuth", () => {
         sessionType: "existing",
         roomInfo: existingSession.roomInfo,
         title: null,
+        wireFormat: "ecies",
       },
     });
   });
@@ -1143,6 +1468,7 @@ describe("handleAuth", () => {
         sessionType: "existing",
         roomInfo: existingSession.roomInfo,
         title: null,
+        wireFormat: "ecies",
       },
     });
   });
@@ -2059,6 +2385,8 @@ describe("handleAuth — edit-claim admission (existing session, non-owner)", ()
   const fakeMongoDBStore = {
     getDocumentMeta: vi.fn().mockResolvedValue(null),
     getMinEditEpoch: vi.fn().mockResolvedValue(0),
+    getWireFormat: vi.fn().mockResolvedValue("ecies"),
+    lockWireFormat: vi.fn().mockResolvedValue(false),
   } as any;
 
   const deps: SocketHandlerDeps = {

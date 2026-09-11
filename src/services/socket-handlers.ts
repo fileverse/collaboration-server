@@ -33,6 +33,9 @@ import type { SocketHandlerDeps } from "./socket-handlers.deps";
 import { config } from "../config";
 import { timeAck } from "./perf-metrics";
 import { logger } from "./logger";
+import { normalizeWireFormats, resolveWireFormat, supportsXChaCha } from "./wire-format";
+import type { WireFormat, WireResolution } from "./wire-format";
+import { isDraining } from "./lifecycle";
 
 const defaultDeps: SocketHandlerDeps = {
   authService,
@@ -135,7 +138,7 @@ export function registerEventHandlers(io: AppServer): void {
     );
 
     // Disconnection handling
-    socket.on("disconnecting", () => handleDisconnecting(defaultDeps, socket));
+    socket.on("disconnecting", () => handleDisconnecting(defaultDeps, io, socket));
     socket.on("disconnect", (reason) => {
       logger.info(`Socket disconnected: ${socket.id}, reason: ${reason}`);
     });
@@ -143,6 +146,81 @@ export function registerEventHandlers(io: AppServer): void {
       logger.error({ err: error }, `Socket error for ${socket.id}`);
     });
   });
+}
+
+// After a lock, no socket without xchacha may remain in the room that was just locked. The
+// disconnect makes an old bundle reconnect, re-auth and receive WIRE_FORMAT_UNSUPPORTED.
+export async function kickNonCapableSockets(
+  io: AppServer,
+  roomName: string,
+  keepSocketId: string
+): Promise<number> {
+  let kicked = 0;
+  for (const s of await io.in(roomName).fetchSockets()) {
+    if (s.id === keepSocketId) continue;
+    if (supportsXChaCha(s.data.wireFormats ?? ["ecies"])) continue;
+    s.disconnect(true);
+    kicked += 1;
+  }
+  return kicked;
+}
+
+// Old bundles predate the terminal refusal handling and can retry in a loop; one warn per
+// document per minute keeps the rollout signal without flooding the log.
+const REFUSAL_LOG_INTERVAL_MS = 60_000;
+const lastRefusalLogAt = new Map<string, number>();
+function logRefusal(documentId: string, declared: AuthArgs["wireFormats"], normalized: WireFormat[], trigger: "auth" | "post-join"): void {
+  const now = Date.now();
+  const last = lastRefusalLogAt.get(documentId) ?? 0;
+  if (now - last < REFUSAL_LOG_INTERVAL_MS) return;
+  if (lastRefusalLogAt.size > 10_000) lastRefusalLogAt.clear();
+  lastRefusalLogAt.set(documentId, now);
+  // The declared list is client-supplied and bounded only by the socket buffer: log a
+  // capped, truncated view of it, never the raw value.
+  const declaredSummary = Array.isArray(declared)
+    ? declared.slice(0, 8).map((v) => (typeof v === "string" ? v.slice(0, 32) : typeof v))
+    : declared === undefined ? null : typeof declared;
+  logger.warn(
+    {
+      documentId,
+      declared: declaredSummary,
+      declaredCount: Array.isArray(declared) ? declared.length : 0,
+      normalized,
+      trigger,
+    },
+    "wire-format-refused"
+  );
+}
+
+// A refused socket may already be authenticated in its pre-rotation room (cutover
+// re-auth); drop that so the refusal is not advisory.
+async function refuseWireFormat(
+  socket: AppSocket,
+  callback: (response: AckResponse<AuthResponseData>) => void,
+  sessionManager: SocketHandlerDeps["sessionManager"],
+  documentId: string,
+  declared: AuthArgs["wireFormats"],
+  normalized: WireFormat[],
+  trigger: "auth" | "post-join",
+  priorRoom?: { documentId: string; sessionDid: string }
+): Promise<void> {
+  logRefusal(documentId, declared, normalized, trigger);
+  socket.data.authenticated = false;
+  callback({
+    status: false,
+    statusCode: 426,
+    error: "This document requires a newer client",
+    errorCode: ErrorCode.WIRE_FORMAT_UNSUPPORTED,
+  });
+  if (!priorRoom) return;
+  // Same cleanup the successful cutover re-auth performs: the socket never disconnects,
+  // so the disconnecting sweep would not run for the prior sessionDid.
+  try {
+    socket.leave(getRoomName(priorRoom.documentId, priorRoom.sessionDid));
+    await sessionManager.removeClientFromSession(priorRoom.documentId, priorRoom.sessionDid, socket.id);
+  } catch (err) {
+    logger.error({ err, documentId: priorRoom.documentId }, "wire-format-refusal-cleanup-failed");
+  }
 }
 
 export async function handleAuth(
@@ -182,6 +260,22 @@ export async function handleAuth(
         error: "Session DID is required",
         errorCode: ErrorCode.SESSION_DID_MISSING,
       });
+    }
+
+    // Refuse before any session bookkeeping, so an old bundle opening a locked document
+    // never terminates live sessions or writes a session row it cannot join.
+    const wireFormats = normalizeWireFormats(args.wireFormats);
+    const locked = (await deps.mongodbStore.getWireFormat(documentId)) === "xchacha";
+    if (locked && !supportsXChaCha(wireFormats)) {
+      // Capture before anything below overwrites socket.data: on a cutover re-auth this
+      // is still the prior room the socket is sitting in.
+      const priorRoom =
+        socket.data.authenticated && socket.data.documentId && socket.data.sessionDid
+          ? { documentId: socket.data.documentId, sessionDid: socket.data.sessionDid }
+          : undefined;
+      return await refuseWireFormat(
+        socket, callback, sessionManager, documentId, args.wireFormats, wireFormats, "auth", priorRoom
+      );
     }
 
     let existingSession = await sessionManager.getSession(documentId, sessionDid);
@@ -590,6 +684,33 @@ export async function handleAuth(
     // BEFORE it's overwritten below, so the socket can be silently migrated off it.
     const priorSessionDid = socket.data.sessionDid;
 
+    const roomName = getRoomName(documentId, sessionDid);
+    // Rule 3 needs the room's declared formats. When the cross-instance enumeration fails
+    // (the Redis adapter times out while a dyno restarts), announce ECIES and take no lock
+    // rather than failing the auth: ECIES is always readable, and the next auth or leave
+    // resolves the format.
+    let roomFormats: WireFormat[][] = [];
+    let enumerationFailed = false;
+    if (!locked && config.wireFormat.target === "xchacha") {
+      try {
+        roomFormats = (await io.in(roomName).fetchSockets())
+          .filter((s) => s.id !== socket.id)
+          .map((s) => s.data.wireFormats ?? ["ecies"]);
+      } catch (err) {
+        enumerationFailed = true;
+        logger.error({ err, documentId }, "wire-format-enumeration-failed");
+      }
+    }
+    // The locked-and-incapable case was already refused above; wire.refuse cannot be true here.
+    const wire: WireResolution = enumerationFailed
+      ? { announce: "ecies", lock: false, refuse: false }
+      : resolveWireFormat({
+          locked,
+          target: config.wireFormat.target,
+          roomFormats,
+          joiningFormats: wireFormats,
+        });
+
     // Set socket data
     socket.data.authenticated = true;
     socket.data.documentId = documentId;
@@ -602,10 +723,9 @@ export async function handleAuth(
     socket.data.actorIdentityDid = provenIdentityDid ?? undefined;
     socket.data.editEpoch = admittedEditEpoch;
     socket.data.editPlaneEnforced = editPlaneEnforced;
+    socket.data.wireFormats = wireFormats;
 
     // Join the Socket.IO room
-    const roomName = getRoomName(documentId, sessionDid);
-
     if (args.rotationCutover && priorSessionDid && priorSessionDid !== sessionDid) {
       // Silent migration — no user_left. The socket never disconnects, so the
       // `disconnecting` sweep never fires for the pre-rotation sessionDid; do that
@@ -615,6 +735,47 @@ export async function handleAuth(
     }
 
     socket.join(roomName);
+
+    // A lock committed between the read above and this join ran its kick before this
+    // socket was in the room. Re-read once and step out if it landed; only an ecies-only
+    // joiner can be caught by that window. An existing lock must keep refusing old bundles
+    // even if a rolling target change has this instance running with the target unset.
+    if (
+      !locked &&
+      !supportsXChaCha(wireFormats) &&
+      (await deps.mongodbStore.getWireFormat(documentId)) === "xchacha"
+    ) {
+      socket.leave(roomName);
+      return await refuseWireFormat(
+        socket, callback, sessionManager, documentId, args.wireFormats, wireFormats, "post-join"
+      );
+    }
+
+    let announce: WireFormat = wire.announce;
+    if (wire.lock) {
+      let took: boolean | null = null;
+      try {
+        took = await deps.mongodbStore.lockWireFormat(documentId);
+      } catch (err) {
+        // The socket is already joined and authenticated; a 500 here would leave it in the
+        // room untracked. Announce ECIES instead (always readable) and let the next auth or
+        // leave take the lock.
+        logger.error({ err, documentId, trigger: "auth" }, "wire-format-lock-failed");
+        announce = "ecies";
+      }
+      if (took !== null) {
+        let kicked = 0;
+        try {
+          kicked = await kickNonCapableSockets(io, roomName, socket.id);
+        } catch (err) {
+          logger.error({ err, documentId, trigger: "auth" }, "wire-format-sweep-failed");
+        }
+        logger.info({ documentId, trigger: "auth", took, kicked }, "wire-format-lock");
+        // Every incumbent is capable by the lock's own precondition; tell them so their next
+        // batch is XChaCha instead of waiting for a re-auth. The joiner learns it from the ack.
+        socket.to(roomName).emit("/document/wire_format", { roomId: documentId, wireFormat: "xchacha" });
+      }
+    }
 
     // Track in session manager (for session lifecycle / deactivation logic)
     await sessionManager.addClientToSession(documentId, sessionDid, socket.id);
@@ -647,6 +808,7 @@ export async function handleAuth(
         sessionType,
         roomInfo,
         title: documentMeta?.title ?? null,
+        wireFormat: announce,
       },
     });
   } catch (error) {
@@ -1480,6 +1642,7 @@ export function handleEpochLoaded(
 
 export async function handleDisconnecting(
   deps: SocketHandlerDeps,
+  io: AppServer,
   socket: AppSocket
 ): Promise<void> {
   try {
@@ -1505,7 +1668,37 @@ export async function handleDisconnecting(
       socket.data.sessionDid,
       socket.id
     );
+
+    await ratchetWireFormatAfterLeave(deps, io, socket, roomName);
   } catch (error) {
     logger.error({ err: error }, `Error during disconnection cleanup for ${socket.id}`);
   }
+}
+
+// The leaving socket may have been the last one holding the room at ECIES. If everyone
+// still connected can read XChaCha, lock now and tell them, so a long-lived session
+// ratchets without waiting for a reconnect.
+async function ratchetWireFormatAfterLeave(
+  deps: SocketHandlerDeps,
+  io: AppServer,
+  socket: AppSocket,
+  roomName: string
+): Promise<void> {
+  if (isDraining()) return;
+  if (config.wireFormat.target !== "xchacha") return;
+  const documentId = socket.data.documentId;
+  if ((await deps.mongodbStore.getWireFormat(documentId)) === "xchacha") return;
+  // "disconnecting" fires while the socket is still in its rooms; exclude it.
+  const remaining = (await io.in(roomName).fetchSockets()).filter((s) => s.id !== socket.id);
+  if (remaining.length === 0) return;
+  if (!remaining.every((s) => supportsXChaCha(s.data.wireFormats ?? ["ecies"]))) return;
+  const took = await deps.mongodbStore.lockWireFormat(documentId);
+  let kicked = 0;
+  try {
+    kicked = await kickNonCapableSockets(io, roomName, socket.id);
+  } catch (err) {
+    logger.error({ err, documentId, trigger: "disconnect" }, "wire-format-sweep-failed");
+  }
+  logger.info({ documentId, trigger: "disconnect", took, kicked }, "wire-format-lock");
+  io.to(roomName).emit("/document/wire_format", { roomId: documentId, wireFormat: "xchacha" });
 }

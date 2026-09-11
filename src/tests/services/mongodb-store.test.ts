@@ -28,6 +28,7 @@ vi.mock("../../database/models", () => {
       deleteMany: vi.fn().mockResolvedValue(undefined),
     },
     DocumentEditEpochModel: { deleteOne: vi.fn().mockResolvedValue(undefined) },
+    DocumentWireFormatModel: { deleteOne: vi.fn().mockResolvedValue(undefined), updateOne: vi.fn() },
   };
 });
 
@@ -584,8 +585,8 @@ describe("purgeDocument", () => {
     vi.clearAllMocks();
   });
 
-  it("wipes all seven collections for the documentId", async () => {
-    const { DocumentUpdateModel, DocumentCommitModel, DocumentMetaModel, SessionModel, CounterModel, DocumentMirrorModel, DocumentEditEpochModel } =
+  it("wipes all eight collections for the documentId", async () => {
+    const { DocumentUpdateModel, DocumentCommitModel, DocumentMetaModel, SessionModel, CounterModel, DocumentMirrorModel, DocumentEditEpochModel, DocumentWireFormatModel } =
       await import("../../database/models");
 
     const store = new MongoDBStore();
@@ -598,6 +599,7 @@ describe("purgeDocument", () => {
     expect(CounterModel.deleteOne).toHaveBeenCalledWith({ _id: "doc-1" });
     expect(DocumentMirrorModel.deleteMany).toHaveBeenCalledWith({ documentId: "doc-1" });
     expect(DocumentEditEpochModel.deleteOne).toHaveBeenCalledWith({ _id: "doc-1" });
+    expect(DocumentWireFormatModel.deleteOne).toHaveBeenCalledWith({ _id: "doc-1" });
   });
 });
 
@@ -750,5 +752,19 @@ describe("markUpdatesAsCommitted scoping", () => {
       { _id: { $in: ["u1", "u2"] }, documentId: "doc-1" },
       { committed: true, commitCid: "cid-1" }
     );
+  });
+});
+
+describe("lockWireFormat: duplicate-key race", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it("resolves false instead of throwing when a concurrent upsert wins the race", async () => {
+    const { DocumentWireFormatModel } = await import("../../database/models");
+    (DocumentWireFormatModel.updateOne as any).mockRejectedValue({ code: 11000 });
+
+    const store = new MongoDBStore();
+    await expect(store.lockWireFormat("doc-1")).resolves.toBe(false);
   });
 });
