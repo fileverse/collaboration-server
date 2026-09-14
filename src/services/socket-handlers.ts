@@ -265,6 +265,8 @@ export async function handleAuth(
     // Refuse before any session bookkeeping, so an old bundle opening a locked document
     // never terminates live sessions or writes a session row it cannot join.
     const wireFormats = normalizeWireFormats(args.wireFormats);
+    // Rollout signal: the share of opens still coming from bundles that cannot do xchacha.
+    logger.info({ documentId, xchacha: supportsXChaCha(wireFormats) }, "wire-format-declared");
     const locked = (await deps.mongodbStore.getWireFormat(documentId)) === "xchacha";
     if (locked && !supportsXChaCha(wireFormats)) {
       // Capture before anything below overwrites socket.data: on a cutover re-auth this
