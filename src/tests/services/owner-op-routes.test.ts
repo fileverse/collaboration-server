@@ -191,7 +191,12 @@ describe("POST /list-my-documents", () => {
     vi.clearAllMocks();
     deps = {
       authService: { verifyIdentityToken: vi.fn(), verifyOwnerToken: vi.fn() },
-      mongodbStore: { listDocumentsForOwner: vi.fn().mockResolvedValue([{ documentId: "d1", editLock: "el", title: "t", appType: "dsheet" }]) },
+      mongodbStore: {
+        listDocumentsForOwner: vi.fn().mockResolvedValue({
+          documents: [{ documentId: "d1", editLock: "el", title: "t", appType: "dsheet" }],
+          deletedDocumentIds: ["d0"],
+        }),
+      },
     };
   });
 
@@ -208,6 +213,7 @@ describe("POST /list-my-documents", () => {
     expect(r.status).toHaveBeenCalledWith(200);
     expect(r.json).toHaveBeenCalledWith({
       documents: [{ documentId: "d1", editLock: "el", title: "t", appType: "dsheet" }],
+      deletedDocumentIds: ["d0"],
     });
   });
 

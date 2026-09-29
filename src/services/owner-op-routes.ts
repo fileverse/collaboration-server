@@ -225,11 +225,11 @@ export function createListMyDocumentsHandler(deps: ListMyDocumentsDeps) {
       if (signingDid) {
         // portalAddress is safe to filter on: verifyIdentityToken only returns a signingDid
         // when the UCAN was signed for exactly this hierPart.
-        const documents = await deps.mongodbStore.listDocumentsForOwner({
+        const { documents, deletedDocumentIds } = await deps.mongodbStore.listDocumentsForOwner({
           ownerIdentityDid: signingDid,
           portalAddress,
         });
-        res.status(200).json({ documents });
+        res.status(200).json({ documents, deletedDocumentIds });
         return;
       }
     }

@@ -438,17 +438,20 @@ export class MongoDBStore {
   // Discovery: docs bound to the proven owner (identity DID or portal owner DID) — recovery for a wiped device.
   async listDocumentsForOwner(
     by: { ownerIdentityDid?: string; ownerDid?: string; portalAddress?: string }
-  ): Promise<Array<{ documentId: string; editLock: string | null; title: string | null; appType: AppType }>> {
+  ): Promise<{
+    documents: Array<{ documentId: string; editLock: string | null; title: string | null; appType: AppType }>;
+    deletedDocumentIds: string[];
+  }> {
     const filter: Record<string, any> = {};
     if (by.ownerIdentityDid) filter.ownerIdentityDid = by.ownerIdentityDid;
     else if (by.ownerDid) filter.ownerDid = by.ownerDid;
-    else return [];
+    else return { documents: [], deletedDocumentIds: [] };
     // Published docs are discovered via the indexer; the collab server only lists
     // unpublished durable docs (the publish reconciler flips this flag).
     filter.isPublished = { $ne: true };
 
     const metas: any[] = await DocumentMetaModel.find(filter)
-      .select("editLock title appType portalAddress")
+      .select("editLock title appType portalAddress tombstonedAt")
       .lean();
 
     // Scope to the portal the caller proved. A team editLock is an identity envelope and
@@ -463,12 +466,19 @@ export class MongoDBStore {
       ? metas.filter((m) => !m.portalAddress || String(m.portalAddress).toLowerCase() === scope)
       : metas;
 
-    return scoped.map((m) => ({
-      documentId: m._id,
-      editLock: m.editLock ?? null,
-      title: m.title ?? null,
-      appType: (m.appType as AppType) ?? "ddoc",
-    }));
+    // Deleted docs must never be offered for recovery: a tombstone is final, while the meta
+    // row itself lingers until the grace purge. Their ids go back separately so a client
+    // that already re-added one can drop it.
+    const documents = scoped
+      .filter((m) => !m.tombstonedAt)
+      .map((m) => ({
+        documentId: m._id,
+        editLock: m.editLock ?? null,
+        title: m.title ?? null,
+        appType: (m.appType as AppType) ?? "ddoc",
+      }));
+    const deletedDocumentIds = scoped.filter((m) => m.tombstonedAt).map((m) => String(m._id));
+    return { documents, deletedDocumentIds };
   }
 
   // Publish-reconciler candidate set: unpublished durable docs that have a portal to

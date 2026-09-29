@@ -267,10 +267,32 @@ describe("listDocumentsForOwner", () => {
       ownerIdentityDid: "did:key:zOwner",
       isPublished: { $ne: true },
     });
-    expect(result).toEqual([
-      { documentId: "doc-1", editLock: "el-1", title: "t1", appType: "ddoc" },
-      { documentId: "doc-2", editLock: "el-2", title: "t2", appType: "ddoc" },
-    ]);
+    expect(result).toEqual({
+      documents: [
+        { documentId: "doc-1", editLock: "el-1", title: "t1", appType: "ddoc" },
+        { documentId: "doc-2", editLock: "el-2", title: "t2", appType: "ddoc" },
+      ],
+      deletedDocumentIds: [],
+    });
+  });
+
+  it("withholds tombstoned docs from recovery and reports their ids separately", async () => {
+    const { DocumentMetaModel } = await import("../../database/models");
+    (DocumentMetaModel.find as any).mockReturnValue({
+      select: vi.fn().mockReturnValue({
+        lean: vi.fn().mockResolvedValue([
+          { _id: "live", editLock: "e1", title: "t1", portalAddress: "0xA", tombstonedAt: null },
+          { _id: "gone", editLock: "e2", title: "t2", portalAddress: "0xA", tombstonedAt: 1756224000000 },
+          { _id: "elsewhere", editLock: "e3", title: "t3", portalAddress: "0xB", tombstonedAt: 1756224000000 },
+        ]),
+      }),
+    });
+
+    const store = new MongoDBStore();
+    const result = await store.listDocumentsForOwner({ ownerIdentityDid: "did:key:zOwner", portalAddress: "0xa" });
+
+    expect(result.documents.map((d) => d.documentId)).toEqual(["live"]);
+    expect(result.deletedDocumentIds).toEqual(["gone"]);
   });
 
   it("lists unpublished refs with a portalAddress, projected + limited", async () => {
@@ -340,7 +362,7 @@ describe("listDocumentsForOwner", () => {
       ownerIdentityDid: "did:key:zOwner",
       isPublished: { $ne: true },
     });
-    expect(result.map((d) => d.documentId)).toEqual(["same", "legacy"]);
+    expect(result.documents.map((d) => d.documentId)).toEqual(["same", "legacy"]);
   });
 
   it("returns every portal's docs when no portalAddress is given", async () => {
@@ -357,7 +379,7 @@ describe("listDocumentsForOwner", () => {
     const store = new MongoDBStore();
     const result = await store.listDocumentsForOwner({ ownerIdentityDid: "did:key:zOwner" });
 
-    expect(result.map((d) => d.documentId)).toEqual(["a", "b"]);
+    expect(result.documents.map((d) => d.documentId)).toEqual(["a", "b"]);
   });
 
   it("returns an empty list when neither ownerIdentityDid nor ownerDid is given", async () => {
@@ -365,7 +387,7 @@ describe("listDocumentsForOwner", () => {
     const store = new MongoDBStore();
     const result = await store.listDocumentsForOwner({});
 
-    expect(result).toEqual([]);
+    expect(result).toEqual({ documents: [], deletedDocumentIds: [] });
     expect(DocumentMetaModel.find).not.toHaveBeenCalled();
   });
 });
@@ -385,8 +407,8 @@ describe("listDocumentsForOwner: appType routing", () => {
     const store = new MongoDBStore();
     const docs = await store.listDocumentsForOwner({ ownerIdentityDid: "did:key:x" });
 
-    expect(select).toHaveBeenCalledWith("editLock title appType portalAddress");
-    expect(docs).toEqual([
+    expect(select).toHaveBeenCalledWith("editLock title appType portalAddress tombstonedAt");
+    expect(docs.documents).toEqual([
       { documentId: "doc-1", editLock: "lock", title: "t", appType: "dsheet" },
       { documentId: "doc-2", editLock: null, title: null, appType: "ddoc" },
     ]);
