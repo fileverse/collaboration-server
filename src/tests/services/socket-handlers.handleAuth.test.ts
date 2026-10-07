@@ -269,6 +269,7 @@ describe("handleAuth", () => {
         ownerDid: "owner-did",
         ownerIdentityDid: "owner-identity-did",
         sessionDid: pinArgs.sessionDid,
+        ddocId: null,
         appType: "ddoc",
       });
       expect(fakeSessionManager.createSession).toHaveBeenCalled();

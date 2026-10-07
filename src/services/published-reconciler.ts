@@ -5,7 +5,7 @@ import type { MongoDBStore } from "./mongodb-store";
 export const reconcilePublishedDocuments = async (deps: {
   mongodbStore: Pick<MongoDBStore, "listUnpublishedMetaRefs" | "markDocumentsPublished">;
   resolvePublishedDocumentIds: (
-    refs: Array<{ documentId: string; portalAddress: string }>
+    refs: Array<{ documentId: string; portalAddress: string; ddocId: string | null }>
   ) => Promise<Array<{ documentId: string; fileId: string }>>;
   batchSize: number;
 }): Promise<{ scanned: number; published: number }> => {

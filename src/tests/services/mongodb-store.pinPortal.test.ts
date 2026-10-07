@@ -37,6 +37,7 @@ describe("pinDocumentPortalIfAbsent", () => {
       ownerDid: "did:key:o",
       ownerIdentityDid: "did:key:i",
       sessionDid: "did:key:s1",
+      ddocId: null,
       appType: "ddoc",
     });
 
@@ -63,6 +64,7 @@ describe("pinDocumentPortalIfAbsent", () => {
       ownerDid: "did:key:o",
       ownerIdentityDid: "did:key:i",
       sessionDid: "did:key:s1",
+      ddocId: null,
       appType: "ddoc",
     });
 
@@ -81,6 +83,7 @@ describe("pinDocumentPortalIfAbsent", () => {
       ownerDid: "did:key:o2",
       ownerIdentityDid: "did:key:i2",
       sessionDid: "did:key:s2",
+      ddocId: null,
       appType: "ddoc",
     });
 
@@ -101,6 +104,7 @@ describe("pinDocumentPortalIfAbsent", () => {
       ownerDid: null,
       ownerIdentityDid: "did:key:i",
       sessionDid: "did:key:s",
+      ddocId: null,
       appType: "ddoc",
     });
 
@@ -117,6 +121,7 @@ describe("pinDocumentPortalIfAbsent", () => {
       ownerDid: null,
       ownerIdentityDid: null,
       sessionDid: "did:key:s",
+      ddocId: null,
       appType: "ddoc",
     });
 
@@ -138,6 +143,7 @@ describe("upsertDocumentMeta binding immutability", () => {
       ownerDid: "did:key:x",
       ownerIdentityDid: "did:key:x",
       portalAddress: "0xEVIL",
+      ddocId: null,
       appType: "ddoc",
       editLock: "lk",
       title: "t",
@@ -150,6 +156,7 @@ describe("upsertDocumentMeta binding immutability", () => {
           ownerDid: "did:key:x",
           ownerIdentityDid: "did:key:x",
           portalAddress: "0xEVIL",
+          ddocId: null,
           appType: "ddoc",
         },
         $set: expect.objectContaining({

@@ -25,7 +25,7 @@ import {
 } from "../types/index";
 import { requireAuth } from "./auth-middleware";
 import { authService } from "./auth";
-import { mongodbStore, SessionTerminatedError } from "./mongodb-store";
+import { mongodbStore, SessionTerminatedError, acceptedDdocId } from "./mongodb-store";
 import { sessionManager } from "./session-manager";
 import { rotationCoordinator } from "./rotation-coordinator";
 import { Hex, isAddress } from "viem";
@@ -393,6 +393,7 @@ export async function handleAuth(
         ownerDid,
         ownerIdentityDid: boundOwnerIdentityDid,
         sessionDid,
+        ddocId: acceptedDdocId(documentId, args.ddocId),
         appType: claimedAppType,
       });
 
@@ -1418,6 +1419,7 @@ export async function handleSetDocumentMeta(
       ownerDid: session.ownerDid ?? null,
       ownerIdentityDid: session.ownerIdentityDid ?? null,
       portalAddress: session.portalAddress ?? null,
+      ddocId: acceptedDdocId(documentId, args.ddocId),
       appType: socket.data.appType,
       editLock: args.editLock,
       title: args.title,

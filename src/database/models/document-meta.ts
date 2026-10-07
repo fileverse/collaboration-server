@@ -6,6 +6,7 @@ interface IDocumentMeta extends MongooseDocument {
   ownerDid: string | null;
   ownerIdentityDid: string | null;
   portalAddress: string | null;
+  ddocId: string | null; // on-chain id when documentId is an opaque o- id; owner-only, never emitted
   appType?: "ddoc" | "dsheet";
   editLock: string | null; // roomKey-wrapped
   title: string | null; // roomKey-encrypted
@@ -22,6 +23,7 @@ const DocumentMetaSchema = new Schema<IDocumentMeta>({
   ownerDid: { type: String, default: null },
   ownerIdentityDid: { type: String, default: null },
   portalAddress: { type: String, default: null },
+  ddocId: { type: String, default: null },
   // Which Fileverse app owns this document. Absent ⇒ "ddoc" (legacy).
   appType: { type: String, enum: ["ddoc", "dsheet"], default: "ddoc" },
   editLock: { type: String, default: null },
@@ -40,6 +42,7 @@ DocumentMetaSchema.index({ ownerIdentityDid: 1, isPublished: 1 }, { background: 
 DocumentMetaSchema.index({ ownerDid: 1 }, { background: true });
 // Grace-window sweep: docs eligible for irreversible purge (see docs/architecture/edit-permission.md).
 DocumentMetaSchema.index({ tombstonedAt: 1 }, { background: true });
+DocumentMetaSchema.index({ ddocId: 1, portalAddress: 1 }, { background: true, sparse: true });
 
 export const DocumentMetaModel = mongoose.model<IDocumentMeta>("DocumentMeta", DocumentMetaSchema);
 export type { IDocumentMeta };

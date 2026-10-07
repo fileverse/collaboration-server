@@ -9,9 +9,9 @@ const makeStore = (refs: any[]) => ({
 describe("reconcilePublishedDocuments", () => {
   it("marks exactly the published subset and reports counts", async () => {
     const refs = [
-      { documentId: "d1", portalAddress: "0xP" },
-      { documentId: "d2", portalAddress: "0xP" },
-      { documentId: "d3", portalAddress: "0xP" },
+      { documentId: "d1", portalAddress: "0xP", ddocId: null },
+      { documentId: "d2", portalAddress: "0xP", ddocId: null },
+      { documentId: "d3", portalAddress: "0xP", ddocId: null },
     ];
     const store = makeStore(refs);
     const resolve = vi
@@ -50,7 +50,7 @@ describe("reconcilePublishedDocuments", () => {
   });
 
   it("does not call markDocumentsPublished when nothing resolved published", async () => {
-    const store = makeStore([{ documentId: "d1", portalAddress: "0xP" }]);
+    const store = makeStore([{ documentId: "d1", portalAddress: "0xP", ddocId: null }]);
     const resolve = vi.fn().mockResolvedValue([]);
     const out = await reconcilePublishedDocuments({
       mongodbStore: store as any,
