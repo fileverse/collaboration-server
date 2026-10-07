@@ -1,9 +1,9 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 
-const findById = vi.fn();
+const find = vi.fn();
 
 vi.mock("../../database/models", () => ({
-  DocumentMetaModel: { findById: (...a: unknown[]) => findById(...a) },
+  DocumentMetaModel: { find: (...a: unknown[]) => find(...a) },
   DocumentUpdateModel: {}, DocumentCommitModel: {}, CounterModel: {},
   SessionModel: {}, DocumentMirrorModel: {}, DocumentEditEpochModel: {},
 }));
@@ -40,8 +40,8 @@ describe("POST /webhooks/file-deleted", () => {
   });
 
   it("tombstones and drops sessions on valid secret + portal match", async () => {
-    findById.mockReturnValue({
-      select: () => ({ lean: () => Promise.resolve({ portalAddress: "0xAbC" }) }),
+    find.mockReturnValue({
+      select: () => ({ lean: () => Promise.resolve([{ _id: "doc-1", portalAddress: "0xAbC" }]) }),
     });
     const handler = createDeletedFileWebhookHandler({ mongodbStore, onTombstoned });
     const r = res();
@@ -68,12 +68,12 @@ describe("POST /webhooks/file-deleted", () => {
 
     expect(r.status).toHaveBeenCalledWith(401);
     expect(mongodbStore.tombstoneDocument).not.toHaveBeenCalled();
-    expect(findById).not.toHaveBeenCalled();
+    expect(find).not.toHaveBeenCalled();
   });
 
   it("no-ops on portal mismatch (colliding-appFileId defense) and never tombstones", async () => {
-    findById.mockReturnValue({
-      select: () => ({ lean: () => Promise.resolve({ portalAddress: "0xOwnerPortal" }) }),
+    find.mockReturnValue({
+      select: () => ({ lean: () => Promise.resolve([{ _id: "doc-1", portalAddress: "0xOwnerPortal" }]) }),
     });
     const handler = createDeletedFileWebhookHandler({ mongodbStore, onTombstoned });
     const r = res();
@@ -89,7 +89,7 @@ describe("POST /webhooks/file-deleted", () => {
   });
 
   it("no-ops on unknown appFileId and never tombstones", async () => {
-    findById.mockReturnValue({ select: () => ({ lean: () => Promise.resolve(null) }) });
+    find.mockReturnValue({ select: () => ({ lean: () => Promise.resolve([]) }) });
     const handler = createDeletedFileWebhookHandler({ mongodbStore, onTombstoned });
     const r = res();
 
@@ -117,7 +117,7 @@ describe("POST /webhooks/file-deleted", () => {
 
       expect(r.status).toHaveBeenCalledWith(401);
       expect(mongodbStore.tombstoneDocument).not.toHaveBeenCalled();
-      expect(findById).not.toHaveBeenCalled();
+      expect(find).not.toHaveBeenCalled();
     } finally {
       config.webhook.apiKey = original;
     }
@@ -131,6 +131,6 @@ describe("POST /webhooks/file-deleted", () => {
 
     expect(r.status).toHaveBeenCalledWith(400);
     expect(mongodbStore.tombstoneDocument).not.toHaveBeenCalled();
-    expect(findById).not.toHaveBeenCalled();
+    expect(find).not.toHaveBeenCalled();
   });
 });

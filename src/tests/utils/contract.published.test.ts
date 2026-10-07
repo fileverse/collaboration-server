@@ -30,9 +30,9 @@ describe("resolvePublishedDocumentIds", () => {
       ] as any);
 
     const refs = [
-      { documentId: "da", portalAddress: "0xP" },
-      { documentId: "db", portalAddress: "0xP" },
-      { documentId: "dc", portalAddress: "0xP" },
+      { documentId: "da", portalAddress: "0xP", ddocId: null },
+      { documentId: "db", portalAddress: "0xP", ddocId: null },
+      { documentId: "dc", portalAddress: "0xP", ddocId: null },
     ];
     const out = await resolvePublishedDocumentIds(refs);
 
@@ -47,7 +47,7 @@ describe("resolvePublishedDocumentIds", () => {
     vi.spyOn(publicClient, "multicall")
       .mockResolvedValueOnce([{ status: "failure", error: new Error("rpc") }] as any)
       .mockResolvedValueOnce([] as any);
-    const out = await resolvePublishedDocumentIds([{ documentId: "dx", portalAddress: "0xP" }]);
+    const out = await resolvePublishedDocumentIds([{ documentId: "dx", portalAddress: "0xP", ddocId: null }]);
     expect(out).toEqual([]);
   });
 });

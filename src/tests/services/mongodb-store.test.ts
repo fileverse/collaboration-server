@@ -225,7 +225,7 @@ describe("upsertDocumentMeta", () => {
     const store = new MongoDBStore();
     await store.upsertDocumentMeta({
       documentId: "doc-1", sessionDid: "room-did", ownerDid: "od", ownerIdentityDid: "oid",
-      portalAddress: "0xP", appType: "ddoc", editLock: "el", title: "t",
+      portalAddress: "0xP", ddocId: null, appType: "ddoc", editLock: "el", title: "t",
     });
 
     expect(DocumentMetaModel.findOneAndUpdate).toHaveBeenCalledWith(
@@ -269,10 +269,11 @@ describe("listDocumentsForOwner", () => {
     });
     expect(result).toEqual({
       documents: [
-        { documentId: "doc-1", editLock: "el-1", title: "t1", appType: "ddoc" },
-        { documentId: "doc-2", editLock: "el-2", title: "t2", appType: "ddoc" },
+        { documentId: "doc-1", ddocId: null, editLock: "el-1", title: "t1", appType: "ddoc" },
+        { documentId: "doc-2", ddocId: null, editLock: "el-2", title: "t2", appType: "ddoc" },
       ],
       deletedDocumentIds: [],
+      deletedDocuments: [],
     });
   });
 
@@ -303,7 +304,8 @@ describe("listDocumentsForOwner", () => {
         { _id: "d2", portalAddress: "0xQ" },
       ]),
     });
-    (DocumentMetaModel.find as any).mockReturnValue({ select: vi.fn().mockReturnValue({ limit }) });
+    const sort = vi.fn().mockReturnValue({ limit });
+    (DocumentMetaModel.find as any).mockReturnValue({ select: vi.fn().mockReturnValue({ sort }) });
 
     const store = new MongoDBStore();
     const refs = await store.listUnpublishedMetaRefs(500);
@@ -311,11 +313,13 @@ describe("listDocumentsForOwner", () => {
     expect(DocumentMetaModel.find).toHaveBeenCalledWith({
       isPublished: { $ne: true },
       portalAddress: { $ne: null },
+      $or: [{ _id: { $not: /^o-/ } }, { ddocId: { $ne: null } }],
     });
+    expect(sort).toHaveBeenCalledWith({ updatedAt: -1 });
     expect(limit).toHaveBeenCalledWith(500);
     expect(refs).toEqual([
-      { documentId: "d1", portalAddress: "0xP" },
-      { documentId: "d2", portalAddress: "0xQ" },
+      { documentId: "d1", portalAddress: "0xP", ddocId: null },
+      { documentId: "d2", portalAddress: "0xQ", ddocId: null },
     ]);
   });
 
@@ -387,7 +391,7 @@ describe("listDocumentsForOwner", () => {
     const store = new MongoDBStore();
     const result = await store.listDocumentsForOwner({});
 
-    expect(result).toEqual({ documents: [], deletedDocumentIds: [] });
+    expect(result).toEqual({ documents: [], deletedDocumentIds: [], deletedDocuments: [] });
     expect(DocumentMetaModel.find).not.toHaveBeenCalled();
   });
 });
@@ -407,10 +411,10 @@ describe("listDocumentsForOwner: appType routing", () => {
     const store = new MongoDBStore();
     const docs = await store.listDocumentsForOwner({ ownerIdentityDid: "did:key:x" });
 
-    expect(select).toHaveBeenCalledWith("editLock title appType portalAddress tombstonedAt");
+    expect(select).toHaveBeenCalledWith("editLock title appType portalAddress tombstonedAt ddocId");
     expect(docs.documents).toEqual([
-      { documentId: "doc-1", editLock: "lock", title: "t", appType: "dsheet" },
-      { documentId: "doc-2", editLock: null, title: null, appType: "ddoc" },
+      { documentId: "doc-1", ddocId: null, editLock: "lock", title: "t", appType: "dsheet" },
+      { documentId: "doc-2", ddocId: null, editLock: null, title: null, appType: "ddoc" },
     ]);
   });
 });

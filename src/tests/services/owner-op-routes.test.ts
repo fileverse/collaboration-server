@@ -193,8 +193,9 @@ describe("POST /list-my-documents", () => {
       authService: { verifyIdentityToken: vi.fn(), verifyOwnerToken: vi.fn() },
       mongodbStore: {
         listDocumentsForOwner: vi.fn().mockResolvedValue({
-          documents: [{ documentId: "d1", editLock: "el", title: "t", appType: "dsheet" }],
+          documents: [{ documentId: "d1", ddocId: null, editLock: "el", title: "t", appType: "dsheet" }],
           deletedDocumentIds: ["d0"],
+          deletedDocuments: [{ documentId: "d0", ddocId: null }],
         }),
       },
     };
@@ -212,8 +213,9 @@ describe("POST /list-my-documents", () => {
     });
     expect(r.status).toHaveBeenCalledWith(200);
     expect(r.json).toHaveBeenCalledWith({
-      documents: [{ documentId: "d1", editLock: "el", title: "t", appType: "dsheet" }],
+      documents: [{ documentId: "d1", ddocId: null, editLock: "el", title: "t", appType: "dsheet" }],
       deletedDocumentIds: ["d0"],
+      deletedDocuments: [{ documentId: "d0", ddocId: null }],
     });
   });
 

@@ -14,6 +14,15 @@ const HYDRATION_SLOW_MS = 500;
 const HYDRATION_LARGE_BYTES = 2 * 1024 * 1024;
 const HYDRATION_LARGE_ROWS = 2_000;
 
+export const acceptedDdocId = (documentId: string, ddocId: unknown): string | null =>
+  typeof ddocId === "string" &&
+  ddocId.length > 0 &&
+  ddocId.length <= 64 &&
+  documentId.startsWith("o-") &&
+  !ddocId.startsWith("o-")
+    ? ddocId
+    : null;
+
 export class MongoDBStore {
   // Update management
   async createUpdate(update: DocumentUpdate): Promise<DocumentUpdate> {
@@ -303,6 +312,7 @@ export class MongoDBStore {
     ownerDid: string | null;
     ownerIdentityDid: string | null;
     portalAddress: string | null;
+    ddocId: string | null;
     appType: AppType;
     editLock: string | null;
     title: string | null;
@@ -314,6 +324,7 @@ export class MongoDBStore {
           ownerDid: meta.ownerDid,
           ownerIdentityDid: meta.ownerIdentityDid,
           portalAddress: meta.portalAddress,
+          ddocId: meta.ddocId,
           appType: meta.appType,
         },
         $set: {
@@ -325,6 +336,12 @@ export class MongoDBStore {
       },
       { upsert: true, new: true, writeConcern: { w: "majority", j: true } }
     );
+    if (meta.ddocId) {
+      await DocumentMetaModel.updateOne(
+        { _id: meta.documentId, $or: [{ ddocId: null }, { ddocId: { $exists: false } }] },
+        { $set: { ddocId: meta.ddocId } }
+      );
+    }
   }
 
   // First-writer-immutable document->owner binding (see docs/architecture/edit-permission.md).
@@ -340,6 +357,7 @@ export class MongoDBStore {
     ownerDid: string | null;
     ownerIdentityDid: string | null;
     sessionDid: string;
+    ddocId: string | null;
     appType: AppType;
   }): Promise<{ portalAddress: string | null }> {
     // 1. Ensure the row exists; pin all binding fields on INSERT only.
@@ -353,6 +371,7 @@ export class MongoDBStore {
           sessionDid: p.sessionDid,
           updatedAt: Date.now(),
           isPublished: false,
+          ddocId: p.ddocId,
           appType: p.appType,
         },
       },
@@ -365,7 +384,16 @@ export class MongoDBStore {
     );
     // 3. Read the effective pin.
     const doc: any = await DocumentMetaModel.findById(p.documentId).select("portalAddress").lean();
-    return { portalAddress: doc?.portalAddress ?? null };
+    const effective: string | null = doc?.portalAddress ?? null;
+    // 4. Backfill ddocId only for the pinned portal: the caller is rejected on a mismatch, and
+    // a write-once value must not be settable by that rejected caller.
+    if (p.ddocId && effective && effective.toLowerCase() === p.portalAddress.toLowerCase()) {
+      await DocumentMetaModel.updateOne(
+        { _id: p.documentId, $or: [{ ddocId: null }, { ddocId: { $exists: false } }] },
+        { $set: { ddocId: p.ddocId } }
+      );
+    }
+    return { portalAddress: effective };
   }
 
   async getDocumentMeta(
@@ -439,19 +467,26 @@ export class MongoDBStore {
   async listDocumentsForOwner(
     by: { ownerIdentityDid?: string; ownerDid?: string; portalAddress?: string }
   ): Promise<{
-    documents: Array<{ documentId: string; editLock: string | null; title: string | null; appType: AppType }>;
+    documents: Array<{
+      documentId: string;
+      ddocId: string | null;
+      editLock: string | null;
+      title: string | null;
+      appType: AppType;
+    }>;
     deletedDocumentIds: string[];
+    deletedDocuments: Array<{ documentId: string; ddocId: string | null }>;
   }> {
     const filter: Record<string, any> = {};
     if (by.ownerIdentityDid) filter.ownerIdentityDid = by.ownerIdentityDid;
     else if (by.ownerDid) filter.ownerDid = by.ownerDid;
-    else return { documents: [], deletedDocumentIds: [] };
+    else return { documents: [], deletedDocumentIds: [], deletedDocuments: [] };
     // Published docs are discovered via the indexer; the collab server only lists
     // unpublished durable docs (the publish reconciler flips this flag).
     filter.isPublished = { $ne: true };
 
     const metas: any[] = await DocumentMetaModel.find(filter)
-      .select("editLock title appType portalAddress tombstonedAt")
+      .select("editLock title appType portalAddress tombstonedAt ddocId")
       .lean();
 
     // Scope to the portal the caller proved. A team editLock is an identity envelope and
@@ -473,27 +508,37 @@ export class MongoDBStore {
       .filter((m) => !m.tombstonedAt)
       .map((m) => ({
         documentId: m._id,
+        ddocId: m.ddocId ?? null,
         editLock: m.editLock ?? null,
         title: m.title ?? null,
         appType: (m.appType as AppType) ?? "ddoc",
       }));
     const deletedDocumentIds = scoped.filter((m) => m.tombstonedAt).map((m) => String(m._id));
-    return { documents, deletedDocumentIds };
+    const deletedDocuments = scoped
+      .filter((m) => m.tombstonedAt)
+      .map((m) => ({ documentId: String(m._id), ddocId: m.ddocId ?? null }));
+    return { documents, deletedDocumentIds, deletedDocuments };
   }
 
   // Publish-reconciler candidate set: unpublished durable docs that have a portal to
   // resolve on-chain. Rows without a portalAddress can't be checked, so they are skipped.
   async listUnpublishedMetaRefs(
     limit: number
-  ): Promise<Array<{ documentId: string; portalAddress: string }>> {
+  ): Promise<Array<{ documentId: string; portalAddress: string; ddocId: string | null }>> {
     const rows: any[] = await DocumentMetaModel.find({
       isPublished: { $ne: true },
       portalAddress: { $ne: null },
+      $or: [{ _id: { $not: /^o-/ } }, { ddocId: { $ne: null } }],
     })
-      .select("portalAddress")
+      .select("portalAddress ddocId")
+      .sort({ updatedAt: -1 })
       .limit(limit)
       .lean();
-    return rows.map((r) => ({ documentId: r._id, portalAddress: r.portalAddress }));
+    return rows.map((r) => ({
+      documentId: r._id,
+      portalAddress: r.portalAddress,
+      ddocId: r.ddocId ?? null,
+    }));
   }
 
   async markDocumentsPublished(

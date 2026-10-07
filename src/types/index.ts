@@ -112,6 +112,7 @@ export interface AuthArgs {
   ownerToken?: string;
   ownerAddress?: string;
   contractAddress?: string;
+  ddocId?: string;
   roomInfo?: string;
   appType?: AppType;
   identityToken?: string;
@@ -171,6 +172,7 @@ export interface MirrorSnapshotArgs {
 
 export interface DocumentMetaArgs {
   documentId?: string;
+  ddocId?: string;
   editLock: string | null;
   title: string | null;
 }

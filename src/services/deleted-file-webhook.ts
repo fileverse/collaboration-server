@@ -24,13 +24,25 @@ export function createDeletedFileWebhookHandler(deps: DeletedFileWebhookDeps) {
       res.status(400).json({ error: "appFileId and portalAddress are required" });
       return;
     }
-    const meta = await DocumentMetaModel.findById(appFileId).select("portalAddress").lean();
-    if (!meta || (meta.portalAddress ?? "").toLowerCase() !== portalAddress.toLowerCase()) {
+    // ddocId is client-asserted, so a row on another portal can claim the same id: every
+    // candidate is portal-matched, never just the first one found.
+    const rows = await DocumentMetaModel.find({
+      $or: [{ _id: appFileId }, { ddocId: appFileId }],
+      portalAddress: { $ne: null },
+    })
+      .select("_id portalAddress")
+      .lean();
+    const portal = portalAddress.toLowerCase();
+    const matches = rows.filter((m) => (m.portalAddress ?? "").toLowerCase() === portal);
+    if (matches.length === 0) {
       res.status(200).json({ ok: true, matched: false }); // idempotent no-op
       return;
     }
-    const done = await deps.mongodbStore.tombstoneDocument(appFileId, "onchain-delete");
-    if (done && deps.onTombstoned) await deps.onTombstoned(appFileId);
+    for (const meta of matches) {
+      const documentId = String(meta._id);
+      const done = await deps.mongodbStore.tombstoneDocument(documentId, "onchain-delete");
+      if (done && deps.onTombstoned) await deps.onTombstoned(documentId);
+    }
     res.status(200).json({ ok: true, matched: true });
   };
 }
