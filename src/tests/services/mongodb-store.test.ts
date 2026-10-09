@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { DocumentUpdateModel } from "../../database/models/document-update";
 import { CounterModel } from "../../database/models/counter";
-import { MongoDBStore, SessionTerminatedError } from "../../services/mongodb-store";
+import { MongoDBStore, SessionTerminatedError, acceptedDdocId } from "../../services/mongodb-store";
 
 vi.mock("../../database/models", () => {
   const save = vi.fn().mockResolvedValue(undefined);
@@ -313,7 +313,7 @@ describe("listDocumentsForOwner", () => {
     expect(DocumentMetaModel.find).toHaveBeenCalledWith({
       isPublished: { $ne: true },
       portalAddress: { $ne: null },
-      $or: [{ _id: { $not: /^o-/ } }, { ddocId: { $ne: null } }],
+      $or: [{ _id: { $not: /^0x[1-9A-HJ-NP-Za-km-z]{18}$/ } }, { ddocId: { $ne: null } }],
     });
     expect(sort).toHaveBeenCalledWith({ updatedAt: -1 });
     expect(limit).toHaveBeenCalledWith(500);
@@ -792,5 +792,30 @@ describe("lockWireFormat: duplicate-key race", () => {
 
     const store = new MongoDBStore();
     await expect(store.lockWireFormat("doc-1")).resolves.toBe(false);
+  });
+});
+
+describe("acceptedDdocId", () => {
+  const LINK_ID = "0x" + "Zk".repeat(9);
+  const DDOC_ID = "7sLHvGNqsvNDhRm8tPKZSu";
+
+  it("keeps the on-chain id for a room named by a link id", () => {
+    expect(acceptedDdocId(LINK_ID, DDOC_ID)).toBe(DDOC_ID);
+  });
+
+  it("keeps an on-chain id that itself starts with 0x", () => {
+    expect(acceptedDdocId(LINK_ID, "0xabc")).toBe("0xabc");
+  });
+
+  it("refuses a link id as the on-chain id", () => {
+    expect(acceptedDdocId(LINK_ID, "0x" + "Gh".repeat(9))).toBeNull();
+  });
+
+  it.each([
+    ["a plain room", DDOC_ID],
+    ["a room named by an address", "0x" + "a1".repeat(20)],
+    ["a room with the old o- prefix", "o-" + "Zk".repeat(9)],
+  ])("stores nothing for %s", (_, documentId) => {
+    expect(acceptedDdocId(documentId, DDOC_ID)).toBeNull();
   });
 });

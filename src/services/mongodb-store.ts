@@ -14,12 +14,15 @@ const HYDRATION_SLOW_MS = 500;
 const HYDRATION_LARGE_BYTES = 2 * 1024 * 1024;
 const HYDRATION_LARGE_ROWS = 2_000;
 
+// An opaque link id, by exact shape: addresses, hashes and on-chain ids can also start with 0x.
+const LINK_ID_RE = /^0x[1-9A-HJ-NP-Za-km-z]{18}$/;
+
 export const acceptedDdocId = (documentId: string, ddocId: unknown): string | null =>
   typeof ddocId === "string" &&
   ddocId.length > 0 &&
   ddocId.length <= 64 &&
-  documentId.startsWith("o-") &&
-  !ddocId.startsWith("o-")
+  LINK_ID_RE.test(documentId) &&
+  !LINK_ID_RE.test(ddocId)
     ? ddocId
     : null;
 
@@ -528,7 +531,7 @@ export class MongoDBStore {
     const rows: any[] = await DocumentMetaModel.find({
       isPublished: { $ne: true },
       portalAddress: { $ne: null },
-      $or: [{ _id: { $not: /^o-/ } }, { ddocId: { $ne: null } }],
+      $or: [{ _id: { $not: LINK_ID_RE } }, { ddocId: { $ne: null } }],
     })
       .select("portalAddress ddocId")
       .sort({ updatedAt: -1 })

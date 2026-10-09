@@ -6,7 +6,7 @@ interface IDocumentMeta extends MongooseDocument {
   ownerDid: string | null;
   ownerIdentityDid: string | null;
   portalAddress: string | null;
-  ddocId: string | null; // on-chain id when documentId is an opaque o- id; owner-only, never emitted
+  ddocId: string | null; // on-chain id when documentId is an opaque link id; owner-only, never emitted
   appType?: "ddoc" | "dsheet";
   editLock: string | null; // roomKey-wrapped
   title: string | null; // roomKey-encrypted
