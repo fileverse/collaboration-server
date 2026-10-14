@@ -255,6 +255,8 @@ export interface MessageResponseData {
 export interface HandshakePayload {
   server_did: string;
   message: string;
+  /** Server clock (ms epoch). Clients build their auth UCAN time bounds from it, since a skewed device clock fails nbf/exp. */
+  server_time: number;
 }
 
 export interface ContentUpdatePayload {

@@ -75,6 +75,7 @@ export function registerEventHandlers(io: AppServer): void {
     socket.emit("/server/handshake", {
       server_did: authService.getServerDid(),
       message: "Connected to collaboration server",
+      server_time: Date.now(),
     });
 
     // Register event handlers
