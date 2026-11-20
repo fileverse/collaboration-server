@@ -12,6 +12,10 @@ export interface ISession extends MongooseDocument {
   portalAddress: string | null;
   collabJoinEnabled?: boolean;
   workspaceEditEnabled?: boolean;
+  rotatedTo?: string;
+  rotationEpoch?: number;
+  rotationPayload?: string;
+  rotatedAt?: Date;
 }
 
 const SessionSchema = new Schema({
@@ -28,6 +32,12 @@ const SessionSchema = new Schema({
   portalAddress: { type: String, default: null },
   collabJoinEnabled: { type: Boolean }, // intentionally no default
   workspaceEditEnabled: { type: Boolean }, // intentionally no default
+  // Set when an edit-loss rotation replaces this session. The owner reads the relayed
+  // payload back to recover the successor's roomKey; owner /auth never revives it.
+  rotatedTo: { type: String },
+  rotationEpoch: { type: Number },
+  rotationPayload: { type: String },
+  rotatedAt: { type: Date },
 });
 
 SessionSchema.index({ documentId: 1, createdAt: 1, sessionDid: 1 });

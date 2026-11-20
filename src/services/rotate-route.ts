@@ -12,7 +12,7 @@ const T_DRAIN_MS = 10_000;
 
 export interface RotateDeps {
   authService: Pick<AuthService, "verifyOwnerOp">;
-  sessionManager: Pick<SessionManager, "getSession" | "createSession">;
+  sessionManager: Pick<SessionManager, "getSession" | "createSession" | "markRotated">;
   mongodbStore: Pick<MongoDBStore, "setMinEditEpoch">;
   rotationCoordinator: Pick<RotationCoordinator, "begin" | "isActive">;
   terminateOldSession: (documentId: string, sessionDid: string) => Promise<void>;
@@ -78,6 +78,14 @@ export function createRotateSessionHandler(deps: RotateDeps, io: AppServer) {
     }
 
     await deps.mongodbStore.setMinEditEpoch(documentId, gateEpoch);
+
+    // Before the relay goes out: from here an owner device still holding the old roomKey is
+    // refused instead of reviving this session, and reads this record to reach the new one.
+    await deps.sessionManager.markRotated(documentId, oldSessionDid, {
+      rotatedTo: newSessionDid,
+      epoch: gateEpoch,
+      payload,
+    });
 
     const oldRoom = getRoomName(documentId, oldSessionDid);
     io.to(oldRoom).emit("/session/epoch_available", { roomId: documentId, epoch: gateEpoch, payload });

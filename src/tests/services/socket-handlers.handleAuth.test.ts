@@ -54,6 +54,7 @@ describe("handleAuth", () => {
   const fakeSessionManager = {
     getSession: vi.fn(),
     getSessionIncludingTerminated: vi.fn(),
+    getRotation: vi.fn(),
     getOtherNonTerminatedSessions: vi.fn(),
     terminateSession: vi.fn(),
     createSession: vi.fn(),
@@ -2374,6 +2375,7 @@ describe("handleAuth — edit-claim admission (existing session, non-owner)", ()
   };
   const fakeSessionManager = {
     getSession: vi.fn(),
+    getRotation: vi.fn(),
     getOtherNonTerminatedSessions: vi.fn(),
     terminateSession: vi.fn(),
     createSession: vi.fn(),

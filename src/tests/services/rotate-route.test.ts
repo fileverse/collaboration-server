@@ -28,6 +28,7 @@ describe("POST /documents/:id/rotate-session", () => {
       sessionManager: {
         getSession: vi.fn(),
         createSession: vi.fn(),
+        markRotated: vi.fn(),
       },
       mongodbStore: { setMinEditEpoch: vi.fn() },
       rotationCoordinator: {

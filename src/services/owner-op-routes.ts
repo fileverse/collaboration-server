@@ -303,10 +303,51 @@ export function createMirrorReadHandler(deps: { mongodbStore: Pick<MongoDBStore,
   };
 }
 
+// Owner-only read of a rotated-away session's record: the successor sessionDid and the
+// relay payload the rotation broadcast (outer layer under the old roomKey, inner under the
+// new epoch's edit share). An owner device that missed the live relay recovers from it.
+export function createRotationRecordHandler(deps: {
+  authService: Pick<AuthService, "verifyOwnerOp">;
+  sessionManager: Pick<SessionManager, "getRotation">;
+}) {
+  return async (req: Request, res: Response): Promise<void> => {
+    try {
+      const documentId = req.params.documentId;
+      const { sessionDid, identityToken } = req.body || {};
+      if (typeof sessionDid !== "string" || !sessionDid) {
+        res.status(400).json({ error: "sessionDid is required" });
+        return;
+      }
+      const rotation = await deps.sessionManager.getRotation(documentId, sessionDid);
+      if (!rotation) {
+        res.status(404).json({ error: "Session was not rotated" });
+        return;
+      }
+      const authorized = await deps.authService.verifyOwnerOp({
+        ddocId: documentId,
+        boundOwnerIdentityDid: rotation.ownerIdentityDid,
+        boundOwnerDid: rotation.ownerDid,
+        identityToken,
+      });
+      if (!authorized) {
+        res.status(403).json({ error: "Not the document owner" });
+        return;
+      }
+      res.status(200).json({
+        rotatedTo: rotation.rotatedTo,
+        epoch: rotation.epoch,
+        payload: rotation.payload,
+      });
+    } catch {
+      res.status(500).json({ error: "rotation lookup failed" });
+    }
+  };
+}
+
 /** Open read: existence only (same trust model as the mirror GET). */
 export function createShareContextHandler(deps: {
   mongodbStore: Pick<MongoDBStore, "getShareContext">;
-  sessionManager?: Pick<SessionManager, "getSession" | "getLegacyRtcVerdict">;
+  sessionManager?: Pick<SessionManager, "getSession" | "getLegacyRtcVerdict" | "getRotation">;
 }) {
   return async (req: Request, res: Response): Promise<void> => {
     // Express 4 doesn't catch async rejections — an unhandled store error
@@ -323,10 +364,13 @@ export function createShareContextHandler(deps: {
         const legacyRtc = session
           ? await deps.sessionManager.getLegacyRtcVerdict(req.params.documentId, sessionDid)
           : undefined;
+        // A flag only: the successor and payload are owner-gated (/rotation).
+        const rotated = !!(await deps.sessionManager.getRotation?.(req.params.documentId, sessionDid));
         res.status(200).json({
           ...ctx,
           sessionExists: !!session,
           ...(legacyRtc !== undefined ? { legacyRtc } : {}),
+          ...(rotated ? { rotated } : {}),
         });
         return;
       }

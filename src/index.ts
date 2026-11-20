@@ -23,6 +23,7 @@ import {
   createDeleteDocumentHandler,
   createMirrorReadHandler,
   createShareContextHandler,
+  createRotationRecordHandler,
 } from "./services/owner-op-routes";
 import { createRotateSessionHandler } from "./services/rotate-route";
 import { rotationCoordinator } from "./services/rotation-coordinator";
@@ -141,6 +142,10 @@ class CollaborationServer {
     this.app.get(
       "/documents/:documentId/mirror",
       createMirrorReadHandler({ mongodbStore })
+    );
+    this.app.post(
+      "/documents/:documentId/rotation",
+      createRotationRecordHandler({ authService, sessionManager })
     );
     this.app.get(
       "/documents/:documentId/share-context",

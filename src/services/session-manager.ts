@@ -192,6 +192,60 @@ export class SessionManager {
     };
   }
 
+  async markRotated(
+    documentId: string,
+    sessionDid: string,
+    rotation: { rotatedTo: string; epoch: number; payload: string }
+  ): Promise<void> {
+    await SessionModel.updateOne(
+      { documentId, sessionDid },
+      {
+        $set: {
+          rotatedTo: rotation.rotatedTo,
+          rotationEpoch: rotation.epoch,
+          rotationPayload: rotation.payload,
+          rotatedAt: new Date(),
+        },
+      }
+    );
+  }
+
+  // Terminated-inclusive: the record must stay readable after the drain terminates the row.
+  async getRotation(
+    documentId: string,
+    sessionDid: string
+  ): Promise<
+    | {
+        rotatedTo: string;
+        epoch: number;
+        payload: string;
+        ownerDid: string;
+        ownerIdentityDid: string | null;
+      }
+    | undefined
+  > {
+    const row = await SessionModel.findOne(
+      { documentId, sessionDid, rotatedTo: { $exists: true } },
+      { rotatedTo: 1, rotationEpoch: 1, rotationPayload: 1, ownerDid: 1, ownerIdentityDid: 1 }
+    ).lean<{
+      rotatedTo?: string;
+      rotationEpoch?: number;
+      rotationPayload?: string;
+      ownerDid: string;
+      ownerIdentityDid?: string | null;
+    }>();
+    if (!row?.rotatedTo || typeof row.rotationEpoch !== "number" || !row.rotationPayload) {
+      return undefined;
+    }
+    return {
+      rotatedTo: row.rotatedTo,
+      epoch: row.rotationEpoch,
+      payload: row.rotationPayload,
+      ownerDid: row.ownerDid,
+      ownerIdentityDid: row.ownerIdentityDid ?? null,
+    };
+  }
+
   async getCollabJoinEnabled(documentId: string, sessionDid: string): Promise<boolean | undefined> {
     const doc = await SessionModel.findOne({ documentId, sessionDid }, { collabJoinEnabled: 1 }).lean();
     return (doc as any)?.collabJoinEnabled;

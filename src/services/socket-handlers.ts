@@ -54,6 +54,16 @@ export function getRoomName(documentId: string, sessionDid: string): string {
   return `session::${documentId}__${sessionDid}`;
 }
 
+// 404 so clients that predate SESSION_ROTATED take their existing not-found path.
+function sessionRotatedResponse(): AckResponse<AuthResponseData> {
+  return {
+    status: false,
+    statusCode: 404,
+    error: "Session was replaced by a rotation",
+    errorCode: ErrorCode.SESSION_ROTATED,
+  };
+}
+
 // Awareness-path re-check throttle; matches the edit-bound TTL so a revoked-but-idle
 // actor is caught within one cache window without adding gate traffic.
 const ADMIT_RECHECK_INTERVAL_MS = 10_000;
@@ -377,6 +387,13 @@ export async function handleAuth(
         });
       }
 
+      // A rotated-away session is never revived: the upsert below would reactivate it and
+      // the sweep would terminate its live successor. The owner recovers the successor's
+      // roomKey from the rotation record instead.
+      if (await sessionManager.getRotation(documentId, sessionDid)) {
+        return callback(sessionRotatedResponse());
+      }
+
       // C1: pin documentId → portalAddress on the first owner bind, immutably (trust-on-first-use).
       // This is bounded by the pre-first-durable-session race window, NOT by documentId secrecy —
       // the portable share URL is /document/{id}#k=, so documentId is URL-path-visible (server/
@@ -569,6 +586,12 @@ export async function handleAuth(
       // joinOnly caps the role: on an unbound/legacy session the shared-DID compare
       // resolves a team member to owner — a join-only bearer never gets owner powers.
       if (args.joinOnly === true && role === "owner") role = "editor";
+
+      // Draining after a rotation: an owner arriving with the old roomKey goes straight to
+      // the successor. Editors already in the room keep draining; joinOnly reads are unaffected.
+      if (role === "owner" && (await sessionManager.getRotation(documentId, existingSession.sessionDid))) {
+        return callback(sessionRotatedResponse());
+      }
 
       // R3 heal: a session bound before identity proof was required (or
       // bound empty) is filled — once, atomically — by a proven owner, so the pre-fix
